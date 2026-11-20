@@ -7,53 +7,67 @@ export default {
   theme: {
     extend: {
       colors: {
-        clinical: {
-          50: '#f8fafc',
-          100: '#f1f5f9',
-          200: '#e2e8f0',
-          300: '#cbd5e1',
-          400: '#94a3b8',
-          500: '#64748b',
-          600: '#475569',
-          700: '#334155',
-          800: '#1e293b',
-          900: '#0f172a',
-          950: '#020617',
+        linen: {
+          50: '#fdfcfb',
+          100: '#faf8f5',
+          200: '#f5f2eb',
+          300: '#ebe6dc',
+          400: '#ded7c8',
+          500: '#c5bcb0',
+          600: '#948a7e',
+          700: '#696156',
+          800: '#403b35',
+          900: '#1e1c19',
+        },
+        charcoal: {
+          50: '#f6f6f6',
+          100: '#e7e7e8',
+          200: '#d0d1d2',
+          700: '#383a3d',
+          800: '#222527',
+          900: '#191b1a',
+          950: '#111312',
+        },
+        terracotta: {
+          50: '#fdf4f2',
+          100: '#fce6e3',
+          200: '#f9cfca',
+          500: '#e05a47',
+          600: '#c84b31',
+          700: '#a63b25',
+        },
+        sage: {
+          50: '#f3f7f4',
+          100: '#e4eee6',
+          200: '#cbded0',
+          600: '#3d6b52',
+          700: '#2d5a3f',
+          800: '#21432f',
         },
         brand: {
-          50: '#eff6ff',
-          100: '#dbeafe',
-          200: '#bfdbfe',
-          500: '#3b82f6',
-          600: '#2563eb',
-          700: '#1d4ed8',
-          800: '#1e40af',
-          900: '#1e3a8a',
-        },
-        risk: {
-          safe: '#059669',
-          safeBg: '#ecfdf5',
-          safeBorder: '#a7f3d0',
-          moderate: '#d97706',
-          moderateBg: '#fffbeb',
-          moderateBorder: '#fde68a',
-          severe: '#dc2626',
-          severeBg: '#fef2f2',
-          severeBorder: '#fecaca',
+          50: '#f0f5fa',
+          100: '#e0ecf5',
+          500: '#1e6091',
+          600: '#164e78',
+          700: '#113d5e',
         }
       },
       fontFamily: {
+        serif: [
+          '"Fraunces"',
+          '"Newsreader"',
+          'Georgia',
+          'serif'
+        ],
         sans: [
           'Inter',
           '-apple-system',
           'BlinkMacSystemFont',
           '"Segoe UI"',
-          'Roboto',
           'sans-serif'
         ],
         mono: [
           '"JetBrains Mono"',
-          '"Fira Code"',
           'ui-monospace',
           'monospace'
         ]
