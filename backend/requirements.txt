@@ -1,0 +1,22 @@
+# ProtocolShield Enterprise Core Dependencies
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+pydantic>=2.10.0
+pydantic-settings>=2.6.0
+
+# Analytical Data Tier
+duckdb>=1.1.0
+numpy>=2.0.0
+pandas>=2.2.0
+
+# Document Ingestion & Clinical PDF Parsing
+pymupdf>=1.25.0
+pdfplumber>=0.11.0
+
+# Networking & ClinicalTrials.gov API Client
+httpx>=0.28.0
+
+# Testing & Code Quality
+pytest>=8.3.0
+pytest-asyncio>=0.24.0
+httpx>=0.28.0
