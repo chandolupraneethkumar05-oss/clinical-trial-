@@ -97,6 +97,15 @@ export default function App() {
     return retentionCurve;
   };
 
+  if (viewMode === 'landing') {
+    return (
+      <LandingPage
+        totalCohortSize={totalCohortSize}
+        onLaunchStudio={() => setViewMode('studio')}
+      />
+    );
+  }
+
   if (loading || !protocol || !funnelData) {
     return (
       <div className="min-h-screen bg-linen-100 flex items-center justify-center p-4">
@@ -104,17 +113,14 @@ export default function App() {
           <div className="h-8 w-8 border-3 border-charcoal-900 border-t-transparent rounded-full animate-spin mx-auto" />
           <p className="font-serif text-sm font-bold text-charcoal-900 tracking-tight">Initializing ProtocolShield Studio...</p>
           <p className="text-xs text-charcoal-500 font-mono">Loading 10,000 Patient Cohort in DuckDB</p>
+          <button
+            onClick={() => setViewMode('landing')}
+            className="text-xs text-terracotta-600 hover:underline pt-2 block mx-auto font-mono"
+          >
+            ← Return to Overview
+          </button>
         </div>
       </div>
-    );
-  }
-
-  if (viewMode === 'landing') {
-    return (
-      <LandingPage
-        totalCohortSize={totalCohortSize}
-        onLaunchStudio={() => setViewMode('studio')}
-      />
     );
   }
 
