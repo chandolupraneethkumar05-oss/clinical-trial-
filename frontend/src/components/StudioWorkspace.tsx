@@ -14,7 +14,9 @@ import { BurdenOverviewTab } from './BurdenOverviewTab';
 import { WhatIfSensitivityConsole } from './WhatIfSensitivityConsole';
 import { BenchmarkGrid } from './BenchmarkGrid';
 import { AuditTrailView } from './AuditTrailView';
+import type { AuditEvent } from './AuditTrailView';
 import { ProtocolInspectorDrawer } from './ProtocolInspectorDrawer';
+import { AIOptimizerModal } from './AIOptimizerModal';
 import { UserMenu } from './UserMenu';
 import { 
   ArrowLeft, 
@@ -53,6 +55,9 @@ interface StudioWorkspaceProps {
   onSwitchPersona: () => void;
   onSwitchTemplate: (type: 'nsclc' | 'tnbc' | 'myeloma') => void;
   onUploadFile?: (file: File) => void;
+  onApplyAmendment?: (amendmentId: string) => Promise<void>;
+  appliedAmendmentIds?: string[];
+  auditEvents?: AuditEvent[];
 }
 
 export const StudioWorkspace: FC<StudioWorkspaceProps> = ({
@@ -70,12 +75,16 @@ export const StudioWorkspace: FC<StudioWorkspaceProps> = ({
   onSignOut,
   onSwitchPersona,
   onSwitchTemplate,
-  onUploadFile
+  onUploadFile,
+  onApplyAmendment,
+  appliedAmendmentIds = [],
+  auditEvents,
 }) => {
   const [activeTab, setActiveTab] = useState<'sandbox' | 'soe' | 'overview' | 'benchmarks' | 'audit'>('sandbox');
   const [selectedVisit, setSelectedVisit] = useState<Visit | null>(null);
   const [selectedProcedure, setSelectedProcedure] = useState<Procedure | null>(null);
   const [showExportModal, setShowExportModal] = useState<boolean>(false);
+  const [showOptimizerModal, setShowOptimizerModal] = useState<boolean>(false);
   const [activeLinkedClause, setActiveLinkedClause] = useState<string | null>('inc-0');
   const [isHeaderDragging, setIsHeaderDragging] = useState<boolean>(false);
 
@@ -148,6 +157,15 @@ export const StudioWorkspace: FC<StudioWorkspaceProps> = ({
               <span>DuckDB In-Memory:</span>
               <strong className="font-mono text-charcoal-900">{totalCohortSize.toLocaleString()} patients</strong>
             </div>
+
+            {/* AI Protocol Optimizer Trigger */}
+            <button
+              onClick={() => setShowOptimizerModal(true)}
+              className="inline-flex items-center space-x-1.5 px-3.5 py-1.5 text-xs font-semibold rounded-full bg-gradient-to-r from-terracotta-600 via-amber-600 to-terracotta-500 hover:brightness-110 text-white shadow-xs transition-all cursor-pointer"
+            >
+              <Sparkles className="h-3.5 w-3.5 text-white animate-pulse" />
+              <span>AI Optimizer ({Math.max(0, 4 - appliedAmendmentIds.length)} Opps)</span>
+            </button>
 
             {/* Export Feasibility Dossier */}
             <button
@@ -429,6 +447,32 @@ export const StudioWorkspace: FC<StudioWorkspaceProps> = ({
                   </div>
                 )}
 
+                {/* AI Optimizer Interactive Callout Banner */}
+                <div
+                  onClick={() => setShowOptimizerModal(true)}
+                  className="p-3.5 bg-gradient-to-br from-charcoal-950 via-charcoal-900 to-terracotta-950 text-white rounded-xl border border-terracotta-500/40 shadow-xs cursor-pointer hover:border-terracotta-400 transition-all group"
+                >
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-[10px] font-mono uppercase tracking-wider text-terracotta-400 font-bold flex items-center space-x-1">
+                      <Sparkles className="h-3 w-3 text-terracotta-400" />
+                      <span>AI Protocol Optimizer</span>
+                    </span>
+                    <span className="text-[9px] font-mono px-2 py-0.5 rounded-full bg-terracotta-500/20 text-terracotta-300 border border-terracotta-500/40 font-bold">
+                      {appliedAmendmentIds.length}/4 Applied
+                    </span>
+                  </div>
+                  <p className="text-xs font-serif font-bold text-linen-100 group-hover:text-white leading-snug">
+                    4 Calibrated Protocol Redlines
+                  </p>
+                  <p className="text-[11px] text-charcoal-300 font-sans mt-0.5">
+                    Recover +317 patients and reduce Tufts CSDD burden by -28.9 pts.
+                  </p>
+                  <div className="mt-2 flex items-center space-x-1 text-[11px] text-terracotta-400 font-mono font-bold group-hover:translate-x-0.5 transition-transform">
+                    <span>Inspect Redline Diff & 1-Click Apply</span>
+                    <span>→</span>
+                  </div>
+                </div>
+
                 {/* Dynamic Inclusion Criteria */}
                 <div className="space-y-1.5 pt-1">
                   <div className="flex items-center justify-between text-[10px] font-mono text-sage-800 font-bold uppercase tracking-wider">
@@ -539,7 +583,7 @@ export const StudioWorkspace: FC<StudioWorkspaceProps> = ({
             )}
 
             {activeTab === 'audit' && (
-              <AuditTrailView />
+              <AuditTrailView events={auditEvents} />
             )}
           </div>
         </div>
@@ -631,6 +675,16 @@ export const StudioWorkspace: FC<StudioWorkspaceProps> = ({
             </div>
           </div>
         </div>
+      )}
+      {/* AI Protocol Amendment & Optimization Advisor Modal */}
+      {showOptimizerModal && (
+        <AIOptimizerModal
+          isOpen={showOptimizerModal}
+          onClose={() => setShowOptimizerModal(false)}
+          protocol={protocol}
+          onApplyAmendment={onApplyAmendment || (async () => {})}
+          appliedAmendmentIds={appliedAmendmentIds}
+        />
       )}
     </div>
   );

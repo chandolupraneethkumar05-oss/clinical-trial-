@@ -2,7 +2,15 @@ import { useState } from 'react';
 import type { FC } from 'react';
 import { Download, CheckCircle2, ShieldCheck, Copy, Check } from 'lucide-react';
 
-const AUDIT_EVENTS = [
+export interface AuditEvent {
+  timestamp: string;
+  event_type: string;
+  operator: string;
+  details: string;
+  verification_hash: string;
+}
+
+export const DEFAULT_AUDIT_EVENTS: AuditEvent[] = [
   {
     timestamp: "2026-11-20 16:30:12 UTC",
     event_type: "PROTOCOL_SPECIFICATION_LOAD",
@@ -40,7 +48,11 @@ const AUDIT_EVENTS = [
   }
 ];
 
-export const AuditTrailView: FC = () => {
+interface AuditTrailViewProps {
+  events?: AuditEvent[];
+}
+
+export const AuditTrailView: FC<AuditTrailViewProps> = ({ events = DEFAULT_AUDIT_EVENTS }) => {
   const [copiedHash, setCopiedHash] = useState<string | null>(null);
 
   const copyToClipboard = (hash: string) => {
@@ -93,7 +105,7 @@ export const AuditTrailView: FC = () => {
           </thead>
           
           <tbody className="divide-y divide-linen-200">
-            {AUDIT_EVENTS.map((evt, idx) => (
+            {events.map((evt, idx) => (
               <tr key={idx} className="hover:bg-linen-50/80 transition-colors">
                 <td className="py-3 px-4 font-mono text-charcoal-600 text-xs whitespace-nowrap">
                   {evt.timestamp}
