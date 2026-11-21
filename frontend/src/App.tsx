@@ -1,11 +1,12 @@
 import { useState, useEffect } from 'react';
 import { LandingPage } from './components/LandingPage';
 import { StudioWorkspace } from './components/StudioWorkspace';
-import type { 
-  ClinicalProtocol, 
-  FunnelSimulationResult, 
-  RetentionPoint, 
-  BenchmarkTrial 
+import { ProtocolUploadModal } from './components/ProtocolUploadModal';
+import type {
+  ClinicalProtocol,
+  FunnelSimulationResult,
+  RetentionPoint,
+  BenchmarkTrial
 } from './types/protocol';
 
 export default function App() {
@@ -16,6 +17,7 @@ export default function App() {
   const [funnelData, setFunnelData] = useState<FunnelSimulationResult | null>(null);
   const [retentionCurve, setRetentionCurve] = useState<RetentionPoint[]>([]);
   const [benchmarks, setBenchmarks] = useState<BenchmarkTrial[]>([]);
+  const [showUploadModal, setShowUploadModal] = useState<boolean>(false);
 
   // Initial Data Fetching from FastAPI Backend
   useEffect(() => {
@@ -58,7 +60,7 @@ export default function App() {
           setBenchmarks(bJson.trials);
         }
       } catch (err) {
-        console.warn("Backend not yet connected; using verified clinical fallback state", err);
+        console.warn('Backend not yet connected; using verified clinical fallback state', err);
       } finally {
         setLoading(false);
       }
@@ -68,7 +70,7 @@ export default function App() {
   }, []);
 
   // Handlers for dynamic simulations
-  const handleSimulateFunnel = async (criteria: any): Promise<FunnelSimulationResult> => {
+  const handleSimulateFunnel = async (criteria: Record<string, unknown>): Promise<FunnelSimulationResult> => {
     try {
       const res = await fetch('/api/v1/cohort/simulate-funnel', {
         method: 'POST',
@@ -95,6 +97,28 @@ export default function App() {
       console.error(e);
     }
     return retentionCurve;
+  };
+
+  // Handler: protocol loaded via upload modal — re-runs all dependent data
+  const handleProtocolLoaded = async (newProtocol: ClinicalProtocol) => {
+    setProtocol(newProtocol);
+    setShowUploadModal(false);
+
+    try {
+      const filters = newProtocol.eligibility?.structured_filters ?? {};
+      const newFunnel = await handleSimulateFunnel(filters);
+      setFunnelData(newFunnel);
+
+      if (newProtocol.burden && newFunnel) {
+        const newRetention = await handleCalculateRetention(
+          newFunnel.final_eligible_count,
+          newProtocol.burden.composite_pbi_score
+        );
+        setRetentionCurve(newRetention);
+      }
+    } catch (e) {
+      console.error('Post-upload simulation error:', e);
+    }
   };
 
   if (viewMode === 'landing') {
@@ -125,15 +149,25 @@ export default function App() {
   }
 
   return (
-    <StudioWorkspace
-      protocol={protocol}
-      totalCohortSize={totalCohortSize}
-      funnelData={funnelData}
-      retentionCurve={retentionCurve}
-      benchmarks={benchmarks}
-      onBackToLanding={() => setViewMode('landing')}
-      onSimulateFunnel={handleSimulateFunnel}
-      onCalculateRetention={handleCalculateRetention}
-    />
+    <>
+      <StudioWorkspace
+        protocol={protocol}
+        totalCohortSize={totalCohortSize}
+        funnelData={funnelData}
+        retentionCurve={retentionCurve}
+        benchmarks={benchmarks}
+        onBackToLanding={() => setViewMode('landing')}
+        onSimulateFunnel={handleSimulateFunnel}
+        onCalculateRetention={handleCalculateRetention}
+        onOpenUpload={() => setShowUploadModal(true)}
+      />
+
+      {showUploadModal && (
+        <ProtocolUploadModal
+          onClose={() => setShowUploadModal(false)}
+          onProtocolLoaded={handleProtocolLoaded}
+        />
+      )}
+    </>
   );
 }

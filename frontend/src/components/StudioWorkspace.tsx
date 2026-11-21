@@ -1,4 +1,4 @@
-import { useState } from 'react';
+﻿import { useState } from 'react';
 import type { FC } from 'react';
 import type { 
   ClinicalProtocol, 
@@ -21,6 +21,7 @@ import {
   FileText, 
   FileCheck2,
   Printer,
+  Upload,
   X
 } from 'lucide-react';
 
@@ -31,7 +32,8 @@ interface StudioWorkspaceProps {
   retentionCurve: RetentionPoint[];
   benchmarks: BenchmarkTrial[];
   onBackToLanding: () => void;
-  onSimulateFunnel: (criteria: any) => Promise<FunnelSimulationResult>;
+  onSimulateFunnel: (criteria: Record<string, unknown>) => Promise<FunnelSimulationResult>;
+  onOpenUpload: () => void;
   onCalculateRetention: (enrolled: number, pbi: number) => Promise<RetentionPoint[]>;
 }
 
@@ -43,7 +45,8 @@ export const StudioWorkspace: FC<StudioWorkspaceProps> = ({
   benchmarks,
   onBackToLanding,
   onSimulateFunnel,
-  onCalculateRetention
+  onCalculateRetention,
+  onOpenUpload
 }) => {
   const [activeTab, setActiveTab] = useState<'overview' | 'soe' | 'sandbox' | 'benchmarks' | 'audit'>('sandbox');
   const [selectedVisit, setSelectedVisit] = useState<Visit | null>(null);
@@ -75,6 +78,12 @@ export const StudioWorkspace: FC<StudioWorkspaceProps> = ({
               <span className="hidden md:inline-block text-xs text-charcoal-500 max-w-xs truncate">
                 {protocol.title}
               </span>
+              {protocol.source_filename && (
+                <span className="hidden lg:inline-flex items-center space-x-1 text-[10px] font-mono px-2 py-0.5 rounded-full bg-sage-100 text-sage-700 border border-sage-200">
+                  <FileText className="h-2.5 w-2.5" />
+                  <span>{protocol.extracted_page_count ? `PDF · ${protocol.extracted_page_count}pp` : "PDF"}</span>
+                </span>
+              )}
             </div>
           </div>
 
@@ -84,6 +93,14 @@ export const StudioWorkspace: FC<StudioWorkspaceProps> = ({
               <span>DuckDB In-Memory:</span>
               <strong className="font-mono text-charcoal-900">{totalCohortSize.toLocaleString()} records</strong>
             </div>
+
+            <button
+              onClick={onOpenUpload}
+              className="inline-flex items-center space-x-1.5 px-3.5 py-1.5 text-xs font-semibold rounded-full bg-terracotta-600 hover:bg-terracotta-500 text-white shadow-xs transition-colors"
+            >
+              <Upload className="h-3.5 w-3.5" />
+              <span>Load Protocol</span>
+            </button>
 
             <button
               onClick={() => setShowExportModal(true)}
@@ -177,8 +194,12 @@ export const StudioWorkspace: FC<StudioWorkspaceProps> = ({
                     Protocol Ground Truth
                   </h3>
                 </div>
-                <span className="text-[10px] font-mono bg-linen-200 px-2 py-0.5 rounded-full text-charcoal-700">
-                  LINKED EVIDENCE
+                <span className={`text-[10px] font-mono px-2 py-0.5 rounded-full ${
+                  protocol.source_filename?.startsWith('PS-') || !protocol.extracted_page_count
+                    ? 'bg-linen-200 text-charcoal-700'
+                    : 'bg-sage-100 text-sage-700'
+                }`}>
+                  {protocol.extracted_page_count ? 'PDF EXTRACTED' : 'LINKED EVIDENCE'}
                 </span>
               </div>
 
@@ -202,13 +223,13 @@ export const StudioWorkspace: FC<StudioWorkspaceProps> = ({
                   }`}
                 >
                   <div className="flex items-center justify-between text-[10px] font-mono font-bold text-terracotta-700 mb-1">
-                    <span>SECTION 4.2.1 — RENAL EXCLUSION</span>
+                    <span>SECTION 4.2.1 â€” RENAL EXCLUSION</span>
                     <span className="px-1.5 py-0.2 rounded bg-terracotta-100 text-terracotta-800">
                       RISK ATTRITION
                     </span>
                   </div>
                   <p className="text-charcoal-900 text-xs">
-                    "Adequate renal clearance: Serum creatinine ≤ 1.5 x ULN or <strong>eGFR ≥ 60 mL/min/1.73m²</strong>."
+                    "Adequate renal clearance: Serum creatinine â‰¤ 1.5 x ULN or <strong>eGFR â‰¥ 60 mL/min/1.73mÂ²</strong>."
                   </p>
                   <span className="text-[10px] font-sans text-charcoal-500 mt-1 block">
                     Eliminates 18.4% of eligible subjects due to mild age-related renal variance.
@@ -225,7 +246,7 @@ export const StudioWorkspace: FC<StudioWorkspaceProps> = ({
                   }`}
                 >
                   <div className="flex items-center justify-between text-[10px] font-mono font-bold text-terracotta-700 mb-1">
-                    <span>SECTION 4.3 — RE-BIOPSY MANDATE</span>
+                    <span>SECTION 4.3 â€” RE-BIOPSY MANDATE</span>
                     <span className="px-1.5 py-0.2 rounded bg-terracotta-100 text-terracotta-800">
                       PEAK BURDEN
                     </span>
@@ -248,7 +269,7 @@ export const StudioWorkspace: FC<StudioWorkspaceProps> = ({
                   }`}
                 >
                   <div className="flex items-center justify-between text-[10px] font-mono font-bold text-terracotta-700 mb-1">
-                    <span>SECTION 4.2.2 — CNS EXCLUSION</span>
+                    <span>SECTION 4.2.2 â€” CNS EXCLUSION</span>
                     <span className="px-1.5 py-0.2 rounded bg-terracotta-100 text-terracotta-800">
                       POPULATION DROPOUT
                     </span>
@@ -341,7 +362,7 @@ export const StudioWorkspace: FC<StudioWorkspaceProps> = ({
 
             <div className="p-6 space-y-3 text-xs text-charcoal-800">
               <p>
-                <strong>Study:</strong> {protocol.protocol_id} — {protocol.title}
+                <strong>Study:</strong> {protocol.protocol_id} â€” {protocol.title}
               </p>
               <div className="p-3 bg-linen-100 rounded-xl border border-linen-300 space-y-1 font-mono text-[11px]">
                 <div><strong>Composite Patient Burden Index:</strong> {protocol.burden.composite_pbi_score} / 100 ({protocol.burden.attrition_risk_tier})</div>
@@ -375,3 +396,7 @@ export const StudioWorkspace: FC<StudioWorkspaceProps> = ({
     </div>
   );
 };
+
+
+
+

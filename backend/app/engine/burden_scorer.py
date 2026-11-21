@@ -1,4 +1,4 @@
-"""
+﻿"""
 ProtocolShield Patient Burden & Protocol Friction Scoring Engine
 Calibrated using Tufts CSDD complexity metrics and clinical trial literature.
 """
@@ -75,6 +75,14 @@ STANDARD_PROCEDURE_CATALOG: dict[str, dict] = {
         "invasiveness_weight": 1.5,
         "estimated_duration_minutes": 25,
         "fasting_required": False
+    },
+    "bone_marrow_biopsy": {
+        "name": "Bone Marrow Biopsy & Aspirate",
+        "category": InvasivenessTier.HIGHLY_INVASIVE,
+        "invasiveness_weight": 18.0,
+        "estimated_duration_minutes": 150,
+        "fasting_required": True,
+        "sedation_or_recovery_required": True
     }
 }
 
@@ -205,3 +213,4 @@ class BurdenScoringEngine:
 
 
 burden_engine = BurdenScoringEngine()
+
