@@ -33,3 +33,39 @@
 ::-webkit-scrollbar-thumb:hover {
   background: #c5bcb0;
 }
+
+/* ── 21 CFR Part 11 / IRB Printable Dossier Optimizations ─────────────────── */
+@media print {
+  /* Hide noisy UI buttons, headers, and backgrounds */
+  header, nav, button, .no-print, [role="dialog"] button, .animate-spin {
+    display: none !important;
+  }
+
+  body, html {
+    background: #ffffff !important;
+    color: #000000 !important;
+    font-size: 11pt !important;
+  }
+
+  /* Unconstrain fixed sheets for full multi-page PDF generation */
+  .fixed {
+    position: static !important;
+    background: transparent !important;
+    box-shadow: none !important;
+    padding: 0 !important;
+    overflow: visible !important;
+  }
+
+  .shadow-2xl, .shadow-xl, .shadow-sm, .shadow-2xs {
+    box-shadow: none !important;
+  }
+
+  .border {
+    border-color: #cbd5e1 !important;
+  }
+
+  /* Page break cleanly between sections */
+  .page-break {
+    page-break-before: always;
+  }
+}

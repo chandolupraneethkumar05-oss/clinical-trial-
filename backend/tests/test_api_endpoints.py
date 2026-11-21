@@ -74,3 +74,16 @@ def test_historical_benchmarks_endpoint():
     assert data["benchmark_count"] >= 3
     assert any(t["actual_status"] == "COMPLETED" for t in data["trials"])
     assert any(t["actual_status"] == "TERMINATED" for t in data["trials"])
+
+
+def test_retention_curve_endpoint_get_and_post():
+    # Verify GET
+    get_resp = client.get("/api/v1/cohort/retention-curve?enrolled_size=400&composite_pbi=62.5")
+    assert get_resp.status_code == 200
+    assert "retention_curve" in get_resp.json()
+    assert len(get_resp.json()["retention_curve"]) > 10
+
+    # Verify POST
+    post_resp = client.post("/api/v1/cohort/retention-curve?enrolled_size=400&composite_pbi=62.5")
+    assert post_resp.status_code == 200
+    assert "retention_curve" in post_resp.json()

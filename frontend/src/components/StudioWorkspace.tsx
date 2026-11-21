@@ -39,6 +39,8 @@ import {
   AlertTriangle,
 } from 'lucide-react';
 
+export type StudioTab = 'sandbox' | 'soe' | 'overview' | 'benchmarks' | 'audit';
+
 interface StudioWorkspaceProps {
   protocol: ClinicalProtocol;
   totalCohortSize: number;
@@ -46,6 +48,8 @@ interface StudioWorkspaceProps {
   retentionCurve: RetentionPoint[];
   benchmarks: BenchmarkTrial[];
   user: AuthUser | null;
+  activeTab?: StudioTab;
+  onTabChange?: (tab: StudioTab) => void;
   onBackToLanding: () => void;
   onSimulateFunnel: (criteria: Record<string, unknown>) => Promise<FunnelSimulationResult>;
   onCalculateRetention: (enrolled: number, pbi: number) => Promise<RetentionPoint[]>;
@@ -67,6 +71,8 @@ export const StudioWorkspace: FC<StudioWorkspaceProps> = ({
   retentionCurve,
   benchmarks,
   user,
+  activeTab,
+  onTabChange,
   onBackToLanding,
   onSimulateFunnel,
   onCalculateRetention,
@@ -80,7 +86,13 @@ export const StudioWorkspace: FC<StudioWorkspaceProps> = ({
   appliedAmendmentIds = [],
   auditEvents,
 }) => {
-  const [activeTab, setActiveTab] = useState<'sandbox' | 'soe' | 'overview' | 'benchmarks' | 'audit'>('sandbox');
+  const [internalTab, setInternalTab] = useState<StudioTab>('sandbox');
+  const currentTab = activeTab ?? internalTab;
+  const handleSetTab = (tab: StudioTab) => {
+    setInternalTab(tab);
+    onTabChange?.(tab);
+  };
+
   const [selectedVisit, setSelectedVisit] = useState<Visit | null>(null);
   const [selectedProcedure, setSelectedProcedure] = useState<Procedure | null>(null);
   const [showExportModal, setShowExportModal] = useState<boolean>(false);
@@ -269,9 +281,9 @@ export const StudioWorkspace: FC<StudioWorkspaceProps> = ({
             
             {/* Feature 1: What-If Sandbox */}
             <button
-              onClick={() => setActiveTab('sandbox')}
+              onClick={() => handleSetTab('sandbox')}
               className={`p-2.5 rounded-xl text-left transition-all border ${
-                activeTab === 'sandbox'
+                currentTab === 'sandbox'
                   ? 'bg-charcoal-950 text-white border-charcoal-900 shadow-sm'
                   : 'bg-linen-50 hover:bg-linen-100 text-charcoal-800 border-linen-200'
               }`}
@@ -285,16 +297,16 @@ export const StudioWorkspace: FC<StudioWorkspaceProps> = ({
                   {funnelData.final_eligible_count} Eligible
                 </span>
               </div>
-              <p className={`text-xs font-semibold truncate ${activeTab === 'sandbox' ? 'text-white' : 'text-charcoal-900'}`}>
+              <p className={`text-xs font-semibold truncate ${currentTab === 'sandbox' ? 'text-white' : 'text-charcoal-900'}`}>
                 10k Cohort Funnel Simulation
               </p>
             </button>
 
             {/* Feature 2: Schedule of Events Matrix */}
             <button
-              onClick={() => setActiveTab('soe')}
+              onClick={() => handleSetTab('soe')}
               className={`p-2.5 rounded-xl text-left transition-all border ${
-                activeTab === 'soe'
+                currentTab === 'soe'
                   ? 'bg-charcoal-950 text-white border-charcoal-900 shadow-sm'
                   : 'bg-linen-50 hover:bg-linen-100 text-charcoal-800 border-linen-200'
               }`}
@@ -308,16 +320,16 @@ export const StudioWorkspace: FC<StudioWorkspaceProps> = ({
                   {protocol.visits.length} Visits
                 </span>
               </div>
-              <p className={`text-xs font-semibold truncate ${activeTab === 'soe' ? 'text-white' : 'text-charcoal-900'}`}>
+              <p className={`text-xs font-semibold truncate ${currentTab === 'soe' ? 'text-white' : 'text-charcoal-900'}`}>
                 {protocol.study_duration_weeks}-Week Procedure Matrix
               </p>
             </button>
 
             {/* Feature 3: Tufts CSDD Burden Decomposition */}
             <button
-              onClick={() => setActiveTab('overview')}
+              onClick={() => handleSetTab('overview')}
               className={`p-2.5 rounded-xl text-left transition-all border ${
-                activeTab === 'overview'
+                currentTab === 'overview'
                   ? 'bg-charcoal-950 text-white border-charcoal-900 shadow-sm'
                   : 'bg-linen-50 hover:bg-linen-100 text-charcoal-800 border-linen-200'
               }`}
@@ -331,16 +343,16 @@ export const StudioWorkspace: FC<StudioWorkspaceProps> = ({
                   PBI {protocol.burden.composite_pbi_score}
                 </span>
               </div>
-              <p className={`text-xs font-semibold truncate ${activeTab === 'overview' ? 'text-white' : 'text-charcoal-900'}`}>
+              <p className={`text-xs font-semibold truncate ${currentTab === 'overview' ? 'text-white' : 'text-charcoal-900'}`}>
                 {protocol.burden.attrition_risk_tier} Risk Decomposition
               </p>
             </button>
 
             {/* Feature 4: Regulatory Audit Trail */}
             <button
-              onClick={() => setActiveTab('audit')}
+              onClick={() => handleSetTab('audit')}
               className={`p-2.5 rounded-xl text-left transition-all border ${
-                activeTab === 'audit'
+                currentTab === 'audit'
                   ? 'bg-charcoal-950 text-white border-charcoal-900 shadow-sm'
                   : 'bg-linen-50 hover:bg-linen-100 text-charcoal-800 border-linen-200'
               }`}
@@ -546,7 +558,7 @@ export const StudioWorkspace: FC<StudioWorkspaceProps> = ({
           {/* Right Column: Precision Intelligence Console (7 cols) */}
           <div className="lg:col-span-7 space-y-4">
             
-            {activeTab === 'sandbox' && (
+            {currentTab === 'sandbox' && (
               <WhatIfSensitivityConsole
                 initialFunnel={funnelData}
                 initialRetention={retentionCurve}
@@ -555,7 +567,7 @@ export const StudioWorkspace: FC<StudioWorkspaceProps> = ({
               />
             )}
 
-            {activeTab === 'soe' && (
+            {currentTab === 'soe' && (
               <ScheduleOfEventsMatrix
                 visits={protocol.visits}
                 peakWeeks={protocol.burden.peak_burden_weeks}
@@ -570,7 +582,7 @@ export const StudioWorkspace: FC<StudioWorkspaceProps> = ({
               />
             )}
 
-            {activeTab === 'overview' && (
+            {currentTab === 'overview' && (
               <BurdenOverviewTab
                 protocol={protocol}
                 screenFailureRate={funnelData.screen_failure_rate}
@@ -578,11 +590,11 @@ export const StudioWorkspace: FC<StudioWorkspaceProps> = ({
               />
             )}
 
-            {activeTab === 'benchmarks' && (
+            {currentTab === 'benchmarks' && (
               <BenchmarkGrid benchmarks={benchmarks} />
             )}
 
-            {activeTab === 'audit' && (
+            {currentTab === 'audit' && (
               <AuditTrailView events={auditEvents} />
             )}
           </div>

@@ -1,6 +1,7 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { LandingPage } from './components/LandingPage';
 import { StudioWorkspace } from './components/StudioWorkspace';
+import type { StudioTab } from './components/StudioWorkspace';
 import { ProtocolUploadModal } from './components/ProtocolUploadModal';
 import { AuthModal } from './components/AuthModal';
 import { DEFAULT_AUDIT_EVENTS } from './components/AuditTrailView';
@@ -13,8 +14,62 @@ import type {
 } from './types/protocol';
 import type { AuthUser, AuthModalView } from './types/auth';
 
+/**
+ * Parses browser URL hash into structured application route state.
+ * Supports: #/, #/studio, and #/studio?tab=<sandbox|soe|overview|benchmarks|audit>
+ */
+function parseHashRoute(): { view: 'landing' | 'studio'; tab: StudioTab } {
+  try {
+    const rawHash = window.location.hash.replace(/^#\/?/, '');
+    const [pathPart, queryPart] = rawHash.split('?');
+    const params = new URLSearchParams(queryPart || '');
+    const tabParam = params.get('tab') as StudioTab;
+    const validTabs: StudioTab[] = ['sandbox', 'soe', 'overview', 'benchmarks', 'audit'];
+    const tab: StudioTab = validTabs.includes(tabParam) ? tabParam : 'sandbox';
+
+    if (pathPart.startsWith('studio')) {
+      return { view: 'studio', tab };
+    }
+  } catch {
+    // fallback
+  }
+  return { view: 'landing', tab: 'sandbox' };
+}
+
 export default function App() {
-  const [viewMode, setViewMode] = useState<'landing' | 'studio'>('landing');
+  // ── 1. Strictly Authenticated User Session (No Mock Fallback) ──────────────
+  const [user, setUser] = useState<AuthUser | null>(() => {
+    try {
+      const stored = localStorage.getItem('protocolshield_user');
+      return stored ? JSON.parse(stored) : null;
+    } catch {
+      return null;
+    }
+  });
+
+  // ── 2. Route & Tab State with URL Hash Synchronization ─────────────────────
+  const initialRoute = parseHashRoute();
+  
+  // If user is unauthenticated and tries to open studio directly on boot, gate to landing
+  const [viewMode, setViewMode] = useState<'landing' | 'studio'>(() => {
+    if (initialRoute.view === 'studio') {
+      const stored = localStorage.getItem('protocolshield_user');
+      return stored ? 'studio' : 'landing';
+    }
+    return 'landing';
+  });
+
+  const [activeStudioTab, setActiveStudioTab] = useState<StudioTab>(initialRoute.tab);
+  
+  const [pendingRoute, setPendingRoute] = useState<{ view: 'landing' | 'studio'; tab: StudioTab } | null>(() => {
+    if (initialRoute.view === 'studio') {
+      const stored = localStorage.getItem('protocolshield_user');
+      return stored ? null : { view: 'studio', tab: initialRoute.tab };
+    }
+    return null;
+  });
+
+  // ── 3. Data & Feasibility State ───────────────────────────────────────────
   const [loading, setLoading] = useState<boolean>(true);
   const [protocol, setProtocol] = useState<ClinicalProtocol | null>(null);
   const [totalCohortSize, setTotalCohortSize] = useState<number>(10000);
@@ -23,30 +78,71 @@ export default function App() {
   const [benchmarks, setBenchmarks] = useState<BenchmarkTrial[]>([]);
   const [appliedAmendmentIds, setAppliedAmendmentIds] = useState<string[]>([]);
   const [auditEvents, setAuditEvents] = useState<AuditEvent[]>(DEFAULT_AUDIT_EVENTS);
-  
-  // Modal states
+
+  // ── 4. Modal Overlays ─────────────────────────────────────────────────────
   const [showUploadModal, setShowUploadModal] = useState<boolean>(false);
   const [showAuthModal, setShowAuthModal] = useState<boolean>(false);
   const [authModalView, setAuthModalView] = useState<AuthModalView>('signin');
 
-  // Authenticated user state with persistent storage
-  const [user, setUser] = useState<AuthUser | null>(() => {
-    try {
-      const stored = localStorage.getItem('protocolshield_user');
-      return stored ? JSON.parse(stored) : {
-        id: 'usr-demo-001',
-        name: 'Dr. Elena Vance',
-        email: 'elena.vance@novartis.com',
-        role: 'VP Clinical Development & Operations',
-        organization: 'Novartis Oncology',
-        provider: 'email',
-      };
-    } catch {
-      return null;
+  // ── 5. Route Synchronization Helper ───────────────────────────────────────
+  const navigateTo = useCallback((view: 'landing' | 'studio', tab: StudioTab = 'sandbox') => {
+    if (view === 'studio') {
+      // Strict guardrail: must be logged in to enter inside studio pages
+      if (!user) {
+        setPendingRoute({ view: 'studio', tab });
+        setAuthModalView('signin');
+        setShowAuthModal(true);
+        return;
+      }
+      setViewMode('studio');
+      setActiveStudioTab(tab);
+      window.location.hash = `#/studio?tab=${tab}`;
+    } else {
+      setViewMode('landing');
+      window.location.hash = '#/';
     }
-  });
+  }, [user]);
 
-  // Initial Data Fetching from FastAPI Backend
+  const handleTabChange = useCallback((tab: StudioTab) => {
+    setActiveStudioTab(tab);
+    window.location.hash = `#/studio?tab=${tab}`;
+  }, []);
+
+  // Intercept unauthorized direct deep-linking on initial mount
+  useEffect(() => {
+    if (!user && pendingRoute) {
+      setAuthModalView('signin');
+      setShowAuthModal(true);
+      window.location.hash = '#/';
+    }
+  }, [user, pendingRoute]);
+
+  // Listen to browser Back / Forward buttons and manual hash edits
+  useEffect(() => {
+    const handleHashChange = () => {
+      const route = parseHashRoute();
+      if (route.view === 'studio') {
+        const stored = localStorage.getItem('protocolshield_user');
+        if (!stored) {
+          setPendingRoute(route);
+          setViewMode('landing');
+          setAuthModalView('signin');
+          setShowAuthModal(true);
+          window.location.hash = '#/';
+          return;
+        }
+        setViewMode('studio');
+        setActiveStudioTab(route.tab);
+      } else {
+        setViewMode('landing');
+      }
+    };
+
+    window.addEventListener('hashchange', handleHashChange);
+    return () => window.removeEventListener('hashchange', handleHashChange);
+  }, []);
+
+  // ── 6. Initial Data Fetching from FastAPI Backend ──────────────────────────
   useEffect(() => {
     async function loadInitialData() {
       try {
@@ -69,7 +165,7 @@ export default function App() {
             setFunnelData(fJson);
             setTotalCohortSize(fJson.total_population || 10000);
 
-            // 3. Fetch Initial Retention Curve
+            // 3. Fetch Initial Retention Curve (GET endpoint verified)
             const retRes = await fetch(
               `/api/v1/cohort/retention-curve?enrolled_size=${fJson.final_eligible_count}&composite_pbi=${protoJson.burden.composite_pbi_score}`
             );
@@ -80,7 +176,7 @@ export default function App() {
           }
         }
 
-        // 4. Fetch Benchmarks
+        // 4. Fetch Historical Benchmarks
         const benchRes = await fetch('/api/v1/benchmark/historical-trials');
         if (benchRes.ok) {
           const bJson = await benchRes.json();
@@ -96,7 +192,7 @@ export default function App() {
     loadInitialData();
   }, []);
 
-  // Handlers for dynamic simulations
+  // ── 7. Simulations & Protocol Mutation Handlers ───────────────────────────
   const handleSimulateFunnel = async (criteria: Record<string, unknown>): Promise<FunnelSimulationResult> => {
     try {
       const res = await fetch('/api/v1/cohort/simulate-funnel', {
@@ -126,7 +222,6 @@ export default function App() {
     return retentionCurve;
   };
 
-  // Handler: protocol loaded via upload modal or template switcher
   const handleProtocolLoaded = async (newProtocol: ClinicalProtocol) => {
     setProtocol(newProtocol);
     setShowUploadModal(false);
@@ -148,7 +243,6 @@ export default function App() {
     }
   };
 
-  // Handler: 1-click built-in template switcher
   const handleSwitchTemplate = async (templateType: 'nsclc' | 'tnbc' | 'myeloma') => {
     try {
       setAppliedAmendmentIds([]);
@@ -162,7 +256,6 @@ export default function App() {
     }
   };
 
-  // Handler: direct file upload
   const handleUploadFile = async (file: File) => {
     try {
       setAppliedAmendmentIds([]);
@@ -183,7 +276,6 @@ export default function App() {
     }
   };
 
-  // Handler: apply AI-recommended amendment
   const handleApplyAmendment = async (amendmentId: string) => {
     if (!protocol) return;
     try {
@@ -209,8 +301,8 @@ export default function App() {
         const newEvent: AuditEvent = {
           timestamp: now,
           event_type: 'AI_PROTOCOL_AMENDMENT_APPLIED',
-          operator: `${user?.name || 'Dr. Elena Vance'} (AI Optimizer Engine)`,
-          details: `Applied amendment ${amendmentId} to ${updatedProtocol.protocol_id}. Mutated eligibility criteria and Schedule of Assessments. Recalibrated Tufts CSDD PBI to ${updatedProtocol.burden.composite_pbi_score}.`,
+          operator: `${user?.name || 'Authorized Investigator'} (AI Optimizer Engine)`,
+          details: `Applied amendment ${amendmentId} to ${updatedProtocol.protocol_id}. Mutated eligibility criteria & Schedule of Assessments. Recalibrated Tufts CSDD PBI to ${updatedProtocol.burden.composite_pbi_score}.`,
           verification_hash: `SHA256: ${hex}`
         };
         setAuditEvents((prev) => [newEvent, ...prev]);
@@ -222,7 +314,7 @@ export default function App() {
     }
   };
 
-  // Auth Handlers
+  // ── 8. Strict Authentication Lifecycle Handlers ───────────────────────────
   const handleLoginSuccess = (authUser: AuthUser) => {
     setUser(authUser);
     setShowAuthModal(false);
@@ -230,6 +322,19 @@ export default function App() {
       localStorage.setItem('protocolshield_user', JSON.stringify(authUser));
     } catch {
       // ignore
+    }
+
+    // Automatically proceed to requested destination or default to Studio Sandbox
+    if (pendingRoute && pendingRoute.view === 'studio') {
+      const targetTab = pendingRoute.tab;
+      setPendingRoute(null);
+      setViewMode('studio');
+      setActiveStudioTab(targetTab);
+      window.location.hash = `#/studio?tab=${targetTab}`;
+    } else {
+      setViewMode('studio');
+      setActiveStudioTab('sandbox');
+      window.location.hash = '#/studio?tab=sandbox';
     }
   };
 
@@ -240,6 +345,14 @@ export default function App() {
     } catch {
       // ignore
     }
+    // Immediately redirect out of studio back to public landing view
+    setViewMode('landing');
+    window.location.hash = '#/';
+    setPendingRoute(null);
+    
+    // Immediately pop open the sign-in modal as requested
+    setAuthModalView('signin');
+    setShowAuthModal(true);
   };
 
   const handleOpenAuth = (defaultView: AuthModalView = 'signin') => {
@@ -252,7 +365,7 @@ export default function App() {
       {viewMode === 'landing' ? (
         <LandingPage
           totalCohortSize={totalCohortSize}
-          onLaunchStudio={() => setViewMode('studio')}
+          onLaunchStudio={() => navigateTo('studio', 'sandbox')}
           user={user}
           onOpenAuth={() => handleOpenAuth('signin')}
           onSignOut={handleSignOut}
@@ -266,8 +379,8 @@ export default function App() {
               <p className="font-serif text-sm font-bold text-charcoal-900 tracking-tight">Initializing ProtocolShield Studio...</p>
               <p className="text-xs text-charcoal-500 font-mono">Loading 10,000 Patient Cohort in DuckDB</p>
               <button
-                onClick={() => setViewMode('landing')}
-                className="text-xs text-terracotta-600 hover:underline pt-2 block mx-auto font-mono"
+                onClick={() => navigateTo('landing')}
+                className="text-xs text-terracotta-600 hover:underline pt-2 block mx-auto font-mono cursor-pointer"
               >
                 ← Return to Overview
               </button>
@@ -281,7 +394,9 @@ export default function App() {
             retentionCurve={retentionCurve}
             benchmarks={benchmarks}
             user={user}
-            onBackToLanding={() => setViewMode('landing')}
+            activeTab={activeStudioTab}
+            onTabChange={handleTabChange}
+            onBackToLanding={() => navigateTo('landing')}
             onSimulateFunnel={handleSimulateFunnel}
             onCalculateRetention={handleCalculateRetention}
             onOpenUpload={() => setShowUploadModal(true)}

@@ -86,7 +86,7 @@ async def simulate_funnel(criteria: CohortFilterCriteria):
         raise HTTPException(status_code=500, detail=f"Simulation error: {str(e)}")
 
 
-@router.post("/retention-curve")
+@router.api_route("/retention-curve", methods=["GET", "POST"])
 async def calculate_retention_curve(
     enrolled_size: int = Query(default=400, ge=10, le=10000),
     composite_pbi: float = Query(default=62.5, ge=0.0, le=100.0),
