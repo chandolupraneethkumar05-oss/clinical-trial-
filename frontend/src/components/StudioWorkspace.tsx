@@ -546,6 +546,15 @@ export const StudioWorkspace: FC<StudioWorkspaceProps> = ({
       </div>
 
       {/* Contextual Inspector Drawer */}
+      {(selectedVisit || selectedProcedure) && (
+        <div 
+          className="fixed inset-0 bg-charcoal-950/40 backdrop-blur-2xs z-40 transition-opacity"
+          onClick={() => {
+            setSelectedVisit(null);
+            setSelectedProcedure(null);
+          }}
+        />
+      )}
       <ProtocolInspectorDrawer
         selectedVisit={selectedVisit}
         selectedProcedure={selectedProcedure}
