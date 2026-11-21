@@ -2,12 +2,14 @@ import { useState, useEffect } from 'react';
 import { LandingPage } from './components/LandingPage';
 import { StudioWorkspace } from './components/StudioWorkspace';
 import { ProtocolUploadModal } from './components/ProtocolUploadModal';
+import { AuthModal } from './components/AuthModal';
 import type {
   ClinicalProtocol,
   FunnelSimulationResult,
   RetentionPoint,
   BenchmarkTrial
 } from './types/protocol';
+import type { AuthUser, AuthModalView } from './types/auth';
 
 export default function App() {
   const [viewMode, setViewMode] = useState<'landing' | 'studio'>('landing');
@@ -17,7 +19,28 @@ export default function App() {
   const [funnelData, setFunnelData] = useState<FunnelSimulationResult | null>(null);
   const [retentionCurve, setRetentionCurve] = useState<RetentionPoint[]>([]);
   const [benchmarks, setBenchmarks] = useState<BenchmarkTrial[]>([]);
+  
+  // Modal states
   const [showUploadModal, setShowUploadModal] = useState<boolean>(false);
+  const [showAuthModal, setShowAuthModal] = useState<boolean>(false);
+  const [authModalView, setAuthModalView] = useState<AuthModalView>('signin');
+
+  // Authenticated user state with persistent storage
+  const [user, setUser] = useState<AuthUser | null>(() => {
+    try {
+      const stored = localStorage.getItem('protocolshield_user');
+      return stored ? JSON.parse(stored) : {
+        id: 'usr-demo-001',
+        name: 'Dr. Elena Vance',
+        email: 'elena.vance@novartis.com',
+        role: 'VP Clinical Development & Operations',
+        organization: 'Novartis Oncology',
+        provider: 'email',
+      };
+    } catch {
+      return null;
+    }
+  });
 
   // Initial Data Fetching from FastAPI Backend
   useEffect(() => {
@@ -99,7 +122,7 @@ export default function App() {
     return retentionCurve;
   };
 
-  // Handler: protocol loaded via upload modal — re-runs all dependent data
+  // Handler: protocol loaded via upload modal or template switcher
   const handleProtocolLoaded = async (newProtocol: ClinicalProtocol) => {
     setProtocol(newProtocol);
     setShowUploadModal(false);
@@ -121,51 +144,125 @@ export default function App() {
     }
   };
 
-  if (viewMode === 'landing') {
-    return (
-      <LandingPage
-        totalCohortSize={totalCohortSize}
-        onLaunchStudio={() => setViewMode('studio')}
-      />
-    );
-  }
+  // Handler: 1-click built-in template switcher
+  const handleSwitchTemplate = async (templateType: 'nsclc' | 'tnbc' | 'myeloma') => {
+    try {
+      const res = await fetch(`/api/v1/protocol/sample/${templateType}`);
+      if (res.ok) {
+        const protoJson = await res.json();
+        await handleProtocolLoaded(protoJson);
+      }
+    } catch (err) {
+      console.error('Failed to switch protocol template', err);
+    }
+  };
 
-  if (loading || !protocol || !funnelData) {
-    return (
-      <div className="min-h-screen bg-linen-100 flex items-center justify-center p-4">
-        <div className="bg-white border border-linen-300 p-8 rounded-2xl shadow-sm text-center space-y-3 max-w-sm w-full">
-          <div className="h-8 w-8 border-3 border-charcoal-900 border-t-transparent rounded-full animate-spin mx-auto" />
-          <p className="font-serif text-sm font-bold text-charcoal-900 tracking-tight">Initializing ProtocolShield Studio...</p>
-          <p className="text-xs text-charcoal-500 font-mono">Loading 10,000 Patient Cohort in DuckDB</p>
-          <button
-            onClick={() => setViewMode('landing')}
-            className="text-xs text-terracotta-600 hover:underline pt-2 block mx-auto font-mono"
-          >
-            ← Return to Overview
-          </button>
-        </div>
-      </div>
-    );
-  }
+  // Handler: direct file upload
+  const handleUploadFile = async (file: File) => {
+    try {
+      const form = new FormData();
+      form.append('file', file);
+      const res = await fetch('/api/v1/protocol/upload', {
+        method: 'POST',
+        body: form,
+      });
+      if (res.ok) {
+        const protoJson = await res.json();
+        await handleProtocolLoaded(protoJson);
+      } else {
+        setShowUploadModal(true);
+      }
+    } catch {
+      setShowUploadModal(true);
+    }
+  };
+
+  // Auth Handlers
+  const handleLoginSuccess = (authUser: AuthUser) => {
+    setUser(authUser);
+    setShowAuthModal(false);
+    try {
+      localStorage.setItem('protocolshield_user', JSON.stringify(authUser));
+    } catch {
+      // ignore
+    }
+  };
+
+  const handleSignOut = () => {
+    setUser(null);
+    try {
+      localStorage.removeItem('protocolshield_user');
+    } catch {
+      // ignore
+    }
+  };
+
+  const handleOpenAuth = (defaultView: AuthModalView = 'signin') => {
+    setAuthModalView(defaultView);
+    setShowAuthModal(true);
+  };
 
   return (
     <>
-      <StudioWorkspace
-        protocol={protocol}
-        totalCohortSize={totalCohortSize}
-        funnelData={funnelData}
-        retentionCurve={retentionCurve}
-        benchmarks={benchmarks}
-        onBackToLanding={() => setViewMode('landing')}
-        onSimulateFunnel={handleSimulateFunnel}
-        onCalculateRetention={handleCalculateRetention}
-        onOpenUpload={() => setShowUploadModal(true)}
-      />
+      {viewMode === 'landing' ? (
+        <LandingPage
+          totalCohortSize={totalCohortSize}
+          onLaunchStudio={() => setViewMode('studio')}
+          user={user}
+          onOpenAuth={() => handleOpenAuth('signin')}
+          onSignOut={handleSignOut}
+          onSwitchPersona={() => handleOpenAuth('signin')}
+        />
+      ) : (
+        loading || !protocol || !funnelData ? (
+          <div className="min-h-screen bg-linen-100 flex items-center justify-center p-4">
+            <div className="bg-white border border-linen-300 p-8 rounded-2xl shadow-sm text-center space-y-3 max-w-sm w-full">
+              <div className="h-8 w-8 border-3 border-charcoal-900 border-t-transparent rounded-full animate-spin mx-auto" />
+              <p className="font-serif text-sm font-bold text-charcoal-900 tracking-tight">Initializing ProtocolShield Studio...</p>
+              <p className="text-xs text-charcoal-500 font-mono">Loading 10,000 Patient Cohort in DuckDB</p>
+              <button
+                onClick={() => setViewMode('landing')}
+                className="text-xs text-terracotta-600 hover:underline pt-2 block mx-auto font-mono"
+              >
+                ← Return to Overview
+              </button>
+            </div>
+          </div>
+        ) : (
+          <StudioWorkspace
+            protocol={protocol}
+            totalCohortSize={totalCohortSize}
+            funnelData={funnelData}
+            retentionCurve={retentionCurve}
+            benchmarks={benchmarks}
+            user={user}
+            onBackToLanding={() => setViewMode('landing')}
+            onSimulateFunnel={handleSimulateFunnel}
+            onCalculateRetention={handleCalculateRetention}
+            onOpenUpload={() => setShowUploadModal(true)}
+            onOpenAuth={() => handleOpenAuth('signin')}
+            onSignOut={handleSignOut}
+            onSwitchPersona={() => handleOpenAuth('signin')}
+            onSwitchTemplate={handleSwitchTemplate}
+            onUploadFile={handleUploadFile}
+          />
+        )
+      )}
 
+      {/* Protocol Upload Modal */}
       {showUploadModal && (
         <ProtocolUploadModal
           onClose={() => setShowUploadModal(false)}
           onProtocolLoaded={handleProtocolLoaded}
+        />
+      )}
+
+      {/* Enterprise Authentication Modal */}
+      {showAuthModal && (
+        <AuthModal
+          initialView={authModalView}
+          onClose={() => setShowAuthModal(false)}
+          onLoginSuccess={handleLoginSuccess}
         />
       )}
     </>

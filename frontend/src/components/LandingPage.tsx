@@ -1,5 +1,7 @@
 import { useState, useEffect } from 'react';
 import type { FC } from 'react';
+import type { AuthUser } from '../types/auth';
+import { UserMenu } from './UserMenu';
 import { KineticSculptureCanvas } from './KineticSculptureCanvas';
 import { 
   ArrowRight, 
@@ -26,9 +28,19 @@ import {
 interface LandingPageProps {
   onLaunchStudio: () => void;
   totalCohortSize?: number;
+  user?: AuthUser | null;
+  onOpenAuth?: () => void;
+  onSignOut?: () => void;
+  onSwitchPersona?: () => void;
 }
 
-export const LandingPage: FC<LandingPageProps> = ({ onLaunchStudio }) => {
+export const LandingPage: FC<LandingPageProps> = ({ 
+  onLaunchStudio,
+  user = null,
+  onOpenAuth = () => {},
+  onSignOut = () => {},
+  onSwitchPersona = () => {}
+}) => {
   // Scroll position state for adaptive fixed header and parallax effects
   const [scrollY, setScrollY] = useState<number>(0);
 
@@ -216,6 +228,13 @@ export const LandingPage: FC<LandingPageProps> = ({ onLaunchStudio }) => {
 
           {/* Actions */}
           <div className="flex items-center space-x-3">
+            <UserMenu
+              user={user}
+              onOpenAuth={onOpenAuth}
+              onSignOut={onSignOut}
+              onSwitchPersona={onSwitchPersona}
+            />
+
             <button
               onClick={onLaunchStudio}
               className="inline-flex items-center space-x-2 px-5 py-2.5 rounded-full text-xs font-semibold bg-terracotta-600 hover:bg-terracotta-500 text-white shadow-lg shadow-terracotta-900/30 transition-all duration-200 hover:scale-[1.02] border border-terracotta-500/80 cursor-pointer"

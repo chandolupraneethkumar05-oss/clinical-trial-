@@ -1,5 +1,5 @@
-﻿import { useState } from 'react';
-import type { FC } from 'react';
+﻿import { useState, useCallback } from 'react';
+import type { FC, DragEvent } from 'react';
 import type { 
   ClinicalProtocol, 
   FunnelSimulationResult, 
@@ -8,12 +8,14 @@ import type {
   Visit,
   Procedure
 } from '../types/protocol';
+import type { AuthUser } from '../types/auth';
 import { ScheduleOfEventsMatrix } from './ScheduleOfEventsMatrix';
 import { BurdenOverviewTab } from './BurdenOverviewTab';
 import { WhatIfSensitivityConsole } from './WhatIfSensitivityConsole';
 import { BenchmarkGrid } from './BenchmarkGrid';
 import { AuditTrailView } from './AuditTrailView';
 import { ProtocolInspectorDrawer } from './ProtocolInspectorDrawer';
+import { UserMenu } from './UserMenu';
 import { 
   ArrowLeft, 
   Download, 
@@ -22,7 +24,17 @@ import {
   FileCheck2,
   Printer,
   Upload,
-  X
+  X,
+  SlidersHorizontal,
+  Calendar,
+  Activity,
+  ShieldCheck,
+  Sparkles,
+  Zap,
+  FlaskConical,
+  Dna,
+  CheckCircle2,
+  AlertTriangle,
 } from 'lucide-react';
 
 interface StudioWorkspaceProps {
@@ -31,10 +43,16 @@ interface StudioWorkspaceProps {
   funnelData: FunnelSimulationResult;
   retentionCurve: RetentionPoint[];
   benchmarks: BenchmarkTrial[];
+  user: AuthUser | null;
   onBackToLanding: () => void;
   onSimulateFunnel: (criteria: Record<string, unknown>) => Promise<FunnelSimulationResult>;
-  onOpenUpload: () => void;
   onCalculateRetention: (enrolled: number, pbi: number) => Promise<RetentionPoint[]>;
+  onOpenUpload: () => void;
+  onOpenAuth: () => void;
+  onSignOut: () => void;
+  onSwitchPersona: () => void;
+  onSwitchTemplate: (type: 'nsclc' | 'tnbc' | 'myeloma') => void;
+  onUploadFile?: (file: File) => void;
 }
 
 export const StudioWorkspace: FC<StudioWorkspaceProps> = ({
@@ -43,65 +61,95 @@ export const StudioWorkspace: FC<StudioWorkspaceProps> = ({
   funnelData,
   retentionCurve,
   benchmarks,
+  user,
   onBackToLanding,
   onSimulateFunnel,
   onCalculateRetention,
-  onOpenUpload
+  onOpenUpload,
+  onOpenAuth,
+  onSignOut,
+  onSwitchPersona,
+  onSwitchTemplate,
+  onUploadFile
 }) => {
-  const [activeTab, setActiveTab] = useState<'overview' | 'soe' | 'sandbox' | 'benchmarks' | 'audit'>('sandbox');
+  const [activeTab, setActiveTab] = useState<'sandbox' | 'soe' | 'overview' | 'benchmarks' | 'audit'>('sandbox');
   const [selectedVisit, setSelectedVisit] = useState<Visit | null>(null);
   const [selectedProcedure, setSelectedProcedure] = useState<Procedure | null>(null);
   const [showExportModal, setShowExportModal] = useState<boolean>(false);
-  const [activeLinkedClause, setActiveLinkedClause] = useState<string | null>('egfr');
+  const [activeLinkedClause, setActiveLinkedClause] = useState<string | null>('inc-0');
+  const [isHeaderDragging, setIsHeaderDragging] = useState<boolean>(false);
+
+  // Determine active template type if matching
+  const currentTemplateType = protocol.protocol_id.includes('002') 
+    ? 'tnbc' 
+    : protocol.protocol_id.includes('003') 
+    ? 'myeloma' 
+    : 'nsclc';
+
+  // Inline Drag and Drop Handler
+  const handleDragOver = useCallback((e: DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setIsHeaderDragging(true);
+  }, []);
+
+  const handleDragLeave = useCallback((e: DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setIsHeaderDragging(false);
+  }, []);
+
+  const handleDrop = useCallback((e: DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setIsHeaderDragging(false);
+    const file = e.dataTransfer.files[0];
+    if (file && file.type === 'application/pdf' && onUploadFile) {
+      onUploadFile(file);
+    } else {
+      onOpenUpload();
+    }
+  }, [onUploadFile, onOpenUpload]);
 
   return (
     <div className="min-h-screen bg-linen-100 flex flex-col font-sans text-charcoal-900 selection:bg-terracotta-100 selection:text-terracotta-700">
-      {/* Studio Top Navigation Bar */}
+      
+      {/* ─────────────────────────────────────────────────────────────
+          STUDIO TOP NAVIGATION BAR
+         ───────────────────────────────────────────────────────────── */}
       <header className="sticky top-0 z-40 bg-linen-100/90 backdrop-blur-md border-b border-linen-300">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
-          <div className="flex items-center space-x-4">
+          <div className="flex items-center space-x-3">
             <button
               onClick={onBackToLanding}
-              className="inline-flex items-center space-x-1.5 px-3 py-1.5 rounded-full text-xs font-medium text-charcoal-700 bg-white border border-linen-300 hover:bg-linen-200 transition-colors shadow-2xs"
+              className="inline-flex items-center space-x-1.5 px-3 py-1.5 rounded-full text-xs font-semibold text-charcoal-700 bg-white border border-linen-300 hover:bg-linen-200 transition-colors shadow-2xs"
             >
               <ArrowLeft className="h-3.5 w-3.5" />
               <span>Overview</span>
             </button>
 
-            <div className="flex items-center space-x-2 border-l border-linen-300 pl-4">
+            <div className="flex items-center space-x-2 border-l border-linen-300 pl-3">
               <span className="font-serif font-bold text-sm text-charcoal-900 tracking-tight">
                 {protocol.protocol_id}
               </span>
-              <span className="text-[11px] font-mono px-2 py-0.5 rounded-full bg-linen-200 text-charcoal-700 border border-linen-300">
+              <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-linen-200 text-charcoal-700 border border-linen-300">
                 {protocol.phase}
               </span>
-              <span className="hidden md:inline-block text-xs text-charcoal-500 max-w-xs truncate">
-                {protocol.title}
-              </span>
               {protocol.source_filename && (
-                <span className="hidden lg:inline-flex items-center space-x-1 text-[10px] font-mono px-2 py-0.5 rounded-full bg-sage-100 text-sage-700 border border-sage-200">
-                  <FileText className="h-2.5 w-2.5" />
-                  <span>{protocol.extracted_page_count ? `PDF · ${protocol.extracted_page_count}pp` : "PDF"}</span>
+                <span className="hidden md:inline-flex items-center space-x-1 text-[10px] font-mono px-2 py-0.5 rounded-full bg-sage-100 text-sage-800 border border-sage-200">
+                  <FileText className="h-2.5 w-2.5 text-sage-600" />
+                  <span>{protocol.extracted_page_count ? `PDF · ${protocol.extracted_page_count}pp` : 'PDF'}</span>
                 </span>
               )}
             </div>
           </div>
 
           <div className="flex items-center space-x-3">
-            <div className="hidden sm:flex items-center space-x-1.5 text-xs text-charcoal-700 bg-white px-3 py-1.5 rounded-full border border-linen-300">
+            {/* DuckDB In-Memory Cohort Status */}
+            <div className="hidden md:flex items-center space-x-1.5 text-xs text-charcoal-700 bg-white px-3 py-1.5 rounded-full border border-linen-300 shadow-2xs">
               <Database className="h-3.5 w-3.5 text-sage-600" />
               <span>DuckDB In-Memory:</span>
-              <strong className="font-mono text-charcoal-900">{totalCohortSize.toLocaleString()} records</strong>
+              <strong className="font-mono text-charcoal-900">{totalCohortSize.toLocaleString()} patients</strong>
             </div>
 
-            <button
-              onClick={onOpenUpload}
-              className="inline-flex items-center space-x-1.5 px-3.5 py-1.5 text-xs font-semibold rounded-full bg-terracotta-600 hover:bg-terracotta-500 text-white shadow-xs transition-colors"
-            >
-              <Upload className="h-3.5 w-3.5" />
-              <span>Load Protocol</span>
-            </button>
-
+            {/* Export Feasibility Dossier */}
             <button
               onClick={() => setShowExportModal(true)}
               className="inline-flex items-center space-x-1.5 px-3.5 py-1.5 text-xs font-semibold rounded-full bg-charcoal-900 hover:bg-charcoal-800 text-white shadow-xs transition-colors"
@@ -109,84 +157,203 @@ export const StudioWorkspace: FC<StudioWorkspaceProps> = ({
               <Download className="h-3.5 w-3.5 text-terracotta-200" />
               <span>Export Dossier</span>
             </button>
+
+            {/* User Profile / Auth Menu */}
+            <UserMenu
+              user={user}
+              onOpenAuth={onOpenAuth}
+              onSignOut={onSignOut}
+              onSwitchPersona={onSwitchPersona}
+            />
           </div>
         </div>
 
-        {/* Studio Sub-Header Tabs */}
-        <div className="bg-white border-t border-linen-200 px-4 sm:px-6 lg:px-8">
-          <div className="max-w-7xl mx-auto flex items-center justify-between">
-            <nav className="flex space-x-2 py-2 overflow-x-auto">
+        {/* ─────────────────────────────────────────────────────────────
+            HERO PROTOCOL COMMAND BAR & INGESTION DROPZONE (Never Hidden)
+           ───────────────────────────────────────────────────────────── */}
+        <div className="bg-charcoal-950 text-white border-t border-charcoal-800 px-4 sm:px-6 lg:px-8 py-2.5">
+          <div className="max-w-7xl mx-auto flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3">
+            
+            {/* Template Quick-Switcher */}
+            <div className="flex items-center space-x-2 overflow-x-auto py-0.5">
+              <span className="text-[10px] font-mono uppercase tracking-widest text-charcoal-400 flex items-center space-x-1 flex-shrink-0 mr-1">
+                <Sparkles className="h-3 w-3 text-terracotta-400" />
+                <span>Protocol:</span>
+              </span>
+
               <button
-                onClick={() => setActiveTab('sandbox')}
-                className={`px-3 py-1.5 rounded-full text-xs font-medium transition-all ${
-                  activeTab === 'sandbox'
-                    ? 'bg-charcoal-900 text-white shadow-xs'
-                    : 'text-charcoal-600 hover:bg-linen-100'
+                onClick={() => onSwitchTemplate('nsclc')}
+                className={`inline-flex items-center space-x-1.5 px-3 py-1 rounded-lg text-xs font-medium transition-all ${
+                  currentTemplateType === 'nsclc'
+                    ? 'bg-terracotta-600 text-white shadow-sm ring-1 ring-terracotta-400 font-semibold'
+                    : 'bg-charcoal-900 text-charcoal-300 hover:bg-charcoal-800 hover:text-white border border-charcoal-700'
                 }`}
               >
-                What-If Sensitivity Sandbox
+                <Zap className="h-3 w-3" />
+                <span>Phase III NSCLC</span>
               </button>
 
               <button
-                onClick={() => setActiveTab('soe')}
-                className={`px-3 py-1.5 rounded-full text-xs font-medium transition-all ${
-                  activeTab === 'soe'
-                    ? 'bg-charcoal-900 text-white shadow-xs'
-                    : 'text-charcoal-600 hover:bg-linen-100'
+                onClick={() => onSwitchTemplate('tnbc')}
+                className={`inline-flex items-center space-x-1.5 px-3 py-1 rounded-lg text-xs font-medium transition-all ${
+                  currentTemplateType === 'tnbc'
+                    ? 'bg-sage-600 text-white shadow-sm ring-1 ring-sage-400 font-semibold'
+                    : 'bg-charcoal-900 text-charcoal-300 hover:bg-charcoal-800 hover:text-white border border-charcoal-700'
                 }`}
               >
-                Schedule of Assessments (SoA)
+                <FlaskConical className="h-3 w-3" />
+                <span>Phase II TNBC</span>
               </button>
 
               <button
-                onClick={() => setActiveTab('overview')}
-                className={`px-3 py-1.5 rounded-full text-xs font-medium transition-all ${
-                  activeTab === 'overview'
-                    ? 'bg-charcoal-900 text-white shadow-xs'
-                    : 'text-charcoal-600 hover:bg-linen-100'
+                onClick={() => onSwitchTemplate('myeloma')}
+                className={`inline-flex items-center space-x-1.5 px-3 py-1 rounded-lg text-xs font-medium transition-all ${
+                  currentTemplateType === 'myeloma'
+                    ? 'bg-indigo-600 text-white shadow-sm ring-1 ring-indigo-400 font-semibold'
+                    : 'bg-charcoal-900 text-charcoal-300 hover:bg-charcoal-800 hover:text-white border border-charcoal-700'
                 }`}
               >
-                Tufts CSDD Burden Decomposition
+                <Dna className="h-3 w-3" />
+                <span>Phase III Myeloma</span>
               </button>
-
-              <button
-                onClick={() => setActiveTab('benchmarks')}
-                className={`px-3 py-1.5 rounded-full text-xs font-medium transition-all ${
-                  activeTab === 'benchmarks'
-                    ? 'bg-charcoal-900 text-white shadow-xs'
-                    : 'text-charcoal-600 hover:bg-linen-100'
-                }`}
-              >
-                Historical Benchmarks ({benchmarks.length})
-              </button>
-
-              <button
-                onClick={() => setActiveTab('audit')}
-                className={`px-3 py-1.5 rounded-full text-xs font-medium transition-all ${
-                  activeTab === 'audit'
-                    ? 'bg-charcoal-900 text-white shadow-xs'
-                    : 'text-charcoal-600 hover:bg-linen-100'
-                }`}
-              >
-                21 CFR Part 11 Audit Trail
-              </button>
-            </nav>
-
-            <div className="hidden lg:flex items-center space-x-3 text-xs font-mono">
-              <span className="text-charcoal-500">Screen Failure: <strong className="text-terracotta-600">{funnelData.screen_failure_rate}%</strong></span>
-              <span className="text-linen-400">|</span>
-              <span className="text-charcoal-500">PBI Index: <strong className="text-charcoal-900">{protocol.burden.composite_pbi_score}/100</strong></span>
             </div>
+
+            {/* Drag & Drop PDF Dropzone Strip */}
+            <div
+              onDragOver={handleDragOver}
+              onDragLeave={handleDragLeave}
+              onDrop={handleDrop}
+              onClick={onOpenUpload}
+              className={`flex items-center justify-between px-3.5 py-1.5 rounded-xl border border-dashed transition-all cursor-pointer ${
+                isHeaderDragging
+                  ? 'bg-terracotta-900/60 border-terracotta-400 text-white scale-[1.01]'
+                  : 'bg-charcoal-900 hover:bg-charcoal-850 border-charcoal-700 hover:border-terracotta-500/80 text-charcoal-200'
+              }`}
+            >
+              <div className="flex items-center space-x-2 text-xs">
+                <Upload className="h-3.5 w-3.5 text-terracotta-400 animate-pulse" />
+                <span className="font-mono text-[11px]">
+                  Drop protocol PDF here to parse live
+                </span>
+              </div>
+              <span className="ml-3 text-[10px] font-mono px-2 py-0.5 rounded bg-terracotta-600/30 text-terracotta-300 border border-terracotta-500/30">
+                Browse PDF
+              </span>
+            </div>
+          </div>
+        </div>
+
+        {/* ─────────────────────────────────────────────────────────────
+            INTERACTIVE FEATURE SHOWCASE RIBBON (Instant Feature Discovery)
+           ───────────────────────────────────────────────────────────── */}
+        <div className="bg-white border-t border-linen-200 px-4 sm:px-6 lg:px-8 py-2">
+          <div className="max-w-7xl mx-auto grid grid-cols-2 lg:grid-cols-4 gap-2">
+            
+            {/* Feature 1: What-If Sandbox */}
+            <button
+              onClick={() => setActiveTab('sandbox')}
+              className={`p-2.5 rounded-xl text-left transition-all border ${
+                activeTab === 'sandbox'
+                  ? 'bg-charcoal-950 text-white border-charcoal-900 shadow-sm'
+                  : 'bg-linen-50 hover:bg-linen-100 text-charcoal-800 border-linen-200'
+              }`}
+            >
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-[10px] font-mono font-bold uppercase tracking-wider flex items-center space-x-1 text-terracotta-500">
+                  <SlidersHorizontal className="h-3 w-3" />
+                  <span>Sensitivity Sandbox</span>
+                </span>
+                <span className="text-[9px] font-mono px-1.5 py-0.2 rounded-full bg-terracotta-500/20 text-terracotta-400">
+                  {funnelData.final_eligible_count} Eligible
+                </span>
+              </div>
+              <p className={`text-xs font-semibold truncate ${activeTab === 'sandbox' ? 'text-white' : 'text-charcoal-900'}`}>
+                10k Cohort Funnel Simulation
+              </p>
+            </button>
+
+            {/* Feature 2: Schedule of Events Matrix */}
+            <button
+              onClick={() => setActiveTab('soe')}
+              className={`p-2.5 rounded-xl text-left transition-all border ${
+                activeTab === 'soe'
+                  ? 'bg-charcoal-950 text-white border-charcoal-900 shadow-sm'
+                  : 'bg-linen-50 hover:bg-linen-100 text-charcoal-800 border-linen-200'
+              }`}
+            >
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-[10px] font-mono font-bold uppercase tracking-wider flex items-center space-x-1 text-sage-600">
+                  <Calendar className="h-3 w-3" />
+                  <span>Schedule of Assessments</span>
+                </span>
+                <span className="text-[9px] font-mono px-1.5 py-0.2 rounded-full bg-sage-500/20 text-sage-600">
+                  {protocol.visits.length} Visits
+                </span>
+              </div>
+              <p className={`text-xs font-semibold truncate ${activeTab === 'soe' ? 'text-white' : 'text-charcoal-900'}`}>
+                {protocol.study_duration_weeks}-Week Procedure Matrix
+              </p>
+            </button>
+
+            {/* Feature 3: Tufts CSDD Burden Decomposition */}
+            <button
+              onClick={() => setActiveTab('overview')}
+              className={`p-2.5 rounded-xl text-left transition-all border ${
+                activeTab === 'overview'
+                  ? 'bg-charcoal-950 text-white border-charcoal-900 shadow-sm'
+                  : 'bg-linen-50 hover:bg-linen-100 text-charcoal-800 border-linen-200'
+              }`}
+            >
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-[10px] font-mono font-bold uppercase tracking-wider flex items-center space-x-1 text-indigo-500">
+                  <Activity className="h-3 w-3" />
+                  <span>Tufts CSDD Burden</span>
+                </span>
+                <span className="text-[9px] font-mono px-1.5 py-0.2 rounded-full bg-indigo-500/20 text-indigo-400">
+                  PBI {protocol.burden.composite_pbi_score}
+                </span>
+              </div>
+              <p className={`text-xs font-semibold truncate ${activeTab === 'overview' ? 'text-white' : 'text-charcoal-900'}`}>
+                {protocol.burden.attrition_risk_tier} Risk Decomposition
+              </p>
+            </button>
+
+            {/* Feature 4: Regulatory Audit Trail */}
+            <button
+              onClick={() => setActiveTab('audit')}
+              className={`p-2.5 rounded-xl text-left transition-all border ${
+                activeTab === 'audit'
+                  ? 'bg-charcoal-950 text-white border-charcoal-900 shadow-sm'
+                  : 'bg-linen-50 hover:bg-linen-100 text-charcoal-800 border-linen-200'
+              }`}
+            >
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-[10px] font-mono font-bold uppercase tracking-wider flex items-center space-x-1 text-amber-500">
+                  <ShieldCheck className="h-3 w-3" />
+                  <span>21 CFR Part 11 Audit</span>
+                </span>
+                <span className="text-[9px] font-mono px-1.5 py-0.2 rounded-full bg-amber-500/20 text-amber-400">
+                  SHA-256
+                </span>
+              </div>
+              <p className={`text-xs font-semibold truncate ${activeTab === 'audit' ? 'text-white' : 'text-charcoal-900'}`}>
+                Regulatory Integrity Trail
+              </p>
+            </button>
           </div>
         </div>
       </header>
 
-      {/* Main Studio Body: Document (Left) + Intelligence (Right) */}
+      {/* ─────────────────────────────────────────────────────────────
+          MAIN STUDIO BODY: DYNAMIC PROTOCOL GROUND TRUTH + CONSOLE
+         ───────────────────────────────────────────────────────────── */}
       <div className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6">
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-          {/* Left Column: Interactive Ground-Truth Protocol Reader (5 cols) */}
+          
+          {/* Left Column: Dynamic Ground-Truth Protocol Deconstruction (5 cols) */}
           <div className="lg:col-span-5 space-y-4">
             <div className="bg-white rounded-2xl border border-linen-300 p-5 shadow-xs">
+              
               <div className="flex items-center justify-between pb-3 border-b border-linen-200">
                 <div className="flex items-center space-x-2">
                   <FileText className="h-4 w-4 text-terracotta-600" />
@@ -195,91 +362,138 @@ export const StudioWorkspace: FC<StudioWorkspaceProps> = ({
                   </h3>
                 </div>
                 <span className={`text-[10px] font-mono px-2 py-0.5 rounded-full ${
-                  protocol.source_filename?.startsWith('PS-') || !protocol.extracted_page_count
-                    ? 'bg-linen-200 text-charcoal-700'
-                    : 'bg-sage-100 text-sage-700'
+                  protocol.extracted_page_count
+                    ? 'bg-sage-100 text-sage-800 border border-sage-200 font-bold'
+                    : 'bg-linen-200 text-charcoal-700'
                 }`}>
-                  {protocol.extracted_page_count ? 'PDF EXTRACTED' : 'LINKED EVIDENCE'}
+                  {protocol.extracted_page_count ? 'PARSED FROM PDF' : 'LINKED EVIDENCE'}
                 </span>
               </div>
 
-              <div className="mt-3 space-y-3 text-xs text-charcoal-800 font-serif leading-relaxed max-h-[600px] overflow-y-auto pr-1">
+              <div className="mt-3 space-y-3 text-xs text-charcoal-800 font-serif leading-relaxed max-h-[640px] overflow-y-auto pr-1">
+                
+                {/* Protocol Meta Card */}
                 <div className="p-3 bg-linen-50 rounded-xl border border-linen-200">
                   <span className="text-[10px] font-mono uppercase text-charcoal-500 block mb-1">
-                    Protocol Title
+                    Official Protocol Title
                   </span>
-                  <p className="font-bold text-charcoal-900 text-xs">
+                  <p className="font-bold text-charcoal-900 text-xs leading-snug">
                     {protocol.title}
                   </p>
-                </div>
-
-                {/* Criterion: eGFR */}
-                <div
-                  onClick={() => setActiveLinkedClause('egfr')}
-                  className={`p-3 rounded-xl cursor-pointer transition-all ${
-                    activeLinkedClause === 'egfr'
-                      ? 'bg-terracotta-50 border-2 border-terracotta-500 shadow-2xs'
-                      : 'bg-white border border-linen-300 hover:bg-linen-50'
-                  }`}
-                >
-                  <div className="flex items-center justify-between text-[10px] font-mono font-bold text-terracotta-700 mb-1">
-                    <span>SECTION 4.2.1 â€” RENAL EXCLUSION</span>
-                    <span className="px-1.5 py-0.2 rounded bg-terracotta-100 text-terracotta-800">
-                      RISK ATTRITION
+                  
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-white text-charcoal-800 border border-linen-300 font-semibold">
+                      {protocol.indication}
+                    </span>
+                    <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-white text-charcoal-700 border border-linen-300">
+                      N={protocol.target_enrollment} Target
+                    </span>
+                    <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-white text-charcoal-700 border border-linen-300">
+                      {protocol.study_duration_weeks} Weeks
                     </span>
                   </div>
-                  <p className="text-charcoal-900 text-xs">
-                    "Adequate renal clearance: Serum creatinine â‰¤ 1.5 x ULN or <strong>eGFR â‰¥ 60 mL/min/1.73mÂ²</strong>."
-                  </p>
-                  <span className="text-[10px] font-sans text-charcoal-500 mt-1 block">
-                    Eliminates 18.4% of eligible subjects due to mild age-related renal variance.
-                  </span>
                 </div>
 
-                {/* Criterion: Biopsy */}
-                <div
-                  onClick={() => setActiveLinkedClause('biopsy')}
-                  className={`p-3 rounded-xl cursor-pointer transition-all ${
-                    activeLinkedClause === 'biopsy'
-                      ? 'bg-terracotta-50 border-2 border-terracotta-500 shadow-2xs'
-                      : 'bg-white border border-linen-300 hover:bg-linen-50'
-                  }`}
-                >
-                  <div className="flex items-center justify-between text-[10px] font-mono font-bold text-terracotta-700 mb-1">
-                    <span>SECTION 4.3 â€” RE-BIOPSY MANDATE</span>
-                    <span className="px-1.5 py-0.2 rounded bg-terracotta-100 text-terracotta-800">
-                      PEAK BURDEN
+                {/* Extracted Structured Biomarker Filters */}
+                {protocol.eligibility?.structured_filters && (
+                  <div className="p-3 bg-charcoal-950 text-white rounded-xl space-y-2">
+                    <span className="text-[10px] font-mono uppercase text-terracotta-300 block font-bold tracking-wider">
+                      Extracted Ingestion Filters (Active in DuckDB)
                     </span>
+                    <div className="grid grid-cols-2 gap-2 text-[11px] font-mono">
+                      {protocol.eligibility.structured_filters.min_egfr !== undefined && (
+                        <div className="p-1.5 rounded bg-charcoal-900 border border-charcoal-800">
+                          <span className="text-charcoal-400 block text-[9px]">eGFR THRESHOLD:</span>
+                          <strong className="text-terracotta-400">≥ {protocol.eligibility.structured_filters.min_egfr} mL/min</strong>
+                        </div>
+                      )}
+                      {protocol.eligibility.structured_filters.max_ecog !== undefined && (
+                        <div className="p-1.5 rounded bg-charcoal-900 border border-charcoal-800">
+                          <span className="text-charcoal-400 block text-[9px]">PERFORMANCE STATUS:</span>
+                          <strong className="text-sage-400">ECOG ≤ {protocol.eligibility.structured_filters.max_ecog}</strong>
+                        </div>
+                      )}
+                      {protocol.eligibility.structured_filters.min_age !== undefined && (
+                        <div className="p-1.5 rounded bg-charcoal-900 border border-charcoal-800">
+                          <span className="text-charcoal-400 block text-[9px]">MINIMUM AGE:</span>
+                          <span className="text-white">≥ {protocol.eligibility.structured_filters.min_age} Yrs</span>
+                        </div>
+                      )}
+                      {protocol.eligibility.structured_filters.max_prior_lines !== undefined && (
+                        <div className="p-1.5 rounded bg-charcoal-900 border border-charcoal-800">
+                          <span className="text-charcoal-400 block text-[9px]">PRIOR THERAPY LINES:</span>
+                          <span className="text-white">≤ {protocol.eligibility.structured_filters.max_prior_lines}</span>
+                        </div>
+                      )}
+                    </div>
                   </div>
-                  <p className="text-charcoal-900 text-xs">
-                    "At Week 12 (Cycle 5), subject must consent to <strong>mandatory core needle tumor re-biopsy</strong> concurrent with RECIST CT imaging."
-                  </p>
-                  <span className="text-[10px] font-sans text-charcoal-500 mt-1 block">
-                    Clusters 6.5 hours of clinic dwell and post-sedation recovery.
-                  </span>
+                )}
+
+                {/* Dynamic Inclusion Criteria */}
+                <div className="space-y-1.5 pt-1">
+                  <div className="flex items-center justify-between text-[10px] font-mono text-sage-800 font-bold uppercase tracking-wider">
+                    <span>Inclusion Criteria ({protocol.eligibility?.inclusion_criteria?.length ?? 0})</span>
+                    <span className="text-charcoal-400 font-normal">Click to Inspect</span>
+                  </div>
+
+                  {(protocol.eligibility?.inclusion_criteria ?? []).slice(0, 6).map((criterion, i) => {
+                    const clauseId = `inc-${i}`;
+                    const isSelected = activeLinkedClause === clauseId;
+                    return (
+                      <div
+                        key={clauseId}
+                        onClick={() => setActiveLinkedClause(clauseId)}
+                        className={`p-2.5 rounded-xl cursor-pointer transition-all border ${
+                          isSelected
+                            ? 'bg-sage-50 border-2 border-sage-500 shadow-2xs'
+                            : 'bg-white border-linen-300 hover:bg-linen-50'
+                        }`}
+                      >
+                        <div className="flex items-start space-x-2">
+                          <CheckCircle2 className="h-3.5 w-3.5 text-sage-600 mt-0.5 flex-shrink-0" />
+                          <p className="text-charcoal-900 text-xs leading-snug">
+                            {criterion}
+                          </p>
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
 
-                {/* Criterion: CNS Metastases */}
-                <div
-                  onClick={() => setActiveLinkedClause('cns')}
-                  className={`p-3 rounded-xl cursor-pointer transition-all ${
-                    activeLinkedClause === 'cns'
-                      ? 'bg-terracotta-50 border-2 border-terracotta-500 shadow-2xs'
-                      : 'bg-white border border-linen-300 hover:bg-linen-50'
-                  }`}
-                >
-                  <div className="flex items-center justify-between text-[10px] font-mono font-bold text-terracotta-700 mb-1">
-                    <span>SECTION 4.2.2 â€” CNS EXCLUSION</span>
-                    <span className="px-1.5 py-0.2 rounded bg-terracotta-100 text-terracotta-800">
-                      POPULATION DROPOUT
-                    </span>
+                {/* Dynamic Exclusion Criteria */}
+                <div className="space-y-1.5 pt-2">
+                  <div className="flex items-center justify-between text-[10px] font-mono text-terracotta-700 font-bold uppercase tracking-wider">
+                    <span>Exclusion Bottlenecks ({protocol.eligibility?.exclusion_criteria?.length ?? 0})</span>
+                    <span className="text-charcoal-400 font-normal">Risk Points</span>
                   </div>
-                  <p className="text-charcoal-900 text-xs">
-                    "Exclusion: Presence of any untreated or <strong>prior treated asymptomatic central nervous system metastases</strong>."
-                  </p>
-                  <span className="text-[10px] font-sans text-charcoal-500 mt-1 block">
-                    Disqualifies 24% of all metastatic Stage IV lung cancer candidates.
-                  </span>
+
+                  {(protocol.eligibility?.exclusion_criteria ?? []).slice(0, 5).map((criterion, i) => {
+                    const clauseId = `exc-${i}`;
+                    const isSelected = activeLinkedClause === clauseId;
+                    return (
+                      <div
+                        key={clauseId}
+                        onClick={() => setActiveLinkedClause(clauseId)}
+                        className={`p-2.5 rounded-xl cursor-pointer transition-all border ${
+                          isSelected
+                            ? 'bg-terracotta-50 border-2 border-terracotta-500 shadow-2xs'
+                            : 'bg-white border-linen-300 hover:bg-linen-50'
+                        }`}
+                      >
+                        <div className="flex items-start justify-between gap-1">
+                          <div className="flex items-start space-x-2">
+                            <AlertTriangle className="h-3.5 w-3.5 text-terracotta-600 mt-0.5 flex-shrink-0" />
+                            <p className="text-charcoal-900 text-xs leading-snug">
+                              {criterion}
+                            </p>
+                          </div>
+                          <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-terracotta-100 text-terracotta-800 font-bold flex-shrink-0">
+                            EXCL
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             </div>
@@ -287,6 +501,7 @@ export const StudioWorkspace: FC<StudioWorkspaceProps> = ({
 
           {/* Right Column: Precision Intelligence Console (7 cols) */}
           <div className="lg:col-span-7 space-y-4">
+            
             {activeTab === 'sandbox' && (
               <WhatIfSensitivityConsole
                 initialFunnel={funnelData}
@@ -342,49 +557,64 @@ export const StudioWorkspace: FC<StudioWorkspaceProps> = ({
 
       {/* Export Feasibility Dossier Modal */}
       {showExportModal && (
-        <div className="fixed inset-0 bg-charcoal-950/60 backdrop-blur-xs z-50 flex items-center justify-center p-4">
-          <div className="bg-white border border-linen-300 max-w-xl w-full rounded-2xl shadow-xl overflow-hidden space-y-4">
-            <div className="p-4 bg-charcoal-900 text-white flex items-center justify-between">
-              <div className="flex items-center space-x-2">
-                <FileCheck2 className="h-5 w-5 text-terracotta-200" />
+        <div className="fixed inset-0 bg-charcoal-950/70 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white border border-linen-300 max-w-xl w-full rounded-3xl shadow-2xl overflow-hidden space-y-4 animate-in fade-in zoom-in-95 duration-150">
+            <div className="p-5 bg-charcoal-950 text-white flex items-center justify-between border-b border-charcoal-800">
+              <div className="flex items-center space-x-2.5">
+                <FileCheck2 className="h-5 w-5 text-terracotta-300" />
                 <div>
                   <h3 className="font-serif font-bold text-sm">Trial Feasibility & Attrition Dossier</h3>
-                  <p className="text-[11px] text-charcoal-200">Executive Protocol Review Board Submission</p>
+                  <p className="text-[11px] text-charcoal-400 font-mono">Executive Protocol Review Board Submission</p>
                 </div>
               </div>
               <button 
                 onClick={() => setShowExportModal(false)}
-                className="text-charcoal-400 hover:text-white"
+                className="text-charcoal-400 hover:text-white p-1 rounded-lg"
               >
-                <X className="h-5 w-5" />
+                <X className="h-4 w-4" />
               </button>
             </div>
 
-            <div className="p-6 space-y-3 text-xs text-charcoal-800">
-              <p>
-                <strong>Study:</strong> {protocol.protocol_id} â€” {protocol.title}
-              </p>
-              <div className="p-3 bg-linen-100 rounded-xl border border-linen-300 space-y-1 font-mono text-[11px]">
-                <div><strong>Composite Patient Burden Index:</strong> {protocol.burden.composite_pbi_score} / 100 ({protocol.burden.attrition_risk_tier})</div>
-                <div><strong>Screen Failure Projection:</strong> {funnelData.screen_failure_rate}%</div>
-                <div><strong>Eligible Candidate Pool:</strong> {funnelData.final_eligible_count} / {totalCohortSize} patients</div>
-                <div><strong>Estimated Delay Penalty:</strong> 4.2 Months ($2.4M saved if optimized)</div>
+            <div className="p-6 space-y-4 text-xs text-charcoal-800">
+              <div>
+                <span className="text-[10px] font-mono text-charcoal-500 uppercase tracking-widest block">Study ID</span>
+                <p className="font-bold text-sm text-charcoal-900">{protocol.protocol_id} — {protocol.title}</p>
               </div>
+
+              <div className="p-4 bg-linen-50 rounded-2xl border border-linen-300 space-y-2 font-mono text-xs">
+                <div className="flex justify-between border-b border-linen-200 pb-1">
+                  <span className="text-charcoal-600">Composite Patient Burden Index:</span>
+                  <strong className="text-charcoal-900">{protocol.burden.composite_pbi_score} / 100 ({protocol.burden.attrition_risk_tier})</strong>
+                </div>
+                <div className="flex justify-between border-b border-linen-200 pb-1">
+                  <span className="text-charcoal-600">Projected Screen Failure:</span>
+                  <strong className="text-terracotta-600">{funnelData.screen_failure_rate}%</strong>
+                </div>
+                <div className="flex justify-between border-b border-linen-200 pb-1">
+                  <span className="text-charcoal-600">Eligible Candidate Pool:</span>
+                  <strong className="text-sage-700">{funnelData.final_eligible_count} / {totalCohortSize} patients</strong>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-charcoal-600">Estimated Accrual Delay Penalty:</span>
+                  <strong className="text-charcoal-900">4.2 Months ($2.4M saved if optimized)</strong>
+                </div>
+              </div>
+
               <p className="text-charcoal-600 text-[11px] leading-relaxed">
-                This document compiles the schedule of assessments deconstruction, sensitivity analysis, and regulatory feasibility amendments for protocol steering committee review.
+                This document compiles the schedule of assessments deconstruction, sensitivity analysis, and regulatory feasibility amendments for institutional review board submission.
               </p>
             </div>
 
             <div className="p-4 bg-linen-100 border-t border-linen-300 flex items-center justify-end space-x-2">
               <button
                 onClick={() => setShowExportModal(false)}
-                className="px-3.5 py-1.5 text-xs font-medium rounded-full border border-linen-300 bg-white text-charcoal-700 hover:bg-linen-200"
+                className="px-4 py-2 text-xs font-medium rounded-full border border-linen-300 bg-white text-charcoal-700 hover:bg-linen-200 transition-colors"
               >
                 Close
               </button>
               <button
                 onClick={() => window.print()}
-                className="px-4 py-1.5 text-xs font-semibold rounded-full bg-charcoal-900 text-white hover:bg-charcoal-800 shadow-2xs flex items-center space-x-1.5"
+                className="px-5 py-2 text-xs font-semibold rounded-full bg-charcoal-900 text-white hover:bg-charcoal-800 shadow-sm flex items-center space-x-1.5 transition-colors"
               >
                 <Printer className="h-3.5 w-3.5" />
                 <span>Print Dossier</span>
@@ -396,7 +626,3 @@ export const StudioWorkspace: FC<StudioWorkspaceProps> = ({
     </div>
   );
 };
-
-
-
-
