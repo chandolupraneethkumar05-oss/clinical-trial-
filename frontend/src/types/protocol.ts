@@ -48,6 +48,8 @@ export interface ClinicalProtocol {
   burden: BurdenBreakdown;
   source_filename?: string;
   extracted_page_count?: number;
+  extraction_status?: 'extracted' | 'heuristic_fallback';
+  extraction_notes?: string;
 }
 
 export interface FunnelStage {

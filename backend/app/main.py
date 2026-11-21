@@ -10,6 +10,7 @@ from app.api.routes_protocol import router as protocol_router
 from app.api.routes_cohort import router as cohort_router
 from app.api.routes_benchmark import router as benchmark_router
 from app.api.routes_optimizer import router as optimizer_router
+from app.api.routes_auth import router as auth_router
 from app.engine.synthetic_data import seed_database_if_empty
 
 
@@ -43,6 +44,7 @@ app.include_router(protocol_router, prefix=settings.API_V1_STR)
 app.include_router(cohort_router, prefix=settings.API_V1_STR)
 app.include_router(benchmark_router, prefix=settings.API_V1_STR)
 app.include_router(optimizer_router, prefix=settings.API_V1_STR)
+app.include_router(auth_router, prefix=settings.API_V1_STR)
 
 
 @app.get("/")

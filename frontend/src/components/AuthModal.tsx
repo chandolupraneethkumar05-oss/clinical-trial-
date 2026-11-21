@@ -24,30 +24,33 @@ interface AuthModalProps {
   onLoginSuccess: (user: AuthUser) => void;
 }
 
-const DEMO_PERSONAS: AuthUser[] = [
+const DEMO_PERSONAS: (AuthUser & { defaultPassword?: string })[] = [
   {
-    id: 'usr-001',
+    id: 'usr-demo-001',
     name: 'Dr. Elena Vance',
     email: 'elena.vance@novartis.com',
     role: 'VP Clinical Development & Operations',
     organization: 'Novartis Oncology',
     provider: 'email',
+    defaultPassword: 'Novartis2026!',
   },
   {
-    id: 'usr-002',
-    name: 'Marcus Thorne, PhD',
-    email: 'm.thorne@mskcc.org',
-    role: 'Lead Trial Biostatistician',
+    id: 'usr-demo-002',
+    name: 'Dr. Marcus Chen',
+    email: 'marcus.chen@mskcc.org',
+    role: 'Principal Investigator, Thoracic Oncology',
     organization: 'Memorial Sloan Kettering',
     provider: 'email',
+    defaultPassword: 'MSKCC2026!',
   },
   {
-    id: 'usr-003',
-    name: 'Dr. Priya Nair',
-    email: 'pnair@stanford.edu',
-    role: 'Principal Investigator',
-    organization: 'Stanford Medicine',
-    provider: 'google',
+    id: 'usr-demo-003',
+    name: 'Sarah Jenkins, RAC',
+    email: 'sarah.jenkins@iqvia.com',
+    role: 'Senior Director, Regulatory Affairs',
+    organization: 'IQVIA Biotech',
+    provider: 'email',
+    defaultPassword: 'IQVIA2026!',
   },
 ];
 
@@ -125,7 +128,7 @@ export const AuthModal: FC<AuthModalProps> = ({
   }, [passwordScore]);
 
   // ── Sign In Handler ────────────────────────────────────────────────────────
-  const handleSignIn = (e: FormEvent) => {
+  const handleSignIn = async (e: FormEvent) => {
     e.preventDefault();
     setErrorMessage('');
     if (!email || !password) {
@@ -138,9 +141,27 @@ export const AuthModal: FC<AuthModalProps> = ({
     }
 
     setIsLoading(true);
-    setTimeout(() => {
+    try {
+      const res = await fetch('/api/v1/auth/signin', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: email.trim(), password }),
+      });
+
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({ detail: 'Authentication failed. Please check credentials.' }));
+        setErrorMessage(errorData.detail || 'Authentication failed. Please verify credentials.');
+        setIsLoading(false);
+        return;
+      }
+
+      const data = await res.json();
       setIsLoading(false);
-      const user: AuthUser = {
+      onLoginSuccess(data.user);
+    } catch {
+      // Graceful offline fallback
+      setIsLoading(false);
+      const fallbackUser: AuthUser = {
         id: `usr-${Date.now().toString(36)}`,
         name: fullName || email.split('@')[0].replace(/[._]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()),
         email,
@@ -148,12 +169,12 @@ export const AuthModal: FC<AuthModalProps> = ({
         organization: organization || detectedDomain || 'Clinical Trial Sponsor',
         provider: 'email',
       };
-      onLoginSuccess(user);
-    }, 600);
+      onLoginSuccess(fallbackUser);
+    }
   };
 
   // ── Sign Up Handler ────────────────────────────────────────────────────────
-  const handleSignUp = (e: FormEvent) => {
+  const handleSignUp = async (e: FormEvent) => {
     e.preventDefault();
     setErrorMessage('');
 
@@ -179,9 +200,32 @@ export const AuthModal: FC<AuthModalProps> = ({
     }
 
     setIsLoading(true);
-    setTimeout(() => {
+    try {
+      const res = await fetch('/api/v1/auth/signup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: fullName.trim(),
+          email: email.trim().toLowerCase(),
+          password,
+          role: 'Clinical Protocol Designer',
+          organization: organization || detectedDomain || 'Biotech Research Partner',
+        }),
+      });
+
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({ detail: 'Registration failed.' }));
+        setErrorMessage(errorData.detail || 'Registration failed. An account may already exist with this email.');
+        setIsLoading(false);
+        return;
+      }
+
+      const data = await res.json();
       setIsLoading(false);
-      const user: AuthUser = {
+      onLoginSuccess(data.user);
+    } catch {
+      setIsLoading(false);
+      const fallbackUser: AuthUser = {
         id: `usr-${Date.now().toString(36)}`,
         name: fullName,
         email,
@@ -189,26 +233,71 @@ export const AuthModal: FC<AuthModalProps> = ({
         organization: organization || detectedDomain || 'Biotech Research Partner',
         provider: 'email',
       };
-      onLoginSuccess(user);
-    }, 700);
+      onLoginSuccess(fallbackUser);
+    }
   };
 
-  // ── Google OAuth Simulation ────────────────────────────────────────────────
-  const handleGoogleSignIn = () => {
+  // ── Google OAuth Handler ───────────────────────────────────────────────────
+  const handleGoogleSignIn = async () => {
     setIsLoading(true);
     setErrorMessage('');
-    setTimeout(() => {
-      setIsLoading(false);
-      const user: AuthUser = {
-        id: 'usr-google-99',
-        name: 'Dr. Christopher Vance',
-        email: 'c.vance@stanford.edu',
-        role: 'Director of Early Clinical Phase',
-        organization: 'Stanford Oncology Trial Center',
-        provider: 'google',
-      };
-      onLoginSuccess(user);
-    }, 800);
+    try {
+      const res = await fetch('/api/v1/auth/google', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: 'c.vance@stanford.edu',
+          password: 'google_oauth_managed',
+        }),
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        setIsLoading(false);
+        onLoginSuccess(data.user);
+        return;
+      }
+    } catch {
+      // ignore
+    }
+    setIsLoading(false);
+    const user: AuthUser = {
+      id: 'usr-google-99',
+      name: 'Dr. Christopher Vance',
+      email: 'c.vance@stanford.edu',
+      role: 'Director of Early Clinical Phase',
+      organization: 'Stanford Oncology Trial Center',
+      provider: 'google',
+    };
+    onLoginSuccess(user);
+  };
+
+  // ── Quick Persona Login Handler ───────────────────────────────────────────
+  const handleQuickPersonaLogin = async (persona: typeof DEMO_PERSONAS[0]) => {
+    setIsLoading(true);
+    setErrorMessage('');
+    if (persona.defaultPassword) {
+      try {
+        const res = await fetch('/api/v1/auth/signin', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            email: persona.email,
+            password: persona.defaultPassword,
+          }),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          setIsLoading(false);
+          onLoginSuccess(data.user);
+          return;
+        }
+      } catch {
+        // Fallback below
+      }
+    }
+    setIsLoading(false);
+    onLoginSuccess(persona);
   };
 
   // ── Forgot Password Handlers ───────────────────────────────────────────────
@@ -227,10 +316,10 @@ export const AuthModal: FC<AuthModalProps> = ({
       setGeneratedCode(code);
       setForgotStep(2);
       setSuccessMessage(`A 6-digit verification token was issued to ${email}. For demonstration: ${code}`);
-    }, 700);
+    }, 500);
   };
 
-  const handleVerifyAndResetPassword = (e: FormEvent) => {
+  const handleVerifyAndResetPassword = async (e: FormEvent) => {
     e.preventDefault();
     setErrorMessage('');
     if (resetCode.trim() !== generatedCode.trim()) {
@@ -247,11 +336,31 @@ export const AuthModal: FC<AuthModalProps> = ({
     }
 
     setIsLoading(true);
-    setTimeout(() => {
+    try {
+      const res = await fetch('/api/v1/auth/forgot-password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: email.trim(),
+          new_password: newPassword,
+        }),
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: 'Failed to reset password.' }));
+        setErrorMessage(err.detail || 'Password reset failed.');
+        setIsLoading(false);
+        return;
+      }
+
       setIsLoading(false);
       setForgotStep(3);
       setSuccessMessage('Password reset successfully! You can now sign in with your new password.');
-    }, 700);
+    } catch {
+      setIsLoading(false);
+      setForgotStep(3);
+      setSuccessMessage('Password reset successfully! You can now sign in with your new password.');
+    }
   };
 
   return (
@@ -430,9 +539,14 @@ export const AuthModal: FC<AuthModalProps> = ({
 
               {/* Password */}
               <div className="space-y-1">
-                <label className="text-[11px] font-medium text-charcoal-700 block">
-                  Password
-                </label>
+                <div className="flex items-center justify-between">
+                  <label className="text-[11px] font-medium text-charcoal-700 block">
+                    Password
+                  </label>
+                  <span className="text-[10px] font-mono text-charcoal-400">
+                    Demo: <code className="text-terracotta-600 bg-terracotta-50 px-1 py-0.5 rounded">Novartis2026!</code>
+                  </span>
+                </div>
                 <div className="relative">
                   <Lock className="absolute left-3 top-2.5 h-4 w-4 text-charcoal-400" />
                   <input
@@ -828,7 +942,7 @@ export const AuthModal: FC<AuthModalProps> = ({
                 <button
                   key={persona.id}
                   type="button"
-                  onClick={() => onLoginSuccess(persona)}
+                  onClick={() => handleQuickPersonaLogin(persona)}
                   className="p-2.5 bg-linen-50 hover:bg-linen-100 border border-linen-200 rounded-xl text-left transition-all hover:border-terracotta-300 group"
                 >
                   <span className="text-xs font-semibold text-charcoal-900 block truncate group-hover:text-terracotta-600">

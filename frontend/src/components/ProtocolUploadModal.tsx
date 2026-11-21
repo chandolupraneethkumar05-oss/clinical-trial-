@@ -86,6 +86,7 @@ export const ProtocolUploadModal: FC<ProtocolUploadModalProps> = ({
   onProtocolLoaded,
 }) => {
   const [uploadState, setUploadState] = useState<UploadState>('idle');
+  const [loadedProtocol, setLoadedProtocol] = useState<ClinicalProtocol | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [selectedSample, setSelectedSample] = useState<string | null>(null);
@@ -151,8 +152,10 @@ export const ProtocolUploadModal: FC<ProtocolUploadModalProps> = ({
       const res = await fetch(`/api/v1/protocol/sample/${protocolType}`);
       if (!res.ok) throw new Error(`Server returned ${res.status}`);
       const protocol = await res.json() as ClinicalProtocol;
+      setLoadedProtocol(protocol);
       setUploadState('success');
-      setTimeout(() => onProtocolLoaded(protocol), 600);
+      const delay = protocol.extraction_status === 'heuristic_fallback' ? 1200 : 600;
+      setTimeout(() => onProtocolLoaded(protocol), delay);
     } catch (err) {
       setUploadState('error');
       setErrorMessage(err instanceof Error ? err.message : 'Failed to load sample protocol.');
@@ -180,8 +183,10 @@ export const ProtocolUploadModal: FC<ProtocolUploadModalProps> = ({
       }
 
       const protocol = await res.json() as ClinicalProtocol;
+      setLoadedProtocol(protocol);
       setUploadState('success');
-      setTimeout(() => onProtocolLoaded(protocol), 600);
+      const delay = protocol.extraction_status === 'heuristic_fallback' ? 1200 : 600;
+      setTimeout(() => onProtocolLoaded(protocol), delay);
     } catch (err) {
       setUploadState('error');
       setErrorMessage(
@@ -255,10 +260,18 @@ export const ProtocolUploadModal: FC<ProtocolUploadModalProps> = ({
 
         {/* ── Success Flash ────────────────────────────────────────────────── */}
         {uploadState === 'success' && (
-          <div className="absolute inset-0 z-20 bg-white flex flex-col items-center justify-center space-y-3">
+          <div className="absolute inset-0 z-20 bg-white flex flex-col items-center justify-center space-y-3 px-6 text-center">
             <CheckCircle2 className="h-12 w-12 text-sage-500 animate-pulse" />
-            <p className="font-serif font-bold text-sm text-charcoal-900">Protocol Loaded</p>
-            <p className="text-xs text-charcoal-500">Updating Studio…</p>
+            <p className="font-serif font-bold text-sm text-charcoal-900">
+              {loadedProtocol?.extraction_status === 'heuristic_fallback'
+                ? 'Protocol Initialized with Baseline Schedule'
+                : 'Protocol Structure Extracted'}
+            </p>
+            <p className="text-xs text-charcoal-500">
+              {loadedProtocol?.extraction_status === 'heuristic_fallback'
+                ? 'Sparse tables detected. Standard Phase II/III oncology baseline parameters loaded.'
+                : 'Loading interactive workspace…'}
+            </p>
           </div>
         )}
 

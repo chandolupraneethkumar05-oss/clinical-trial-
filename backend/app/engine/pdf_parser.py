@@ -557,4 +557,6 @@ class ProtocolPDFParser:
             burden=burden,
             source_filename=filename,
             extracted_page_count=0,
+            extraction_status="heuristic_fallback",
+            extraction_notes=f"Document yielded sparse text or non-tabular structures ({reason or 'standard parsing'}). Calibrated oncology defaults loaded.",
         )

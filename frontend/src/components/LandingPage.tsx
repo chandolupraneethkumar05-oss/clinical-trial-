@@ -288,8 +288,28 @@ export const LandingPage: FC<LandingPageProps> = ({
               </h1>
 
               <p className="text-sm sm:text-base text-slate-300 max-w-2xl leading-relaxed font-normal">
-                ProtocolShield stress-tests clinical trial protocols against <strong className="text-white font-semibold">10,000 synthetic patient phenotypes</strong>—pinpointing recruitment bottlenecks, visit clustering, and attrition hazards before regulatory submission, protecting trial velocity and preserving up to $2.4M per study.
+                Stress-test protocols against <strong className="text-white font-semibold">10,000 synthetic patient phenotypes</strong>—pinpoint accrual bottlenecks and patient fatigue decay curves before IRB submission.
               </p>
+
+              {/* Glanceable Capability Chips */}
+              <div className="flex flex-wrap items-center gap-2 pt-1 font-mono text-[11px] text-slate-300">
+                <span className="px-2.5 py-1 rounded-lg bg-white/10 border border-white/15 backdrop-blur-xs flex items-center space-x-1.5">
+                  <span className="h-1.5 w-1.5 rounded-full bg-terracotta-400" />
+                  <span>10,000 Synthetic Cohort</span>
+                </span>
+                <span className="px-2.5 py-1 rounded-lg bg-white/10 border border-white/15 backdrop-blur-xs flex items-center space-x-1.5">
+                  <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
+                  <span>Sub-5ms DuckDB OLAP</span>
+                </span>
+                <span className="px-2.5 py-1 rounded-lg bg-white/10 border border-white/15 backdrop-blur-xs flex items-center space-x-1.5">
+                  <span className="h-1.5 w-1.5 rounded-full bg-amber-400" />
+                  <span>Tufts CSDD Burden Framework</span>
+                </span>
+                <span className="px-2.5 py-1 rounded-lg bg-white/10 border border-white/15 backdrop-blur-xs flex items-center space-x-1.5">
+                  <span className="h-1.5 w-1.5 rounded-full bg-blue-400" />
+                  <span>21 CFR Part 11 Audit Trail</span>
+                </span>
+              </div>
 
               <div className="pt-2 flex flex-wrap items-center gap-3">
                 <button
@@ -414,8 +434,13 @@ export const LandingPage: FC<LandingPageProps> = ({
                   8.77% Initial Yield
                 </h3>
                 <p className="text-xs text-charcoal-600 mt-2.5 leading-relaxed">
-                  Overly conservative kidney (eGFR &lt; 60) and liver enzyme thresholds automatically eliminate up to 91% of otherwise viable oncology candidates.
+                  Strict renal (eGFR &lt; 60) and liver cutoffs filter out over 91% of otherwise viable oncology candidates.
                 </p>
+                <div className="mt-3">
+                  <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-red-50 text-red-700 border border-red-200">
+                    High Screen Failure
+                  </span>
+                </div>
               </div>
               <div className="mt-6 pt-4 border-t border-linen-200 flex items-center justify-between text-[11px] font-mono text-terracotta-600 font-semibold">
                 <span>91.2% Screen Failure</span>
@@ -432,8 +457,13 @@ export const LandingPage: FC<LandingPageProps> = ({
                   31.6 Miles Round-Trip
                 </h3>
                 <p className="text-xs text-charcoal-600 mt-2.5 leading-relaxed">
-                  Suburban and rural cancer patients face long travel times, caregiver dependency, and transit costs, accelerating study drop-outs.
+                  Suburban patients face heavy transit hours and caregiver dependency, driving accelerated study dropouts.
                 </p>
+                <div className="mt-3">
+                  <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200">
+                    Geographic Disparity
+                  </span>
+                </div>
               </div>
               <div className="mt-6 pt-4 border-t border-linen-200 flex items-center justify-between text-[11px] font-mono text-terracotta-600 font-semibold">
                 <span>2.4x Higher Rural Dropout</span>
@@ -450,8 +480,13 @@ export const LandingPage: FC<LandingPageProps> = ({
                   6.5 Hours Clinic Dwell
                 </h3>
                 <p className="text-xs text-charcoal-600 mt-2.5 leading-relaxed">
-                  Stacking intravenous infusions, contrast CT scans, serial PK blood draws, and biopsies onto single visits triggers catastrophic patient fatigue.
+                  Stacking IV infusions, contrast CTs, and biopsies onto single visits triggers catastrophic patient fatigue cliffs.
                 </p>
+                <div className="mt-3">
+                  <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-terracotta-50 text-terracotta-700 border border-terracotta-200">
+                    Fatigue Cliff Hazard
+                  </span>
+                </div>
               </div>
               <div className="mt-6 pt-4 border-t border-linen-200 flex items-center justify-between text-[11px] font-mono text-terracotta-600 font-semibold">
                 <span>42% Hazard at Week 12</span>
@@ -468,8 +503,13 @@ export const LandingPage: FC<LandingPageProps> = ({
                   $600k – $2.0M / Month
                 </h3>
                 <p className="text-xs text-charcoal-600 mt-2.5 leading-relaxed">
-                  Every month an oncology Phase III study sits stalled for slow accrual, pharmaceutical sponsors bleed operational overhead and patent runway.
+                  Each stalled month bleeds sponsor trial operations and shortens commercial exclusivity before launch.
                 </p>
+                <div className="mt-3">
+                  <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-sage-50 text-sage-800 border border-sage-200">
+                    Trial Delay Penalty
+                  </span>
+                </div>
               </div>
               <div className="mt-6 pt-4 border-t border-linen-200 flex items-center justify-between text-[11px] font-mono text-terracotta-600 font-semibold">
                 <span>Average $2.4M Saved</span>

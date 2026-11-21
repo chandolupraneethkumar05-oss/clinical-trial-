@@ -53,6 +53,17 @@ class DuckDBClient:
                     distance_to_center_miles DOUBLE,
                     caregiver_accompanied BOOLEAN
                 );
+
+                CREATE TABLE IF NOT EXISTS users (
+                    id VARCHAR PRIMARY KEY,
+                    name VARCHAR NOT NULL,
+                    email VARCHAR UNIQUE NOT NULL,
+                    password_hash VARCHAR NOT NULL,
+                    role VARCHAR,
+                    organization VARCHAR,
+                    provider VARCHAR DEFAULT 'email',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
             """)
         finally:
             conn.close()

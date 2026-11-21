@@ -378,6 +378,23 @@ export const StudioWorkspace: FC<StudioWorkspaceProps> = ({
           MAIN STUDIO BODY: DYNAMIC PROTOCOL GROUND TRUTH + CONSOLE
          ───────────────────────────────────────────────────────────── */}
       <div className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6">
+        {protocol.extraction_status === 'heuristic_fallback' && (
+          <div className="mb-4 p-3.5 bg-amber-50 border border-amber-200 rounded-2xl flex items-start space-x-3 text-xs text-amber-900 shadow-2xs">
+            <AlertTriangle className="h-4 w-4 text-amber-600 shrink-0 mt-0.5" />
+            <div className="flex-1">
+              <span className="font-serif font-bold text-xs text-amber-950 block">
+                Heuristic Oncology Baseline Active
+              </span>
+              <p className="text-[11px] text-amber-800 mt-0.5 leading-relaxed font-sans">
+                {protocol.extraction_notes || 'The uploaded protocol yielded sparse schedule tables. Standard Phase II/III oncology baseline parameters were applied so you can immediately conduct sensitivity simulations and modify visits.'}
+              </p>
+            </div>
+            <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-amber-200/60 text-amber-900 font-semibold uppercase">
+              Baseline Mode
+            </span>
+          </div>
+        )}
+
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
           
           {/* Left Column: Dynamic Ground-Truth Protocol Deconstruction (5 cols) */}

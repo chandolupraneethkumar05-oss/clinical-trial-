@@ -33,3 +33,5 @@ class ClinicalTrialProtocol(BaseModel):
     # Ingestion Metadata
     source_filename: Optional[str] = None
     extracted_page_count: Optional[int] = None
+    extraction_status: Optional[str] = Field("extracted", description="Extraction quality: 'extracted' | 'heuristic_fallback'")
+    extraction_notes: Optional[str] = Field(None, description="Diagnostic notes about document parsing")
