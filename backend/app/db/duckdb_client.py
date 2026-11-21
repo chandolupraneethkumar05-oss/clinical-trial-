@@ -59,10 +59,32 @@ class DuckDBClient:
                     name VARCHAR NOT NULL,
                     email VARCHAR UNIQUE NOT NULL,
                     password_hash VARCHAR NOT NULL,
-                    role VARCHAR,
+                    role VARCHAR DEFAULT 'doctor',
                     organization VARCHAR,
                     provider VARCHAR DEFAULT 'email',
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+
+                CREATE TABLE IF NOT EXISTS password_resets (
+                    id VARCHAR PRIMARY KEY,
+                    email VARCHAR NOT NULL,
+                    token_hash VARCHAR NOT NULL,
+                    expires_at TIMESTAMP NOT NULL,
+                    used BOOLEAN DEFAULT FALSE,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+
+                CREATE TABLE IF NOT EXISTS audit_logs (
+                    id VARCHAR PRIMARY KEY,
+                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    user_id VARCHAR,
+                    user_name VARCHAR,
+                    user_role VARCHAR,
+                    action VARCHAR NOT NULL,
+                    resource_type VARCHAR NOT NULL,
+                    resource_id VARCHAR,
+                    details VARCHAR,
+                    verification_hash VARCHAR NOT NULL
                 );
             """)
         finally:

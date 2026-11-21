@@ -1,9 +1,10 @@
 """
-ProtocolShield Authentication Endpoints Unit Tests
-Tests signup, signin, forgot-password, and demo user verification.
+ProtocolShield Authentication & Security Endpoints Unit Tests
+Tests signup, signin, secure 2-step forgot-password workflow, JWT tokens, and /me endpoint.
 """
 from fastapi.testclient import TestClient
 from app.main import app
+import uuid
 
 client = TestClient(app)
 
@@ -18,7 +19,11 @@ def test_signin_demo_user():
     data = resp.json()
     assert data["success"] is True
     assert data["user"]["name"] == "Dr. Elena Vance"
+    assert data["user"]["role"] in ["doctor", "investigator"]
     assert "token" in data
+    # Verify JWT structure (header.payload.signature)
+    parts = data["token"].split(".")
+    assert len(parts) == 3
 
 
 def test_signin_invalid_password():
@@ -31,13 +36,12 @@ def test_signin_invalid_password():
 
 
 def test_signup_and_signin_new_user():
-    import uuid
     random_email = f"test.user.{uuid.uuid4().hex[:6]}@astrazeneca.com"
     signup_payload = {
         "name": "Dr. Clara Oswald",
         "email": random_email,
         "password": "ValidPassword2026!",
-        "role": "Global Study Director",
+        "role": "doctor",
         "organization": "AstraZeneca Oncology"
     }
     resp = client.post("/api/v1/auth/signup", json=signup_payload)
@@ -45,8 +49,10 @@ def test_signup_and_signin_new_user():
     data = resp.json()
     assert data["success"] is True
     assert data["user"]["email"] == random_email.lower()
+    assert data["user"]["role"] == "doctor"
+    assert "token" in data
 
-    # Now sign in with newly created account
+    # Sign in with newly created account
     signin_payload = {
         "email": random_email,
         "password": "ValidPassword2026!"
@@ -56,29 +62,78 @@ def test_signup_and_signin_new_user():
     assert si_resp.json()["user"]["name"] == "Dr. Clara Oswald"
 
 
-def test_forgot_password():
-    import uuid
+def test_secure_two_step_forgot_password():
     random_email = f"reset.user.{uuid.uuid4().hex[:6]}@roche.com"
-    # First sign up
+    # 1. First sign up user
     client.post("/api/v1/auth/signup", json={
         "name": "Dr. Gregory House",
         "email": random_email,
         "password": "OldPassword123!",
-        "role": "Chief of Diagnostics",
+        "role": "doctor",
         "organization": "Roche"
     })
 
-    # Reset password
-    reset_resp = client.post("/api/v1/auth/forgot-password", json={
-        "email": random_email,
+    # 2. Step 1: Request password reset (does not leak email existence)
+    req_resp = client.post("/api/v1/auth/forgot-password/request", json={
+        "email": random_email
+    })
+    assert req_resp.status_code == 200
+    req_data = req_resp.json()
+    assert req_data["success"] is True
+    # In dev environment, reset token is provided for verification
+    reset_token = req_data.get("dev_reset_token")
+    assert reset_token is not None
+
+    # 3. Step 2: Complete reset using single-use token
+    reset_resp = client.post("/api/v1/auth/forgot-password/reset", json={
+        "token": reset_token,
         "new_password": "NewSecretPassword2026!"
     })
     assert reset_resp.status_code == 200
     assert reset_resp.json()["success"] is True
 
-    # Sign in with new password
-    si_resp = client.post("/api/v1/auth/signin", json={
+    # 4. Attempting to reuse the same token must fail
+    reuse_resp = client.post("/api/v1/auth/forgot-password/reset", json={
+        "token": reset_token,
+        "new_password": "AnotherPassword2026!"
+    })
+    assert reuse_resp.status_code == 400
+
+    # 5. Old password no longer works
+    bad_login = client.post("/api/v1/auth/signin", json={
+        "email": random_email,
+        "password": "OldPassword123!"
+    })
+    assert bad_login.status_code == 401
+
+    # 6. Sign in succeeds with new password
+    good_login = client.post("/api/v1/auth/signin", json={
         "email": random_email,
         "password": "NewSecretPassword2026!"
     })
-    assert si_resp.status_code == 200
+    assert good_login.status_code == 200
+    assert good_login.json()["success"] is True
+
+
+def test_get_current_user_me_endpoint():
+    # Login as demo user
+    resp = client.post("/api/v1/auth/signin", json={
+        "email": "elena.vance@novartis.com",
+        "password": "Novartis2026!"
+    })
+    token = resp.json()["token"]
+
+    # Valid token
+    me_resp = client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {token}"})
+    assert me_resp.status_code == 200
+    me_data = me_resp.json()
+    assert me_data["user"]["email"] == "elena.vance@novartis.com"
+    assert me_data["user"]["role"] in ["doctor", "investigator"]
+
+    # Missing token
+    bad_me = client.get("/api/v1/auth/me")
+    assert bad_me.status_code == 401
+
+    # Tampered token
+    tampered_me = client.get("/api/v1/auth/me", headers={"Authorization": "Bearer invalid.jwt.token"})
+    assert tampered_me.status_code == 401

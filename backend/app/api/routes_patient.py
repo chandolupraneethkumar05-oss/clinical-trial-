@@ -1,0 +1,245 @@
+"""
+ProtocolShield Patient Eligibility Screening & Recruitment Support API Routes
+Provides individualized patient matching, criteria-level evaluation,
+and protocol amendment recommendation for recruitment acceleration.
+"""
+from typing import Optional, Any
+from fastapi import APIRouter, HTTPException, Depends
+from pydantic import BaseModel, Field
+
+from app.core.security import get_current_user, AuthenticatedUser
+from app.api.routes_protocol import SAMPLE_PROTOCOL_MAP
+from app.models.protocol import ClinicalTrialProtocol
+
+router = APIRouter(prefix="/patient", tags=["Patient Eligibility & Recruitment"])
+
+
+class PatientScreeningInput(BaseModel):
+    patient_id: Optional[str] = "PT-EVAL-2026"
+    age: int = Field(default=62, ge=18, le=95)
+    gender: Optional[str] = "Female"
+    cancer_stage: str = Field(default="Stage IV (Oligometastatic)")
+    ecog_score: int = Field(default=1, ge=0, le=4)
+    egfr_ml_min: float = Field(default=52.0, ge=10.0, le=150.0, description="eGFR in mL/min/1.73m2")
+    anc: float = Field(default=1800.0, ge=100.0, description="Absolute Neutrophil Count cells/uL")
+    platelets: float = Field(default=160.0, ge=10.0, description="Platelets x10^3/uL")
+    hemoglobin: float = Field(default=11.2, ge=5.0, description="Hemoglobin g/dL")
+    total_bilirubin: float = Field(default=1.1, ge=0.1, le=10.0, description="Total Bilirubin mg/dL")
+    alt_u_l: float = Field(default=42.0, ge=5.0, le=500.0, description="ALT U/L")
+    prior_lines: int = Field(default=0, ge=0, le=10)
+    has_active_brain_mets: bool = False
+    has_stable_brain_mets: bool = True
+    has_active_autoimmune: bool = False
+    has_egfr_sensitizing_mutation: bool = False
+    pdl1_tps_percent: float = Field(default=45.0, ge=0.0, le=100.0)
+    distance_to_center_miles: float = Field(default=28.5, ge=1.0, le=200.0)
+
+
+class CriterionCheck(BaseModel):
+    criterion: str
+    category: str
+    passed: bool
+    patient_value: str
+    required_threshold: str
+    impact_note: str
+
+
+class TrialMatchResult(BaseModel):
+    protocol_id: str
+    title: str
+    indication: str
+    phase: str
+    match_status: str  # 'ELIGIBLE' | 'BORDERLINE' | 'INELIGIBLE'
+    match_score_pct: float
+    passed_criteria_count: int
+    total_criteria_count: int
+    criteria_breakdown: list[CriterionCheck]
+    recruitment_acceleration_opportunity: Optional[str] = None
+    patient_burden_summary: dict[str, Any]
+
+
+class ScreeningResponse(BaseModel):
+    patient_id: str
+    evaluation_timestamp: str
+    trials_evaluated: int
+    matches: list[TrialMatchResult]
+    recruitment_support_summary: str
+
+
+def evaluate_patient_against_protocol(patient: PatientScreeningInput, proto: ClinicalTrialProtocol) -> TrialMatchResult:
+    filters = proto.eligibility.structured_filters or {}
+    checks: list[CriterionCheck] = []
+
+    # 1. Age
+    min_age = filters.get("min_age", 18)
+    max_age = filters.get("max_age", 80)
+    age_ok = min_age <= patient.age <= max_age
+    checks.append(CriterionCheck(
+        criterion="Age Eligibility",
+        category="DEMOGRAPHICS",
+        passed=age_ok,
+        patient_value=f"{patient.age} years",
+        required_threshold=f"{min_age} - {max_age} years",
+        impact_note="Within approved trial age range." if age_ok else "Outside study age boundary."
+    ))
+
+    # 2. Stage
+    allowed_stages = filters.get("allowed_stages", [])
+    stage_ok = any(patient.cancer_stage.lower() in s.lower() for s in allowed_stages) if allowed_stages else True
+    checks.append(CriterionCheck(
+        criterion="Cancer Stage",
+        category="CLINICAL_ONCOLOGY",
+        passed=stage_ok,
+        patient_value=patient.cancer_stage,
+        required_threshold=", ".join(allowed_stages[:2]) if allowed_stages else "Stage III/IV",
+        impact_note="Matching histological staging." if stage_ok else "Stage mismatch for this specific protocol."
+    ))
+
+    # 3. ECOG Performance Status
+    max_ecog = filters.get("max_ecog", 1)
+    ecog_ok = patient.ecog_score <= max_ecog
+    checks.append(CriterionCheck(
+        criterion="ECOG Performance Status",
+        category="PHYSICAL_STAMINA",
+        passed=ecog_ok,
+        patient_value=f"ECOG {patient.ecog_score}",
+        required_threshold=f"ECOG <= {max_ecog}",
+        impact_note="Good functional mobility." if ecog_ok else "Performance fatigue exceeds protocol ceiling."
+    ))
+
+    # 4. Renal Function (eGFR)
+    min_egfr = filters.get("min_egfr", 60.0)
+    egfr_ok = patient.egfr_ml_min >= min_egfr
+    borderline_egfr = (not egfr_ok) and (patient.egfr_ml_min >= 50.0)
+    checks.append(CriterionCheck(
+        criterion="Renal Clearance (eGFR)",
+        category="ORGAN_FUNCTION",
+        passed=egfr_ok,
+        patient_value=f"{patient.egfr_ml_min} mL/min",
+        required_threshold=f"eGFR >= {min_egfr} mL/min",
+        impact_note="Adequate kidney clearance." if egfr_ok else (
+            "Borderline renal clearance (eGFR 50-59 mL/min). Candidate is eligible under proposed Amendment AMD-01!" if borderline_egfr else "Renal cutoff not met."
+        )
+    ))
+
+    # 5. Hematology: ANC & Platelets
+    min_anc = filters.get("min_anc", 1500.0)
+    anc_ok = patient.anc >= min_anc
+    checks.append(CriterionCheck(
+        criterion="Absolute Neutrophil Count (ANC)",
+        category="HEMATOLOGY",
+        passed=anc_ok,
+        patient_value=f"{patient.anc:.0f} /uL",
+        required_threshold=f">= {min_anc:.0f} /uL",
+        impact_note="Adequate bone marrow reserve." if anc_ok else "Low neutrophil count."
+    ))
+
+    # 6. Prior Lines of Therapy
+    max_lines = filters.get("max_prior_lines", 1)
+    lines_ok = patient.prior_lines <= max_lines
+    checks.append(CriterionCheck(
+        criterion="Prior Lines of Systemic Therapy",
+        category="TREATMENT_HISTORY",
+        passed=lines_ok,
+        patient_value=f"{patient.prior_lines} prior lines",
+        required_threshold=f"<= {max_lines} prior lines",
+        impact_note="Eligible treatment line." if lines_ok else "Exceeds max prior therapy line allowance."
+    ))
+
+    # 7. CNS Metastases
+    allow_stable_cns = filters.get("allow_stable_brain_mets", True)
+    if patient.has_active_brain_mets:
+        cns_ok = False
+        cns_note = "Untreated active brain metastases exclude participation."
+    elif patient.has_stable_brain_mets:
+        cns_ok = allow_stable_cns
+        cns_note = "Stable treated brain metastases accepted under FDA modernized guidelines." if cns_ok else "Baseline protocol excludes brain metastases; eligible under AMD-03."
+    else:
+        cns_ok = True
+        cns_note = "No central nervous system involvement."
+
+    checks.append(CriterionCheck(
+        criterion="Central Nervous System (CNS) Status",
+        category="SAFETY_COMORBIDITY",
+        passed=cns_ok,
+        patient_value="Stable Treated CNS" if patient.has_stable_brain_mets else ("Active CNS" if patient.has_active_brain_mets else "No CNS Mets"),
+        required_threshold="Stable or No CNS Mets",
+        impact_note=cns_note
+    ))
+
+    # Compute overall score and match status
+    passed_count = sum(1 for c in checks if c.passed)
+    total_count = len(checks)
+    score_pct = round((passed_count / total_count) * 100.0, 1)
+
+    if passed_count == total_count:
+        match_status = "ELIGIBLE"
+    elif borderline_egfr and passed_count >= total_count - 1:
+        match_status = "BORDERLINE"
+    elif score_pct >= 70.0:
+        match_status = "BORDERLINE"
+    else:
+        match_status = "INELIGIBLE"
+
+    opportunity = None
+    if match_status == "BORDERLINE":
+        if borderline_egfr:
+            opportunity = "Candidate qualifies immediately if trial adopts Amendment AMD-01 (eGFR 60 -> 50 mL/min calibration)."
+        elif patient.has_stable_brain_mets and not allow_stable_cns:
+            opportunity = "Candidate qualifies if trial adopts Amendment AMD-03 (FDA modernized stable CNS guidance)."
+
+    # Burden summary for patient
+    burden = proto.burden
+    burden_summary = {
+        "pbi_score": burden.composite_pbi_score if burden else 55.0,
+        "attrition_risk_tier": burden.attrition_risk_tier if burden else "Moderate",
+        "total_study_visits": len(proto.visits),
+        "total_clinic_hours": burden.total_clinic_hours if burden else 72.0,
+        "travel_distance_miles": patient.distance_to_center_miles,
+        "telehealth_eligible_visits": max(1, len(proto.visits) // 4)
+    }
+
+    return TrialMatchResult(
+        protocol_id=proto.protocol_id,
+        title=proto.title,
+        indication=proto.indication,
+        phase=proto.phase,
+        match_status=match_status,
+        match_score_pct=score_pct,
+        passed_criteria_count=passed_count,
+        total_criteria_count=total_count,
+        criteria_breakdown=checks,
+        recruitment_acceleration_opportunity=opportunity,
+        patient_burden_summary=burden_summary
+    )
+
+
+@router.post("/screen-eligibility", response_model=ScreeningResponse)
+async def screen_patient_eligibility(payload: PatientScreeningInput):
+    """
+    Evaluates individual patient clinical phenotype against active protocol portfolio.
+    Identifies instant match, borderline candidates, and protocol amendment opportunities.
+    """
+    from datetime import datetime, timezone
+    
+    matches: list[TrialMatchResult] = []
+    for proto_type, factory in SAMPLE_PROTOCOL_MAP.items():
+        proto = factory()
+        match_res = evaluate_patient_against_protocol(payload, proto)
+        matches.append(match_res)
+
+    eligible_count = sum(1 for m in matches if m.match_status == "ELIGIBLE")
+    borderline_count = sum(1 for m in matches if m.match_status == "BORDERLINE")
+
+    summary = (
+        f"Evaluated against {len(matches)} trial protocols: {eligible_count} Immediate Matches, "
+        f"{borderline_count} Potential / Borderline Opportunities."
+    )
+
+    return ScreeningResponse(
+        patient_id=payload.patient_id or "PT-EVAL-2026",
+        evaluation_timestamp=datetime.now(timezone.utc).isoformat(),
+        trials_evaluated=len(matches),
+        matches=matches,
+        recruitment_support_summary=summary
+    )

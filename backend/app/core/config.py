@@ -11,6 +11,14 @@ class Settings(BaseSettings):
     VERSION: str = "1.0.0"
     API_V1_STR: str = "/api/v1"
     DEBUG: bool = False
+    ENVIRONMENT: str = "development"
+
+    # Security & JWT Token Configurations
+    JWT_SECRET_KEY: str = "protocolshield_super_secure_jwt_secret_key_2026_dev_only"
+    JWT_ALGORITHM: str = "HS256"
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24  # 24 hours
+    PASSWORD_RESET_EXPIRE_MINUTES: int = 15     # 15 minutes
+    GOOGLE_CLIENT_ID: str = ""
 
     # Paths
     BASE_DIR: Path = Path(__file__).resolve().parent.parent.parent

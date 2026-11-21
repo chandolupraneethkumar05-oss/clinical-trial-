@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { LandingPage } from './components/LandingPage';
 import { StudioWorkspace } from './components/StudioWorkspace';
 import type { StudioTab } from './components/StudioWorkspace';
+import { PatientPortal } from './components/PatientPortal';
 import { ProtocolUploadModal } from './components/ProtocolUploadModal';
 import { AuthModal } from './components/AuthModal';
 import { DEFAULT_AUDIT_EVENTS } from './components/AuditTrailView';
@@ -27,7 +28,7 @@ function parseHashRoute(): { view: 'landing' | 'studio'; tab: StudioTab } {
     const validTabs: StudioTab[] = ['sandbox', 'soe', 'overview', 'benchmarks', 'audit'];
     const tab: StudioTab = validTabs.includes(tabParam) ? tabParam : 'sandbox';
 
-    if (pathPart.startsWith('studio')) {
+    if (pathPart.startsWith('studio') || pathPart.startsWith('patient')) {
       return { view: 'studio', tab };
     }
   } catch {
@@ -96,7 +97,7 @@ export default function App() {
       }
       setViewMode('studio');
       setActiveStudioTab(tab);
-      window.location.hash = `#/studio?tab=${tab}`;
+      window.location.hash = user.role === 'patient' ? '#/patient' : `#/studio?tab=${tab}`;
     } else {
       setViewMode('landing');
       window.location.hash = '#/';
@@ -325,7 +326,11 @@ export default function App() {
     }
 
     // Automatically proceed to requested destination or default to Studio Sandbox
-    if (pendingRoute && pendingRoute.view === 'studio') {
+    if (authUser.role === 'patient') {
+      setPendingRoute(null);
+      setViewMode('studio');
+      window.location.hash = '#/patient';
+    } else if (pendingRoute && pendingRoute.view === 'studio') {
       const targetTab = pendingRoute.tab;
       setPendingRoute(null);
       setViewMode('studio');
@@ -371,8 +376,15 @@ export default function App() {
           onSignOut={handleSignOut}
           onSwitchPersona={() => handleOpenAuth('signin')}
         />
-      ) : (
-        loading || !protocol || !funnelData ? (
+      ) : user?.role === 'patient' ? (
+        <PatientPortal
+          user={user}
+          onSignOut={handleSignOut}
+          onSwitchPersona={() => handleOpenAuth('signin')}
+          onOpenAuth={() => handleOpenAuth('signin')}
+          onBackToLanding={() => navigateTo('landing')}
+        />
+      ) : loading || !protocol || !funnelData ? (
           <div className="min-h-screen bg-linen-100 flex items-center justify-center p-4">
             <div className="bg-white border border-linen-300 p-8 rounded-2xl shadow-sm text-center space-y-3 max-w-sm w-full">
               <div className="h-8 w-8 border-3 border-charcoal-900 border-t-transparent rounded-full animate-spin mx-auto" />
@@ -410,7 +422,7 @@ export default function App() {
             auditEvents={auditEvents}
           />
         )
-      )}
+      }
 
       {/* Protocol Upload Modal */}
       {showUploadModal && (

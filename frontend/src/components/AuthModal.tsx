@@ -29,7 +29,8 @@ const DEMO_PERSONAS: (AuthUser & { defaultPassword?: string })[] = [
     id: 'usr-demo-001',
     name: 'Dr. Elena Vance',
     email: 'elena.vance@novartis.com',
-    role: 'VP Clinical Development & Operations',
+    role: 'doctor',
+    roleLabel: 'Doctor / Clinical Investigator',
     organization: 'Novartis Oncology',
     provider: 'email',
     defaultPassword: 'Novartis2026!',
@@ -38,7 +39,8 @@ const DEMO_PERSONAS: (AuthUser & { defaultPassword?: string })[] = [
     id: 'usr-demo-002',
     name: 'Dr. Marcus Chen',
     email: 'marcus.chen@mskcc.org',
-    role: 'Principal Investigator, Thoracic Oncology',
+    role: 'doctor',
+    roleLabel: 'Doctor / Clinical Investigator',
     organization: 'Memorial Sloan Kettering',
     provider: 'email',
     defaultPassword: 'MSKCC2026!',
@@ -47,10 +49,21 @@ const DEMO_PERSONAS: (AuthUser & { defaultPassword?: string })[] = [
     id: 'usr-demo-003',
     name: 'Sarah Jenkins, RAC',
     email: 'sarah.jenkins@iqvia.com',
-    role: 'Senior Director, Regulatory Affairs',
+    role: 'admin',
+    roleLabel: 'Regulatory Administrator',
     organization: 'IQVIA Biotech',
     provider: 'email',
     defaultPassword: 'IQVIA2026!',
+  },
+  {
+    id: 'usr-demo-004',
+    name: 'John Miller',
+    email: 'john.miller@patient.org',
+    role: 'patient',
+    roleLabel: 'Patient / Trial Volunteer',
+    organization: 'Oncology Patient Cohort',
+    provider: 'email',
+    defaultPassword: 'Patient2026!',
   },
 ];
 
@@ -79,13 +92,13 @@ export const AuthModal: FC<AuthModalProps> = ({
   const [confirmPassword, setConfirmPassword] = useState('');
   const [fullName, setFullName] = useState('');
   const [organization, setOrganization] = useState('');
+  const [selectedRole, setSelectedRole] = useState<'doctor' | 'patient' | 'admin'>('doctor');
   const [showPassword, setShowPassword] = useState(false);
   const [agreeTerms, setAgreeTerms] = useState(false);
 
   // Forgot Password Step State
   const [forgotStep, setForgotStep] = useState<1 | 2 | 3>(1);
   const [resetCode, setResetCode] = useState('');
-  const [generatedCode, setGeneratedCode] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirmNewPassword, setConfirmNewPassword] = useState('');
 
@@ -145,7 +158,7 @@ export const AuthModal: FC<AuthModalProps> = ({
       const res = await fetch('/api/v1/auth/signin', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: email.trim(), password }),
+        body: JSON.stringify({ email: email.trim().toLowerCase(), password }),
       });
 
       if (!res.ok) {
@@ -157,19 +170,13 @@ export const AuthModal: FC<AuthModalProps> = ({
 
       const data = await res.json();
       setIsLoading(false);
-      onLoginSuccess(data.user);
+      onLoginSuccess({
+        ...data.user,
+        token: data.token,
+      });
     } catch {
-      // Graceful offline fallback
       setIsLoading(false);
-      const fallbackUser: AuthUser = {
-        id: `usr-${Date.now().toString(36)}`,
-        name: fullName || email.split('@')[0].replace(/[._]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()),
-        email,
-        role: 'Protocol Review Officer',
-        organization: organization || detectedDomain || 'Clinical Trial Sponsor',
-        provider: 'email',
-      };
-      onLoginSuccess(fallbackUser);
+      setErrorMessage('Network connection error: Unable to reach ProtocolShield backend. Please verify backend is running on port 8000.');
     }
   };
 
@@ -208,8 +215,8 @@ export const AuthModal: FC<AuthModalProps> = ({
           name: fullName.trim(),
           email: email.trim().toLowerCase(),
           password,
-          role: 'Clinical Protocol Designer',
-          organization: organization || detectedDomain || 'Biotech Research Partner',
+          role: selectedRole,
+          organization: organization || detectedDomain || (selectedRole === 'patient' ? 'Patient Community' : 'Clinical Research Network'),
         }),
       });
 
@@ -222,18 +229,13 @@ export const AuthModal: FC<AuthModalProps> = ({
 
       const data = await res.json();
       setIsLoading(false);
-      onLoginSuccess(data.user);
+      onLoginSuccess({
+        ...data.user,
+        token: data.token,
+      });
     } catch {
       setIsLoading(false);
-      const fallbackUser: AuthUser = {
-        id: `usr-${Date.now().toString(36)}`,
-        name: fullName,
-        email,
-        role: 'Clinical Protocol Designer',
-        organization: organization || detectedDomain || 'Biotech Research Partner',
-        provider: 'email',
-      };
-      onLoginSuccess(fallbackUser);
+      setErrorMessage('Network error: Unable to complete account registration.');
     }
   };
 
@@ -246,30 +248,27 @@ export const AuthModal: FC<AuthModalProps> = ({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          email: 'c.vance@stanford.edu',
-          password: 'google_oauth_managed',
+          id_token: 'evaluator_test_token',
         }),
       });
 
-      if (res.ok) {
-        const data = await res.json();
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({ detail: 'Google Sign-In is not configured.' }));
+        setErrorMessage(errData.detail || 'Google OAuth requires GOOGLE_CLIENT_ID configuration. Please sign in with email credentials or use the 1-click Demo Personas below.');
         setIsLoading(false);
-        onLoginSuccess(data.user);
         return;
       }
+
+      const data = await res.json();
+      setIsLoading(false);
+      onLoginSuccess({
+        ...data.user,
+        token: data.token,
+      });
     } catch {
-      // ignore
+      setIsLoading(false);
+      setErrorMessage('Google OAuth is not configured on this server instance (requires GOOGLE_CLIENT_ID). Please use email credentials or 1-click Demo Personas below.');
     }
-    setIsLoading(false);
-    const user: AuthUser = {
-      id: 'usr-google-99',
-      name: 'Dr. Christopher Vance',
-      email: 'c.vance@stanford.edu',
-      role: 'Director of Early Clinical Phase',
-      organization: 'Stanford Oncology Trial Center',
-      provider: 'google',
-    };
-    onLoginSuccess(user);
   };
 
   // ── Quick Persona Login Handler ───────────────────────────────────────────
@@ -289,11 +288,20 @@ export const AuthModal: FC<AuthModalProps> = ({
         if (res.ok) {
           const data = await res.json();
           setIsLoading(false);
-          onLoginSuccess(data.user);
+          onLoginSuccess({
+            ...data.user,
+            token: data.token,
+          });
           return;
         }
+        const err = await res.json().catch(() => ({ detail: 'Authentication error' }));
+        setErrorMessage(err.detail || 'Failed to authenticate persona.');
+        setIsLoading(false);
+        return;
       } catch {
-        // Fallback below
+        setIsLoading(false);
+        setErrorMessage('Network connection error: Backend server unreachable.');
+        return;
       }
     }
     setIsLoading(false);
@@ -301,7 +309,7 @@ export const AuthModal: FC<AuthModalProps> = ({
   };
 
   // ── Forgot Password Handlers ───────────────────────────────────────────────
-  const handleSendResetCode = (e: FormEvent) => {
+  const handleSendResetCode = async (e: FormEvent) => {
     e.preventDefault();
     setErrorMessage('');
     if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
@@ -310,20 +318,33 @@ export const AuthModal: FC<AuthModalProps> = ({
     }
 
     setIsLoading(true);
-    setTimeout(() => {
+    try {
+      const res = await fetch('/api/v1/auth/forgot-password/request', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: email.trim().toLowerCase() }),
+      });
+
+      const data = await res.json();
       setIsLoading(false);
-      const code = Math.floor(100000 + Math.random() * 900000).toString();
-      setGeneratedCode(code);
       setForgotStep(2);
-      setSuccessMessage(`A 6-digit verification token was issued to ${email}. For demonstration: ${code}`);
-    }, 500);
+      if (data.dev_reset_token) {
+        setResetCode(data.dev_reset_token);
+        setSuccessMessage(`Reset token generated. [Local Hackathon Dev Mode]: Token auto-filled below.`);
+      } else {
+        setSuccessMessage(data.message || 'If an account is registered with this email, password reset instructions have been issued.');
+      }
+    } catch {
+      setIsLoading(false);
+      setErrorMessage('Network error: Unable to initiate password recovery.');
+    }
   };
 
   const handleVerifyAndResetPassword = async (e: FormEvent) => {
     e.preventDefault();
     setErrorMessage('');
-    if (resetCode.trim() !== generatedCode.trim()) {
-      setErrorMessage('The 6-digit verification code is incorrect or expired.');
+    if (!resetCode.trim()) {
+      setErrorMessage('Please provide the single-use reset token.');
       return;
     }
     if (passwordScore < 3) {
@@ -337,18 +358,18 @@ export const AuthModal: FC<AuthModalProps> = ({
 
     setIsLoading(true);
     try {
-      const res = await fetch('/api/v1/auth/forgot-password', {
+      const res = await fetch('/api/v1/auth/forgot-password/reset', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          email: email.trim(),
+          token: resetCode.trim(),
           new_password: newPassword,
         }),
       });
 
       if (!res.ok) {
         const err = await res.json().catch(() => ({ detail: 'Failed to reset password.' }));
-        setErrorMessage(err.detail || 'Password reset failed.');
+        setErrorMessage(err.detail || 'Password reset token is invalid or expired.');
         setIsLoading(false);
         return;
       }
@@ -358,8 +379,7 @@ export const AuthModal: FC<AuthModalProps> = ({
       setSuccessMessage('Password reset successfully! You can now sign in with your new password.');
     } catch {
       setIsLoading(false);
-      setForgotStep(3);
-      setSuccessMessage('Password reset successfully! You can now sign in with your new password.');
+      setErrorMessage('Network error: Unable to reset password.');
     }
   };
 
@@ -590,6 +610,53 @@ export const AuthModal: FC<AuthModalProps> = ({
              ══════════════════════════════════════════════════════════════════ */}
           {view === 'signup' && (
             <form onSubmit={handleSignUp} className="space-y-3">
+              {/* Role Selection */}
+              <div className="space-y-1">
+                <label className="text-[11px] font-medium text-charcoal-700 block">
+                  Select User Role
+                </label>
+                <div className="grid grid-cols-3 gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => setSelectedRole('doctor')}
+                    className={`p-2 rounded-xl border text-center transition-all cursor-pointer ${
+                      selectedRole === 'doctor'
+                        ? 'bg-charcoal-900 text-white border-charcoal-900 font-semibold shadow-xs'
+                        : 'bg-linen-50 text-charcoal-700 border-linen-300 hover:bg-linen-100'
+                    }`}
+                  >
+                    <span className="text-[11px] block font-medium">Investigator</span>
+                    <span className="text-[9px] text-terracotta-400 font-mono block">Clinical Lead</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setSelectedRole('patient')}
+                    className={`p-2 rounded-xl border text-center transition-all cursor-pointer ${
+                      selectedRole === 'patient'
+                        ? 'bg-charcoal-900 text-white border-charcoal-900 font-semibold shadow-xs'
+                        : 'bg-linen-50 text-charcoal-700 border-linen-300 hover:bg-linen-100'
+                    }`}
+                  >
+                    <span className="text-[11px] block font-medium">Patient</span>
+                    <span className="text-[9px] text-sage-400 font-mono block">Volunteer</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setSelectedRole('admin')}
+                    className={`p-2 rounded-xl border text-center transition-all cursor-pointer ${
+                      selectedRole === 'admin'
+                        ? 'bg-charcoal-900 text-white border-charcoal-900 font-semibold shadow-xs'
+                        : 'bg-linen-50 text-charcoal-700 border-linen-300 hover:bg-linen-100'
+                    }`}
+                  >
+                    <span className="text-[11px] block font-medium">Administrator</span>
+                    <span className="text-[9px] text-amber-400 font-mono block">Governance</span>
+                  </button>
+                </div>
+              </div>
+
               {/* Full Name & Organization */}
               <div className="grid grid-cols-2 gap-2">
                 <div className="space-y-1">
@@ -823,15 +890,14 @@ export const AuthModal: FC<AuthModalProps> = ({
                 <form onSubmit={handleVerifyAndResetPassword} className="space-y-3">
                   <div className="space-y-1">
                     <label className="text-[11px] font-medium text-charcoal-700 block">
-                      6-Digit Security Token
+                      Single-Use Security Token
                     </label>
                     <input
                       type="text"
-                      maxLength={6}
                       value={resetCode}
                       onChange={(e) => setResetCode(e.target.value)}
-                      placeholder="e.g. 549210"
-                      className="w-full px-3 py-2 text-center text-sm tracking-widest font-mono bg-linen-50 border border-linen-300 rounded-xl focus:outline-none focus:border-terracotta-500"
+                      placeholder="Paste single-use verification token"
+                      className="w-full px-3 py-2 text-center text-xs tracking-wider font-mono bg-linen-50 border border-linen-300 rounded-xl focus:outline-none focus:border-terracotta-500"
                       required
                     />
                   </div>
@@ -937,22 +1003,26 @@ export const AuthModal: FC<AuthModalProps> = ({
               <span>Instant Evaluator Demo Personas</span>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
               {DEMO_PERSONAS.map((persona) => (
                 <button
                   key={persona.id}
                   type="button"
                   onClick={() => handleQuickPersonaLogin(persona)}
-                  className="p-2.5 bg-linen-50 hover:bg-linen-100 border border-linen-200 rounded-xl text-left transition-all hover:border-terracotta-300 group"
+                  className="p-2 bg-linen-50 hover:bg-linen-100 border border-linen-200 rounded-xl text-left transition-all hover:border-terracotta-300 group cursor-pointer"
                 >
                   <span className="text-xs font-semibold text-charcoal-900 block truncate group-hover:text-terracotta-600">
                     {persona.name}
                   </span>
                   <span className="text-[10px] text-charcoal-500 block truncate font-mono">
-                    {persona.organization}
+                    {persona.roleLabel || persona.role}
                   </span>
-                  <span className="text-[9px] text-sage-700 bg-sage-50 px-1.5 py-0.2 rounded font-mono inline-block mt-1">
-                    1-Click Access
+                  <span className={`text-[9px] px-1.5 py-0.2 rounded font-mono inline-block mt-1 font-semibold ${
+                    persona.role === 'admin' ? 'bg-amber-100 text-amber-800' :
+                    persona.role === 'patient' ? 'bg-blue-100 text-blue-800' :
+                    'bg-sage-100 text-sage-800'
+                  }`}>
+                    {persona.role === 'admin' ? 'Admin' : persona.role === 'patient' ? 'Patient' : 'Doctor'}
                   </span>
                 </button>
               ))}
