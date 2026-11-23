@@ -160,6 +160,14 @@ export default function App() {
     return headers;
   };
 
+  const handleSessionExpired = useCallback(() => {
+    localStorage.removeItem('protocolshield_user');
+    setUser(null);
+    setViewMode('landing');
+    setAuthModalView('signin');
+    setShowAuthModal(true);
+  }, []);
+
   // ── 6. Initial Data Fetching from FastAPI Backend ──────────────────────────
   useEffect(() => {
     async function loadInitialData() {
@@ -199,12 +207,33 @@ export default function App() {
         const benchRes = await fetch('/api/v1/benchmark/historical-trials', {
           headers: getAuthHeaders()
         });
+        if (benchRes.status === 401) {
+          handleSessionExpired();
+          return;
+        }
         if (benchRes.ok) {
           const bJson = await benchRes.json();
           setBenchmarks(bJson.trials);
         }
+
+        // 5. Fetch Audit Trail from backend (for investigators/admins)
+        if (user && user.role !== 'patient') {
+          const auditRes = await fetch('/api/v1/audit/logs', {
+            headers: getAuthHeaders()
+          });
+          if (auditRes.status === 401) {
+            handleSessionExpired();
+            return;
+          }
+          if (auditRes.ok) {
+            const aJson = await auditRes.json();
+            if (Array.isArray(aJson) && aJson.length > 0) {
+              setAuditEvents(aJson);
+            }
+          }
+        }
       } catch (err) {
-        console.warn('Backend not yet connected; using verified clinical fallback state', err);
+        console.warn('Backend connection note:', err);
       } finally {
         setLoading(false);
       }
@@ -330,7 +359,27 @@ export default function App() {
           details: `Applied amendment ${amendmentId} to ${updatedProtocol.protocol_id}. Mutated eligibility criteria & Schedule of Assessments. Recalibrated Tufts CSDD PBI to ${updatedProtocol.burden.composite_pbi_score}.`,
           verification_hash: `SHA256: ${hex}`
         };
-        setAuditEvents((prev) => [newEvent, ...prev]);
+
+        // Persist to backend DuckDB audit log
+        try {
+          const auditRes = await fetch('/api/v1/audit/logs', {
+            method: 'POST',
+            headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
+            body: JSON.stringify({
+              event_type: 'AI_PROTOCOL_AMENDMENT_APPLIED',
+              details: `Applied amendment ${amendmentId} to ${updatedProtocol.protocol_id}. Mutated eligibility criteria & Schedule of Assessments. Recalibrated Tufts CSDD PBI to ${updatedProtocol.burden.composite_pbi_score}.`,
+              resource_id: updatedProtocol.protocol_id
+            })
+          });
+          if (auditRes.ok) {
+            const savedEvent = await auditRes.json();
+            setAuditEvents((prev) => [savedEvent, ...prev]);
+          } else {
+            setAuditEvents((prev) => [newEvent, ...prev]);
+          }
+        } catch {
+          setAuditEvents((prev) => [newEvent, ...prev]);
+        }
 
         await handleProtocolLoaded(updatedProtocol);
       }
@@ -367,7 +416,18 @@ export default function App() {
     }
   };
 
-  const handleSignOut = () => {
+  const handleSignOut = async () => {
+    const currentToken = user?.token;
+    if (currentToken) {
+      try {
+        await fetch('/api/v1/auth/logout', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${currentToken}` }
+        });
+      } catch {
+        // continue clearing local session
+      }
+    }
     setUser(null);
     try {
       localStorage.removeItem('protocolshield_user');

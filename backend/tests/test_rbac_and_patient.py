@@ -157,3 +157,126 @@ def test_patient_role_screening_with_auth_token():
     )
     assert screen_resp.status_code == 200
     assert len(screen_resp.json()["matches"]) > 0
+
+
+def test_all_14_clinical_parameters_evaluated():
+    # Login as patient John Miller
+    login_resp = client.post("/api/v1/auth/signin", json={
+        "email": "john.miller@patient.org",
+        "password": "Patient2026!"
+    })
+    assert login_resp.status_code == 200
+    token = login_resp.json()["token"]
+
+    # Submit patient with multi-organ abnormal lab values
+    screen_resp = client.post(
+        "/api/v1/patient/screen-eligibility",
+        json={
+            "patient_id": "PT-ABNORMAL-LABS",
+            "age": 60,
+            "cancer_stage": "Stage IV (Oligometastatic)",
+            "ecog_score": 1,
+            "egfr_ml_min": 65.0,
+            "anc": 1800.0,
+            "platelets": 45.0,         # Thrombocytopenia: below 100
+            "hemoglobin": 7.8,         # Anemia: below 9.0
+            "total_bilirubin": 2.5,    # Jaundice: above 1.5
+            "alt_u_l": 210.0,          # Elevated liver enzymes: above 140
+            "prior_lines": 0,
+            "has_active_brain_mets": False,
+            "has_stable_brain_mets": True,
+            "has_active_autoimmune": False
+        },
+        headers={"Authorization": f"Bearer {token}"}
+    )
+    assert screen_resp.status_code == 200
+    data = screen_resp.json()
+    nsclc_match = next((m for m in data["matches"] if "NSCLC" in m["protocol_id"] or "PS-ONC" in m["protocol_id"]), data["matches"][0])
+
+    criteria_names = [c["criterion"] for c in nsclc_match["criteria_breakdown"]]
+    assert "Platelet Count" in criteria_names
+    assert "Hemoglobin Concentration" in criteria_names
+    assert "Total Bilirubin" in criteria_names
+    assert "Alanine Aminotransferase (ALT)" in criteria_names
+    assert "Autoimmune Disease Status" in criteria_names
+
+    # Verify lab failures
+    plat_check = next(c for c in nsclc_match["criteria_breakdown"] if c["criterion"] == "Platelet Count")
+    hb_check = next(c for c in nsclc_match["criteria_breakdown"] if c["criterion"] == "Hemoglobin Concentration")
+    bili_check = next(c for c in nsclc_match["criteria_breakdown"] if c["criterion"] == "Total Bilirubin")
+    alt_check = next(c for c in nsclc_match["criteria_breakdown"] if c["criterion"] == "Alanine Aminotransferase (ALT)")
+
+    assert plat_check["passed"] is False
+    assert hb_check["passed"] is False
+    assert bili_check["passed"] is False
+    assert alt_check["passed"] is False
+
+
+def test_patient_id_spoofing_prevention():
+    # Login as patient John Miller
+    login_resp = client.post("/api/v1/auth/signin", json={
+        "email": "john.miller@patient.org",
+        "password": "Patient2026!"
+    })
+    token = login_resp.json()["token"]
+
+    # Attempt to spoof Dr. Elena Vance's institutional ID (usr-demo-001)
+    spoof_resp = client.post(
+        "/api/v1/patient/screen-eligibility",
+        json={
+            "patient_id": "usr-demo-001",
+            "age": 55,
+            "cancer_stage": "Stage IV (Oligometastatic)",
+            "ecog_score": 0,
+            "egfr_ml_min": 75.0
+        },
+        headers={"Authorization": f"Bearer {token}"}
+    )
+    assert spoof_resp.status_code == 403
+    assert "Security violation" in spoof_resp.json()["detail"]
+
+
+def test_screen_against_uploaded_protocol():
+    import json
+    from app.db.duckdb_client import db_client
+    from app.api.routes_protocol import get_canonical_nsclc_sample_protocol
+
+    # 1. Create a distinct custom uploaded protocol
+    custom_proto = get_canonical_nsclc_sample_protocol()
+    custom_proto.protocol_id = "UPLOADED-TRIAL-CUSTOM-999"
+    custom_proto.title = "Custom Uploaded Phase II Biomarker Study"
+
+    conn = db_client.get_connection()
+    try:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO uploaded_protocols (protocol_id, data_json, uploaded_by, uploaded_at)
+            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+            """,
+            (custom_proto.protocol_id, custom_proto.model_dump_json(), "dr.chen@mskcc.org")
+        )
+    finally:
+        conn.close()
+
+    # 2. Login as patient and screen
+    login_resp = client.post("/api/v1/auth/signin", json={
+        "email": "john.miller@patient.org",
+        "password": "Patient2026!"
+    })
+    token = login_resp.json()["token"]
+
+    screen_resp = client.post(
+        "/api/v1/patient/screen-eligibility",
+        json={
+            "patient_id": "PT-VERIFY-UPLOAD",
+            "age": 60,
+            "cancer_stage": "Stage IV (Oligometastatic)",
+            "ecog_score": 1,
+            "egfr_ml_min": 65.0
+        },
+        headers={"Authorization": f"Bearer {token}"}
+    )
+    assert screen_resp.status_code == 200
+    data = screen_resp.json()
+    protocol_ids = [m["protocol_id"] for m in data["matches"]]
+    assert "UPLOADED-TRIAL-CUSTOM-999" in protocol_ids

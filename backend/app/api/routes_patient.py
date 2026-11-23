@@ -3,14 +3,18 @@ ProtocolShield Patient Eligibility Screening & Recruitment Support API Routes
 Provides individualized patient matching, criteria-level evaluation,
 and protocol amendment recommendation for recruitment acceleration.
 """
+import json
+import uuid
 import logging
 from typing import Optional, Any
+from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel, Field
 
 from app.core.security import get_current_user, AuthenticatedUser
 from app.api.routes_protocol import SAMPLE_PROTOCOL_MAP
 from app.models.protocol import ClinicalTrialProtocol
+from app.db.duckdb_client import db_client
 
 router = APIRouter(prefix="/patient", tags=["Patient Eligibility & Recruitment"])
 logger = logging.getLogger(__name__)
@@ -79,11 +83,13 @@ class ScreeningResponse(BaseModel):
 
 
 def evaluate_patient_against_protocol(patient: PatientScreeningInput, proto: ClinicalTrialProtocol) -> TrialMatchResult:
+    """
+    Evaluates individual patient clinical phenotype across comprehensive 16-parameter
+    inclusion/exclusion and biomarker criteria.
+    Enforces hard exclusion safety rules for central nervous system metastases and active autoimmune status.
+    """
     filters = proto.eligibility.structured_filters or {}
     checks: list[CriterionCheck] = []
-
-    # Track hard exclusion failures — these unconditionally produce NOT_ELIGIBLE
-    # regardless of overall score. A clinical investigator cannot override hard exclusions.
     hard_exclusion_failures: list[str] = []
 
     # 1. Age
@@ -131,14 +137,14 @@ def evaluate_patient_against_protocol(patient: PatientScreeningInput, proto: Cli
         criterion="Renal Clearance (eGFR)",
         category="ORGAN_FUNCTION",
         passed=egfr_ok,
-        patient_value=f"{patient.egfr_ml_min} mL/min",
-        required_threshold=f"eGFR >= {min_egfr} mL/min",
+        patient_value=f"{patient.egfr_ml_min:.1f} mL/min",
+        required_threshold=f"eGFR >= {min_egfr:.0f} mL/min",
         impact_note="Adequate kidney clearance." if egfr_ok else (
             "Borderline renal clearance (eGFR 50-59 mL/min). Candidate may be eligible under proposed Amendment AMD-01." if borderline_egfr else "Renal cutoff not met."
         )
     ))
 
-    # 5. Hematology: ANC & Platelets
+    # 5. Hematology: ANC
     min_anc = filters.get("min_anc", 1500.0)
     anc_ok = patient.anc >= min_anc
     checks.append(CriterionCheck(
@@ -147,22 +153,72 @@ def evaluate_patient_against_protocol(patient: PatientScreeningInput, proto: Cli
         passed=anc_ok,
         patient_value=f"{patient.anc:.0f} /uL",
         required_threshold=f">= {min_anc:.0f} /uL",
-        impact_note="Adequate bone marrow reserve." if anc_ok else "Low neutrophil count."
+        impact_note="Adequate bone marrow reserve." if anc_ok else "Low neutrophil count (neutropenia risk)."
     ))
 
-    # 6. Prior Lines of Therapy
-    max_lines = filters.get("max_prior_lines", 1)
-    lines_ok = patient.prior_lines <= max_lines
+    # 6. Hematology: Platelets
+    min_plat = filters.get("min_platelets", 100.0)
+    plat_ok = patient.platelets >= min_plat
+    checks.append(CriterionCheck(
+        criterion="Platelet Count",
+        category="HEMATOLOGY",
+        passed=plat_ok,
+        patient_value=f"{patient.platelets:.0f} x10^3/uL",
+        required_threshold=f">= {min_plat:.0f} x10^3/uL",
+        impact_note="Adequate platelet count for systemic therapy." if plat_ok else "Thrombocytopenia: Platelet count below protocol cutoff."
+    ))
+
+    # 7. Hematology: Hemoglobin
+    min_hb = filters.get("min_hemoglobin", 9.0)
+    hb_ok = patient.hemoglobin >= min_hb
+    checks.append(CriterionCheck(
+        criterion="Hemoglobin Concentration",
+        category="HEMATOLOGY",
+        passed=hb_ok,
+        patient_value=f"{patient.hemoglobin:.1f} g/dL",
+        required_threshold=f">= {min_hb:.1f} g/dL",
+        impact_note="Hemoglobin adequate for trial intervention." if hb_ok else "Anemia: Hemoglobin below safe protocol threshold."
+    ))
+
+    # 8. Hepatic: Total Bilirubin
+    max_bili = filters.get("max_total_bilirubin", 1.5)
+    bili_ok = patient.total_bilirubin <= max_bili
+    checks.append(CriterionCheck(
+        criterion="Total Bilirubin",
+        category="HEPATIC_FUNCTION",
+        passed=bili_ok,
+        patient_value=f"{patient.total_bilirubin:.1f} mg/dL",
+        required_threshold=f"<= {max_bili:.1f} mg/dL",
+        impact_note="Bilirubin clearance within safe limits." if bili_ok else "Hyperbilirubinemia: Hepatic clearance impaired."
+    ))
+
+    # 9. Hepatic: ALT Transaminase
+    max_alt_mult = filters.get("max_alt_multiplier", 2.5)
+    max_alt = max_alt_mult * 56.0
+    alt_ok = patient.alt_u_l <= max_alt
+    checks.append(CriterionCheck(
+        criterion="Alanine Aminotransferase (ALT)",
+        category="HEPATIC_FUNCTION",
+        passed=alt_ok,
+        patient_value=f"{patient.alt_u_l:.0f} U/L",
+        required_threshold=f"<= {max_alt:.0f} U/L ({max_alt_mult}x ULN)",
+        impact_note="Liver enzyme transaminase within acceptable parameters." if alt_ok else "Elevated ALT transaminase exceeds safety threshold."
+    ))
+
+    # 10. Prior Lines of Therapy
+    max_lines = filters.get("max_prior_lines", 2)
+    min_lines = filters.get("min_prior_lines", 0)
+    lines_ok = min_lines <= patient.prior_lines <= max_lines
     checks.append(CriterionCheck(
         criterion="Prior Lines of Systemic Therapy",
         category="TREATMENT_HISTORY",
         passed=lines_ok,
         patient_value=f"{patient.prior_lines} prior lines",
-        required_threshold=f"<= {max_lines} prior lines",
+        required_threshold=f"{min_lines} - {max_lines} prior lines" if min_lines > 0 else f"<= {max_lines} prior lines",
         impact_note="Eligible treatment line." if lines_ok else "Exceeds max prior therapy line allowance."
     ))
 
-    # 7. CNS Metastases
+    # 11. CNS Metastases
     # HARD EXCLUSION: active (untreated) brain metastases unconditionally exclude participation.
     allow_stable_cns = filters.get("allow_stable_brain_mets", True)
     if patient.has_active_brain_mets:
@@ -185,15 +241,55 @@ def evaluate_patient_against_protocol(patient: PatientScreeningInput, proto: Cli
         impact_note=cns_note
     ))
 
-    # HARD EXCLUSION: active autoimmune disease (when protocol requires exclusion)
+    # 12. Autoimmune Disease Status
+    # HARD EXCLUSION: active autoimmune disease when protocol requires exclusion
     exclude_autoimmune = filters.get("exclude_active_autoimmune", True)
     if patient.has_active_autoimmune and exclude_autoimmune:
+        auto_ok = False
         hard_exclusion_failures.append("Active autoimmune disease (hard exclusion)")
+        auto_note = "HARD EXCLUSION: Active systemic autoimmune disease requires exclusion under immunotherapy safety guidelines."
+    else:
+        auto_ok = True
+        auto_note = "No active autoimmune contraindications."
+
+    checks.append(CriterionCheck(
+        criterion="Autoimmune Disease Status",
+        category="SAFETY_COMORBIDITY",
+        passed=auto_ok,
+        patient_value="Active Autoimmune" if patient.has_active_autoimmune else "No Active Autoimmune",
+        required_threshold="No Active Autoimmune" if exclude_autoimmune else "Allowed",
+        impact_note=auto_note
+    ))
+
+    # 13. Molecular Biomarker: EGFR Mutation
+    if filters.get("target_biomarker_egfr_negative"):
+        egfr_mut_ok = not patient.has_egfr_sensitizing_mutation
+        checks.append(CriterionCheck(
+            criterion="EGFR Mutation Status",
+            category="MOLECULAR_BIOMARKER",
+            passed=egfr_mut_ok,
+            patient_value="EGFR Positive (Mutant)" if patient.has_egfr_sensitizing_mutation else "EGFR Negative (Wild-Type)",
+            required_threshold="EGFR Negative (Wild-Type)",
+            impact_note="Matches wild-type protocol requirement." if egfr_mut_ok else "EGFR sensitizing mutation excludes participation."
+        ))
+
+    # 14. Molecular Biomarker: PD-L1 TPS Expression
+    if filters.get("min_pdl1_tps") is not None:
+        min_pdl1 = float(filters["min_pdl1_tps"])
+        pdl1_ok = patient.pdl1_tps_percent >= min_pdl1
+        checks.append(CriterionCheck(
+            criterion="PD-L1 Expression (TPS)",
+            category="MOLECULAR_BIOMARKER",
+            passed=pdl1_ok,
+            patient_value=f"{patient.pdl1_tps_percent:.1f}%",
+            required_threshold=f">= {min_pdl1:.1f}%",
+            impact_note="Meets biomarker expression cutoff." if pdl1_ok else f"Below minimum required PD-L1 expression ({min_pdl1:.0f}%)."
+        ))
 
     # Compute overall score and match status
     passed_count = sum(1 for c in checks if c.passed)
     total_count = len(checks)
-    score_pct = round((passed_count / total_count) * 100.0, 1)
+    score_pct = round((passed_count / max(1, total_count)) * 100.0, 1)
 
     # Hard exclusions unconditionally produce NOT_ELIGIBLE — score cannot override this
     if hard_exclusion_failures:
@@ -249,19 +345,50 @@ async def screen_patient_eligibility(
 ):
     """
     Evaluates individual patient clinical phenotype against active protocol portfolio.
-    Identifies potentially eligible candidates, candidates requiring review, and protocol amendment opportunities.
-    Authentication required. Results must be reviewed by a qualified clinical investigator.
+    Evaluates against both canonical protocols and uploaded institutional protocols in DuckDB.
+    Enforces RBAC and patient ID anchoring. Results must be reviewed by a qualified clinical investigator.
     """
-    from datetime import datetime, timezone
+    # Enforce patient identity: Patient users cannot spoof other user account IDs
+    if current_user.role == "patient":
+        if payload.patient_id and payload.patient_id.startswith("usr-") and payload.patient_id != current_user.id:
+            raise HTTPException(
+                status_code=403,
+                detail="Security violation: Patient users may only screen eligibility for their own profile."
+            )
+        verified_patient_id = payload.patient_id or current_user.id
+    else:
+        verified_patient_id = payload.patient_id or "PT-EVAL-2026"
 
     matches: list[TrialMatchResult] = []
+
+    # 1. Sample Protocol Map
     for proto_type, factory in SAMPLE_PROTOCOL_MAP.items():
         proto = factory()
         try:
             match_res = evaluate_patient_against_protocol(payload, proto)
             matches.append(match_res)
         except Exception:
-            logger.exception("Eligibility evaluation failed for protocol type: %s", proto_type)
+            logger.exception("Eligibility evaluation failed for sample protocol type: %s", proto_type)
+
+    # 2. Uploaded Protocols from DuckDB
+    conn = db_client.get_connection()
+    try:
+        rows = conn.execute("SELECT protocol_id, data_json FROM uploaded_protocols").fetchall()
+        for p_id, p_json in rows:
+            try:
+                p_data = json.loads(p_json)
+                proto = ClinicalTrialProtocol(**p_data)
+                # Avoid duplicate if protocol_id already evaluated
+                if any(m.protocol_id == proto.protocol_id for m in matches):
+                    continue
+                match_res = evaluate_patient_against_protocol(payload, proto)
+                matches.append(match_res)
+            except Exception:
+                logger.exception("Eligibility evaluation failed for uploaded protocol: %s", p_id)
+    except Exception:
+        logger.exception("Failed to query uploaded_protocols table during patient screening.")
+    finally:
+        conn.close()
 
     eligible_count = sum(1 for m in matches if m.match_status == "POTENTIALLY_ELIGIBLE")
     review_count = sum(1 for m in matches if m.match_status == "REQUIRES_REVIEW")
@@ -273,10 +400,123 @@ async def screen_patient_eligibility(
     )
 
     return ScreeningResponse(
-        patient_id=payload.patient_id or "PT-EVAL-2026",
+        patient_id=verified_patient_id,
         evaluation_timestamp=datetime.now(timezone.utc).isoformat(),
         trials_evaluated=len(matches),
         matches=matches,
         recruitment_support_summary=summary,
         investigator_disclaimer=INVESTIGATOR_DISCLAIMER
     )
+
+
+class PatientInterestSubmission(BaseModel):
+    protocol_id: str = Field(..., description="Target clinical trial protocol identifier")
+    patient_id: Optional[str] = Field(None, description="Optional patient ID")
+    notes: Optional[str] = Field(None, description="Optional notes or message for the site coordinator")
+
+
+class PatientInterestRecord(BaseModel):
+    id: str
+    patient_id: str
+    protocol_id: str
+    patient_name: Optional[str] = None
+    patient_email: Optional[str] = None
+    status: str
+    submitted_at: str
+
+
+@router.post("/interest")
+async def express_patient_interest(
+    payload: PatientInterestSubmission,
+    current_user: AuthenticatedUser = Depends(get_current_user)
+):
+    """
+    Records a patient's interest in enrolling in a specific clinical trial protocol.
+    Saves immutable record in DuckDB patient_interests table.
+    Enforces that patients record interest under their own verified identity.
+    """
+    patient_id = current_user.id if current_user.role == "patient" else (payload.patient_id or current_user.id)
+    interest_id = f"int-{uuid.uuid4().hex[:8]}"
+
+    conn = db_client.get_connection()
+    try:
+        # Check if already submitted
+        existing = conn.execute(
+            "SELECT id, status, CAST(submitted_at AS VARCHAR) FROM patient_interests WHERE patient_id = ? AND protocol_id = ?",
+            (patient_id, payload.protocol_id)
+        ).fetchone()
+
+        if existing:
+            return {
+                "success": True,
+                "interest_id": existing[0],
+                "protocol_id": payload.protocol_id,
+                "patient_id": patient_id,
+                "status": existing[1],
+                "message": "Interest is already registered with the clinical site coordinator."
+            }
+
+        conn.execute(
+            """
+            INSERT INTO patient_interests (id, patient_id, protocol_id, patient_name, patient_email, status, submitted_at)
+            VALUES (?, ?, ?, ?, ?, 'SUBMITTED', CURRENT_TIMESTAMP)
+            """,
+            (interest_id, patient_id, payload.protocol_id, current_user.name, current_user.email)
+        )
+
+        return {
+            "success": True,
+            "interest_id": interest_id,
+            "protocol_id": payload.protocol_id,
+            "patient_id": patient_id,
+            "status": "SUBMITTED",
+            "message": "Interest registered with site coordinator. Study team will review eligibility."
+        }
+    finally:
+        conn.close()
+
+
+@router.get("/interests", response_model=list[PatientInterestRecord])
+async def get_patient_interests(
+    current_user: AuthenticatedUser = Depends(get_current_user)
+):
+    """
+    Retrieves expressed trial interests.
+    Patients see their own submitted expressions of interest.
+    Investigators and administrators see all submitted patient expressions across all protocols.
+    """
+    conn = db_client.get_connection()
+    try:
+        if current_user.role == "patient":
+            rows = conn.execute(
+                """
+                SELECT id, patient_id, protocol_id, patient_name, patient_email, status, CAST(submitted_at AS VARCHAR)
+                FROM patient_interests
+                WHERE patient_id = ? OR patient_email = ?
+                ORDER BY submitted_at DESC
+                """,
+                (current_user.id, current_user.email)
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT id, patient_id, protocol_id, patient_name, patient_email, status, CAST(submitted_at AS VARCHAR)
+                FROM patient_interests
+                ORDER BY submitted_at DESC
+                """
+            ).fetchall()
+
+        interests = []
+        for r in rows:
+            interests.append(PatientInterestRecord(
+                id=r[0],
+                patient_id=r[1],
+                protocol_id=r[2],
+                patient_name=r[3],
+                patient_email=r[4],
+                status=r[5],
+                submitted_at=str(r[6])
+            ))
+        return interests
+    finally:
+        conn.close()

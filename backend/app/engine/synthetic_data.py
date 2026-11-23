@@ -5,7 +5,6 @@ modeled after real-world RWD and SEER / Flatiron Health distributions.
 """
 import numpy as np
 import pandas as pd
-from app.db.duckdb_client import db_client
 
 
 def generate_synthetic_cohort(total_patients: int = 10000, seed: int = 42) -> pd.DataFrame:
@@ -149,6 +148,7 @@ def generate_synthetic_cohort(total_patients: int = 10000, seed: int = 42) -> pd
 
 def seed_database_if_empty(total_patients: int = 10000) -> int:
     """Populates DuckDB with synthetic cohort if table is empty."""
+    from app.db.duckdb_client import db_client
     count = db_client.count_patients()
     if count >= total_patients:
         return count

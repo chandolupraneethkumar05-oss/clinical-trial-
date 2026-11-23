@@ -2,12 +2,14 @@
 ProtocolShield Protocol Management & Burden Analysis API Routes
 """
 import logging
+import json
 from fastapi import APIRouter, HTTPException, UploadFile, File, Depends
 from app.models.protocol import ClinicalTrialProtocol, ProtocolEligibilityCriteria
 from app.models.burden import ProtocolVisit, AssessmentProcedure, PatientBurdenBreakdown
 from app.engine.burden_scorer import burden_engine, STANDARD_PROCEDURE_CATALOG
 from app.engine.pdf_parser import ProtocolPDFParser
 from app.core.security import require_role, AuthenticatedUser
+from app.db.duckdb_client import db_client
 
 router = APIRouter(prefix="/protocol", tags=["Protocol Analysis"])
 logger = logging.getLogger(__name__)
@@ -396,6 +398,20 @@ async def upload_protocol_pdf(
 
         parser = ProtocolPDFParser()
         protocol = parser.parse(file_bytes, file.filename)
+
+        # Persist extracted protocol to DuckDB uploaded_protocols table
+        conn = db_client.get_connection()
+        try:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO uploaded_protocols (protocol_id, data_json, uploaded_by, uploaded_at)
+                VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                """,
+                (protocol.protocol_id, protocol.model_dump_json(), _user.email)
+            )
+        finally:
+            conn.close()
+
         return protocol
 
     except HTTPException:
@@ -406,6 +422,23 @@ async def upload_protocol_pdf(
             status_code=500,
             detail="Protocol extraction failed. Please ensure the file is a valid clinical trial protocol PDF."
         )
+
+
+@router.get("/uploaded", response_model=list[ClinicalTrialProtocol])
+async def get_uploaded_protocols(_user: AuthenticatedUser = Depends(require_role(["doctor", "admin"]))):
+    """Retrieves all stored uploaded protocols from DuckDB."""
+    conn = db_client.get_connection()
+    try:
+        rows = conn.execute("SELECT data_json FROM uploaded_protocols ORDER BY uploaded_at DESC").fetchall()
+        protocols = []
+        for r in rows:
+            try:
+                protocols.append(ClinicalTrialProtocol(**json.loads(r[0])))
+            except Exception:
+                continue
+        return protocols
+    finally:
+        conn.close()
 
 
 @router.post("/score-burden", response_model=PatientBurdenBreakdown)

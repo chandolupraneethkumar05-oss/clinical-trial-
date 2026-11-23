@@ -156,3 +156,62 @@ def test_get_current_user_me_endpoint():
     # Tampered token
     tampered_me = client.get("/api/v1/auth/me", headers={"Authorization": "Bearer invalid.jwt.token"})
     assert tampered_me.status_code == 401
+
+
+def test_jwt_revocation_on_logout():
+    # 1. Login to acquire fresh session token
+    resp = client.post("/api/v1/auth/signin", json={
+        "email": "elena.vance@novartis.com",
+        "password": "Novartis2026!"
+    })
+    assert resp.status_code == 200
+    token = resp.json()["token"]
+    headers = {"Authorization": f"Bearer {token}"}
+
+    # 2. Verify token is active
+    me_resp = client.get("/api/v1/auth/me", headers=headers)
+    assert me_resp.status_code == 200
+
+    # 3. Call logout endpoint to blacklist token
+    logout_resp = client.post("/api/v1/auth/logout", headers=headers)
+    assert logout_resp.status_code == 200
+    assert logout_resp.json()["success"] is True
+
+    # 4. Attempt to reuse token on /me - must be rejected with 401
+    post_logout_me = client.get("/api/v1/auth/me", headers=headers)
+    assert post_logout_me.status_code == 401
+    assert "terminated or logged out" in post_logout_me.json()["detail"]
+
+
+def test_sliding_window_rate_limiter():
+    from app.core.security import SlidingWindowRateLimiter
+    limiter = SlidingWindowRateLimiter()
+    test_key = "client-test-ip-123"
+
+    # Allow up to 3 requests
+    allowed1, _ = limiter.check(test_key, max_requests=3, window_seconds=60)
+    allowed2, _ = limiter.check(test_key, max_requests=3, window_seconds=60)
+    allowed3, _ = limiter.check(test_key, max_requests=3, window_seconds=60)
+    assert allowed1 is True
+    assert allowed2 is True
+    assert allowed3 is True
+
+    # 4th request must be blocked
+    allowed4, retry_after = limiter.check(test_key, max_requests=3, window_seconds=60)
+    assert allowed4 is False
+    assert retry_after > 0
+
+
+def test_cohort_simulator_sql_injection_resilience():
+    from app.engine.cohort_simulator import cohort_engine
+    from app.models.patient import CohortFilterCriteria
+
+    # Attempt classic SQL injection payload in allowed_stages
+    malicious_criteria = CohortFilterCriteria(
+        allowed_stages=["Stage IV", "'; DROP TABLE patients; --", "Stage IIIB' OR 1=1 --"]
+    )
+    # Must execute safely via parameterized query without syntax errors or injection
+    result = cohort_engine.simulate_eligibility_funnel(malicious_criteria)
+    assert "final_eligible_count" in result
+    assert "funnel_stages" in result
+    assert result["final_eligible_count"] >= 0

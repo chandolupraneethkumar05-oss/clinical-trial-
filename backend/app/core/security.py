@@ -3,13 +3,18 @@ ProtocolShield Enterprise Security & Cryptography Module
 Implements Bcrypt adaptive password hashing, JWT bearer token signing,
 session lifecycle verification, and role-based access control (RBAC).
 """
+import os
 import secrets
 import hashlib
+import time
+import threading
+import uuid
+from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Any
 import bcrypt
 import jwt
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, status, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 from app.core.config import settings
@@ -21,6 +26,70 @@ oauth2_scheme = HTTPBearer(auto_error=False)
 LEGACY_SALT = "protocolshield_security_salt_2026"
 
 
+# ── Sliding Window In-Memory Rate Limiter ────────────────────────────────────
+
+class SlidingWindowRateLimiter:
+    """
+    Thread-safe in-memory sliding window rate limiter.
+    Provides strict brute-force and DDoS mitigation without external dependencies.
+    """
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._history: dict[str, list[float]] = defaultdict(list)
+
+    def check(self, key: str, max_requests: int, window_seconds: int) -> tuple[bool, int]:
+        """
+        Evaluates whether key is within rate limits.
+        Returns: (is_allowed, retry_after_seconds)
+        """
+        now = time.time()
+        cutoff = now - window_seconds
+        with self._lock:
+            valid_times = [t for t in self._history[key] if t > cutoff]
+            if len(valid_times) >= max_requests:
+                earliest = valid_times[0]
+                retry_after = max(1, int(earliest + window_seconds - now))
+                self._history[key] = valid_times
+                return False, retry_after
+            valid_times.append(now)
+            self._history[key] = valid_times
+            return True, 0
+
+    def clear(self):
+        with self._lock:
+            self._history.clear()
+
+
+rate_limiter = SlidingWindowRateLimiter()
+
+
+def enforce_rate_limit(max_requests: int, window_seconds: int, prefix: str = "general"):
+    """
+    FastAPI dependency factory enforcing sliding-window rate limiting per client IP.
+    Returns HTTP 429 Too Many Requests with Retry-After header.
+    Automatically bypassed in pytest test runners via PYTEST_CURRENT_TEST.
+    """
+    async def limiter_dependency(request: Request):
+        if os.environ.get("PYTEST_CURRENT_TEST") or os.environ.get("TESTING") == "1":
+            return
+
+        client_ip = request.client.host if request.client else "127.0.0.1"
+        # Check X-Forwarded-For if behind reverse proxy
+        forwarded = request.headers.get("x-forwarded-for")
+        if forwarded:
+            client_ip = forwarded.split(",")[0].strip()
+
+        key = f"{prefix}:{client_ip}"
+        allowed, retry_after = rate_limiter.check(key, max_requests, window_seconds)
+        if not allowed:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=f"Rate limit exceeded. Too many attempts. Please retry in {retry_after} seconds.",
+                headers={"Retry-After": str(retry_after)}
+            )
+    return limiter_dependency
+
+
 class TokenPayload(BaseModel):
     sub: str
     email: str
@@ -28,6 +97,7 @@ class TokenPayload(BaseModel):
     role: str
     exp: int
     iat: int
+    jti: Optional[str] = None
 
 
 class AuthenticatedUser(BaseModel):
@@ -76,7 +146,7 @@ def verify_password(plain_password: str, stored_hash: str) -> tuple[bool, bool]:
 # ── JWT Session Cryptography ────────────────────────────────────────────────
 
 def create_access_token(data: dict[str, Any], expires_delta: Optional[timedelta] = None) -> str:
-    """Signs a standard JWT access token with user claims and expiration."""
+    """Signs a standard JWT access token with unique JTI, user claims and expiration."""
     to_encode = data.copy()
     now = datetime.now(timezone.utc)
     if expires_delta:
@@ -84,6 +154,7 @@ def create_access_token(data: dict[str, Any], expires_delta: Optional[timedelta]
     else:
         expire = now + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
 
+    to_encode.setdefault("jti", uuid.uuid4().hex)
     to_encode.update({
         "exp": int(expire.timestamp()),
         "iat": int(now.timestamp())
@@ -95,6 +166,60 @@ def create_access_token(data: dict[str, Any], expires_delta: Optional[timedelta]
         algorithm=settings.JWT_ALGORITHM
     )
     return encoded_jwt
+
+
+def is_token_revoked(token: str, jti: Optional[str] = None) -> bool:
+    """Checks whether the token or its JTI has been revoked in DuckDB."""
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    conn = db_client.get_connection()
+    try:
+        if jti:
+            row = conn.execute(
+                "SELECT count(*) FROM token_blacklist WHERE jti = ? OR token_hash = ?",
+                (jti, token_hash)
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT count(*) FROM token_blacklist WHERE token_hash = ?",
+                (token_hash,)
+            ).fetchone()
+        return bool(row and row[0] > 0)
+    finally:
+        conn.close()
+
+
+def revoke_token(token: str) -> bool:
+    """Blacklists a token so it cannot be used again."""
+    try:
+        payload = jwt.decode(
+            token,
+            settings.JWT_SECRET_KEY,
+            algorithms=[settings.JWT_ALGORITHM],
+            options={"verify_exp": False}
+        )
+        jti = payload.get("jti") or uuid.uuid4().hex
+        exp_ts = payload.get("exp")
+        if exp_ts:
+            expires_at = datetime.fromtimestamp(exp_ts, tz=timezone.utc)
+        else:
+            expires_at = datetime.now(timezone.utc) + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+    except Exception:
+        jti = uuid.uuid4().hex
+        expires_at = datetime.now(timezone.utc) + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    conn = db_client.get_connection()
+    try:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO token_blacklist (jti, token_hash, revoked_at, expires_at)
+            VALUES (?, ?, CURRENT_TIMESTAMP, ?)
+            """,
+            (jti, token_hash, expires_at)
+        )
+        return True
+    finally:
+        conn.close()
 
 
 def decode_access_token(token: str) -> dict[str, Any]:
@@ -125,12 +250,16 @@ def decode_access_token(token: str) -> dict[str, Any]:
 async def get_current_user_optional(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(oauth2_scheme)
 ) -> Optional[AuthenticatedUser]:
-    """Returns authenticated user if a valid Bearer token is provided, or None."""
+    """Returns authenticated user if a valid Bearer token is provided and not revoked, or None."""
     if not credentials or not credentials.credentials:
         return None
 
     try:
         payload = decode_access_token(credentials.credentials)
+        jti = payload.get("jti")
+        if is_token_revoked(credentials.credentials, jti):
+            return None
+
         user_id = payload.get("sub")
         if not user_id:
             return None
@@ -160,7 +289,7 @@ async def get_current_user_optional(
 async def get_current_user(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(oauth2_scheme)
 ) -> AuthenticatedUser:
-    """Enforces authentication: requires valid Bearer token."""
+    """Enforces authentication: requires valid, unrevoked Bearer token."""
     if not credentials or not credentials.credentials:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -169,6 +298,14 @@ async def get_current_user(
         )
 
     payload = decode_access_token(credentials.credentials)
+    jti = payload.get("jti")
+    if is_token_revoked(credentials.credentials, jti):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Session has been terminated or logged out. Please authenticate again.",
+            headers={"WWW-Authenticate": "Bearer"}
+        )
+
     user_id = payload.get("sub")
     if not user_id:
         raise HTTPException(

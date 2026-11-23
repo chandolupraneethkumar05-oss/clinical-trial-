@@ -74,6 +74,45 @@ export const PatientPortal: FC<PatientPortalProps> = ({
   const [summary, setSummary] = useState<string>('');
   const [enrolledTrialId, setEnrolledTrialId] = useState<string | null>(null);
 
+  // Fetch persisted interests on mount
+  useEffect(() => {
+    async function loadInterests() {
+      if (!user.token) return;
+      try {
+        const res = await fetch('/api/v1/patient/interests', {
+          headers: { Authorization: `Bearer ${user.token}` }
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (Array.isArray(data) && data.length > 0) {
+            setEnrolledTrialId(data[0].protocol_id);
+          }
+        }
+      } catch (e) {
+        console.warn('Could not load existing interests', e);
+      }
+    }
+    loadInterests();
+  }, [user]);
+
+  // Persist interest to backend DuckDB
+  const handleExpressInterest = async (protocolId: string) => {
+    setEnrolledTrialId(protocolId);
+    try {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (user.token) {
+        headers['Authorization'] = `Bearer ${user.token}`;
+      }
+      await fetch('/api/v1/patient/interest', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ protocol_id: protocolId })
+      });
+    } catch (err) {
+      console.error('Failed to register interest:', err);
+    }
+  };
+
   // Live Screening Query
   const runScreening = async () => {
     setIsLoading(true);
@@ -488,7 +527,7 @@ export const PatientPortal: FC<PatientPortalProps> = ({
                         </span>
                       ) : (
                         <button
-                          onClick={() => setEnrolledTrialId(trial.protocol_id)}
+                          onClick={() => handleExpressInterest(trial.protocol_id)}
                           className={`inline-flex items-center space-x-1.5 px-4 py-2 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
                             isEligible || isBorderline
                               ? 'bg-charcoal-900 hover:bg-charcoal-800 text-white shadow-xs'

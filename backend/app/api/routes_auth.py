@@ -9,7 +9,8 @@ import hashlib
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Optional
-from fastapi import APIRouter, HTTPException, Depends, status
+from fastapi import APIRouter, HTTPException, Depends, status, Request
+from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
 from google.oauth2 import id_token as google_id_token
 from google.auth.transport import requests as google_requests
@@ -24,6 +25,9 @@ from app.core.security import (
     create_access_token,
     get_current_user,
     AuthenticatedUser,
+    enforce_rate_limit,
+    revoke_token,
+    oauth2_scheme,
 )
 
 router = APIRouter(prefix="/auth", tags=["Enterprise Authentication"])
@@ -154,7 +158,11 @@ class AuthResponse(BaseModel):
 
 # ── Endpoints ────────────────────────────────────────────────────────────────
 
-@router.post("/signup", response_model=AuthResponse)
+@router.post(
+    "/signup",
+    response_model=AuthResponse,
+    dependencies=[Depends(enforce_rate_limit(max_requests=10, window_seconds=60, prefix="auth_signup"))]
+)
 async def signup(payload: SignUpRequest):
     """Registers a new user account with Bcrypt password hashing and returns a signed JWT."""
     seed_default_users_if_empty()
@@ -208,7 +216,11 @@ async def signup(payload: SignUpRequest):
         conn.close()
 
 
-@router.post("/signin", response_model=AuthResponse)
+@router.post(
+    "/signin",
+    response_model=AuthResponse,
+    dependencies=[Depends(enforce_rate_limit(max_requests=10, window_seconds=60, prefix="auth_signin"))]
+)
 async def signin(payload: SignInRequest):
     """Authenticates credentials against Bcrypt (with legacy SHA-256 upgrade) and returns signed JWT."""
     seed_default_users_if_empty()
@@ -267,7 +279,10 @@ async def signin(payload: SignInRequest):
         conn.close()
 
 
-@router.post("/forgot-password/request")
+@router.post(
+    "/forgot-password/request",
+    dependencies=[Depends(enforce_rate_limit(max_requests=5, window_seconds=60, prefix="auth_forgot_pw"))]
+)
 async def forgot_password_request(payload: ForgotPasswordInitRequest):
     """
     Step 1: Secure password reset initiation.
@@ -474,9 +489,18 @@ async def get_current_user_profile(user: AuthenticatedUser = Depends(get_current
 
 
 @router.post("/logout")
-async def logout(user: AuthenticatedUser = Depends(get_current_user)):
-    """Terminates session for the authenticated caller."""
+async def logout(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(oauth2_scheme),
+    user: AuthenticatedUser = Depends(get_current_user)
+):
+    """
+    Terminates session for the authenticated caller and commits token
+    to the revocation blacklist to prevent replay or reuse.
+    """
+    if credentials and credentials.credentials:
+        revoke_token(credentials.credentials)
+
     return {
         "success": True,
-        "message": f"Session for {user.email} terminated successfully."
+        "message": f"Session for {user.email} terminated and token invalidated successfully."
     }

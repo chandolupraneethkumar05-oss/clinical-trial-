@@ -37,6 +37,7 @@ import {
   Dna,
   CheckCircle2,
   AlertTriangle,
+  BarChart3,
 } from 'lucide-react';
 
 export type StudioTab = 'sandbox' | 'soe' | 'overview' | 'benchmarks' | 'audit';
@@ -277,7 +278,7 @@ export const StudioWorkspace: FC<StudioWorkspaceProps> = ({
             INTERACTIVE FEATURE SHOWCASE RIBBON (Instant Feature Discovery)
            ───────────────────────────────────────────────────────────── */}
         <div className="bg-white border-t border-linen-200 px-4 sm:px-6 lg:px-8 py-2">
-          <div className="max-w-7xl mx-auto grid grid-cols-2 lg:grid-cols-4 gap-2">
+          <div className="max-w-7xl mx-auto grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2">
             
             {/* Feature 1: What-If Sandbox */}
             <button
@@ -348,7 +349,30 @@ export const StudioWorkspace: FC<StudioWorkspaceProps> = ({
               </p>
             </button>
 
-            {/* Feature 4: Regulatory Audit Trail */}
+            {/* Feature 4: Peer Benchmarks */}
+            <button
+              onClick={() => handleSetTab('benchmarks')}
+              className={`p-2.5 rounded-xl text-left transition-all border ${
+                currentTab === 'benchmarks'
+                  ? 'bg-charcoal-950 text-white border-charcoal-900 shadow-sm'
+                  : 'bg-linen-50 hover:bg-linen-100 text-charcoal-800 border-linen-200'
+              }`}
+            >
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-[10px] font-mono font-bold uppercase tracking-wider flex items-center space-x-1 text-teal-600">
+                  <BarChart3 className="h-3 w-3" />
+                  <span>Peer Benchmarks</span>
+                </span>
+                <span className="text-[9px] font-mono px-1.5 py-0.2 rounded-full bg-teal-500/20 text-teal-600">
+                  {benchmarks.length} Trials
+                </span>
+              </div>
+              <p className={`text-xs font-semibold truncate ${currentTab === 'benchmarks' ? 'text-white' : 'text-charcoal-900'}`}>
+                Historical Trial Context
+              </p>
+            </button>
+
+            {/* Feature 5: Regulatory Audit Trail */}
             <button
               onClick={() => handleSetTab('audit')}
               className={`p-2.5 rounded-xl text-left transition-all border ${
@@ -366,7 +390,7 @@ export const StudioWorkspace: FC<StudioWorkspaceProps> = ({
                   SHA-256
                 </span>
               </div>
-              <p className={`text-xs font-semibold truncate ${activeTab === 'audit' ? 'text-white' : 'text-charcoal-900'}`}>
+              <p className={`text-xs font-semibold truncate ${currentTab === 'audit' ? 'text-white' : 'text-charcoal-900'}`}>
                 Regulatory Integrity Trail
               </p>
             </button>
