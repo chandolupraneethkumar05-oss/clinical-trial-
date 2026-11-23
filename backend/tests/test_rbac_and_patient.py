@@ -79,20 +79,38 @@ def test_patient_eligibility_screening_endpoint():
         "prior_lines": 0
     }
 
-    resp = client.post("/api/v1/patient/screen-eligibility", json=payload)
+    # 1. Verify unauthenticated screening is rejected with 401
+    unauth_resp = client.post("/api/v1/patient/screen-eligibility", json=payload)
+    assert unauth_resp.status_code == 401
+
+    # 2. Authenticate as volunteer patient
+    login_resp = client.post("/api/v1/auth/signin", json={
+        "email": "john.miller@patient.org",
+        "password": "Patient2026!"
+    })
+    assert login_resp.status_code == 200
+    token = login_resp.json()["token"]
+
+    resp = client.post(
+        "/api/v1/patient/screen-eligibility",
+        json=payload,
+        headers={"Authorization": f"Bearer {token}"}
+    )
     assert resp.status_code == 200
     data = resp.json()
 
     assert "matches" in data
     assert "recruitment_support_summary" in data
+    assert "investigator_disclaimer" in data
     assert len(data["matches"]) >= 1
 
     # Inspect first match (NSCLC)
     nsclc_match = next((m for m in data["matches"] if "NSCLC" in m["protocol_id"]), data["matches"][0])
     assert nsclc_match["protocol_id"] is not None
-    assert nsclc_match["match_status"] in ["ELIGIBLE", "BORDERLINE", "INELIGIBLE"]
+    assert nsclc_match["match_status"] in ["POTENTIALLY_ELIGIBLE", "REQUIRES_REVIEW", "NOT_ELIGIBLE"]
     assert "criteria_breakdown" in nsclc_match
     assert len(nsclc_match["criteria_breakdown"]) >= 5
+    assert nsclc_match.get("investigator_confirmation_required") is True
 
     # Check criteria breakdown includes eGFR, ECOG, Brain Mets
     criteria_names = [c["criterion"] for c in nsclc_match["criteria_breakdown"]]

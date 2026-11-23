@@ -6,12 +6,15 @@ role-based access control (RBAC), and 2-step single-use password resets.
 import uuid
 import secrets
 import hashlib
+import logging
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 from fastapi import APIRouter, HTTPException, Depends, status
 from pydantic import BaseModel, Field
 from google.oauth2 import id_token as google_id_token
 from google.auth.transport import requests as google_requests
+
+logger = logging.getLogger(__name__)
 
 from app.core.config import settings
 from app.db.duckdb_client import db_client
@@ -156,10 +159,10 @@ async def signup(payload: SignUpRequest):
     """Registers a new user account with Bcrypt password hashing and returns a signed JWT."""
     seed_default_users_if_empty()
 
-    # Validate and normalize role
-    requested_role = (payload.role or ROLE_DOCTOR).lower().strip()
-    if requested_role not in VALID_ROLES:
-        requested_role = ROLE_DOCTOR
+    # Security: Public registration ALWAYS creates patient accounts.
+    # Role values submitted by the client are intentionally ignored.
+    # Doctors must be promoted by an admin; admins are provisioned separately.
+    assigned_role = ROLE_PATIENT
 
     conn = db_client.get_connection()
     try:
@@ -175,14 +178,15 @@ async def signup(payload: SignUpRequest):
         pwd_hash = hash_password(payload.password)
         conn.execute(
             "INSERT INTO users (id, name, email, password_hash, role, organization, provider) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (user_id, payload.name.strip(), clean_email, pwd_hash, requested_role, payload.organization, "email")
+            (user_id, payload.name.strip(), clean_email, pwd_hash, assigned_role, payload.organization, "email")
         )
+        logger.info("New patient account created: user_id=%s", user_id)
 
         user_obj = AuthUserResponse(
             id=user_id,
             name=payload.name.strip(),
             email=clean_email,
-            role=requested_role,
+            role=assigned_role,
             organization=payload.organization,
             provider="email"
         )
@@ -191,7 +195,7 @@ async def signup(payload: SignUpRequest):
             "sub": user_id,
             "email": clean_email,
             "name": user_obj.name,
-            "role": requested_role
+            "role": assigned_role
         })
 
         return AuthResponse(
@@ -236,7 +240,7 @@ async def signin(payload: SignInRequest):
             new_hash = hash_password(payload.password)
             conn.execute("UPDATE users SET password_hash = ? WHERE id = ?", (new_hash, user_id))
 
-        user_role = (role or ROLE_DOCTOR).lower().strip()
+        user_role = (role or ROLE_PATIENT).lower().strip()
         user_obj = AuthUserResponse(
             id=user_id,
             name=name,
@@ -381,15 +385,26 @@ async def google_auth(payload: GoogleSignInRequest):
             settings.GOOGLE_CLIENT_ID
         )
 
+        # Security: reject tokens with unverified email addresses
+        if id_info.get("email_verified") is not True:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Google account email is not verified. Please verify your Google account email before signing in."
+            )
+
         email = id_info.get("email", "").lower().strip()
-        name = id_info.get("name", "Google Investigator")
+        google_sub = id_info.get("sub", "")
+        name = id_info.get("name", "Google User")
         if not email:
             raise HTTPException(status_code=400, detail="Google token does not contain a verified email.")
 
-    except Exception as e:
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Google ID token verification failed")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"Google ID token verification failed: {str(e)}"
+            detail="Google Sign-In verification failed. Please try again."
         )
 
     conn = db_client.get_connection()
@@ -401,16 +416,19 @@ async def google_auth(payload: GoogleSignInRequest):
 
         if user_row:
             user_id, name, email, role, org = user_row
+            logger.info("Google OIDC login: existing user user_id=%s", user_id)
         else:
+            # New Google user: always create as patient
             user_id = f"usr-{uuid.uuid4().hex[:8]}"
-            role = ROLE_DOCTOR
-            org = "Google Workspace Verified Clinical Team"
+            role = ROLE_PATIENT
+            org = "Google Workspace"
             conn.execute(
                 "INSERT INTO users (id, name, email, password_hash, role, organization, provider) VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (user_id, name, email, "google_oidc_managed", role, org, "google")
             )
+            logger.info("New patient account via Google OIDC: user_id=%s", user_id)
 
-        user_role = (role or ROLE_DOCTOR).lower().strip()
+        user_role = (role or ROLE_PATIENT).lower().strip()
         user_obj = AuthUserResponse(
             id=user_id,
             name=name,

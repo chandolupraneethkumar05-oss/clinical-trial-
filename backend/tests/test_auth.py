@@ -41,7 +41,7 @@ def test_signup_and_signin_new_user():
         "name": "Dr. Clara Oswald",
         "email": random_email,
         "password": "ValidPassword2026!",
-        "role": "doctor",
+        "role": "doctor",  # Requesting privileged role should be ignored by backend
         "organization": "AstraZeneca Oncology"
     }
     resp = client.post("/api/v1/auth/signup", json=signup_payload)
@@ -49,7 +49,8 @@ def test_signup_and_signin_new_user():
     data = resp.json()
     assert data["success"] is True
     assert data["user"]["email"] == random_email.lower()
-    assert data["user"]["role"] == "doctor"
+    # Security fix verification: Public signups ALWAYS assign patient role
+    assert data["user"]["role"] == "patient"
     assert "token" in data
 
     # Sign in with newly created account
@@ -60,6 +61,24 @@ def test_signup_and_signin_new_user():
     si_resp = client.post("/api/v1/auth/signin", json=signin_payload)
     assert si_resp.status_code == 200
     assert si_resp.json()["user"]["name"] == "Dr. Clara Oswald"
+    assert si_resp.json()["user"]["role"] == "patient"
+
+
+def test_public_signup_cannot_create_admin():
+    random_email = f"malicious.admin.{uuid.uuid4().hex[:6]}@adversary.org"
+    signup_payload = {
+        "name": "Attacker Admin",
+        "email": random_email,
+        "password": "ValidPassword2026!",
+        "role": "admin",  # Attempting privilege escalation
+        "organization": "Adversary Org"
+    }
+    resp = client.post("/api/v1/auth/signup", json=signup_payload)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["success"] is True
+    # Security fix verification: Admin privilege escalation is strictly blocked
+    assert data["user"]["role"] == "patient"
 
 
 def test_secure_two_step_forgot_password():

@@ -34,9 +34,23 @@ def test_pdf_parser_fallback_on_corrupt():
 
 
 def test_pdf_upload_non_pdf_rejected():
-    res = client.post(
+    # 1. Unauthenticated request rejected with 401
+    unauth_res = client.post(
         "/api/v1/protocol/upload",
         files={"file": ("notes.txt", b"plain text", "text/plain")}
+    )
+    assert unauth_res.status_code == 401
+
+    # 2. Authenticated doctor request rejected with 400 (not a PDF)
+    login_resp = client.post("/api/v1/auth/signin", json={
+        "email": "elena.vance@novartis.com",
+        "password": "Novartis2026!"
+    })
+    token = login_resp.json()["token"]
+    res = client.post(
+        "/api/v1/protocol/upload",
+        files={"file": ("notes.txt", b"plain text", "text/plain")},
+        headers={"Authorization": f"Bearer {token}"}
     )
     assert res.status_code == 400
     assert "Only PDF files are accepted" in res.json()["detail"]

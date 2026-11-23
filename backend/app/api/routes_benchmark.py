@@ -2,11 +2,14 @@
 ProtocolShield Clinical Trial Benchmark API Routes
 Interfaces with ClinicalTrials.gov API v2 and curated empirical benchmarks.
 """
-from fastapi import APIRouter, HTTPException, Query
+import logging
+from fastapi import APIRouter, HTTPException, Query, Depends
 import httpx
 from app.core.config import settings
+from app.core.security import require_role, AuthenticatedUser
 
 router = APIRouter(prefix="/benchmark", tags=["Clinical Benchmarking"])
+logger = logging.getLogger(__name__)
 
 # Pre-indexed historical trial portfolio for empirical validation
 CURATED_BENCHMARKS = [
@@ -72,18 +75,29 @@ CURATED_BENCHMARKS = [
 
 
 @router.get("/historical-trials")
-async def get_historical_benchmarks():
-    """Returns curated benchmark trials (Completed vs Terminated) for empirical verification."""
+async def get_historical_benchmarks(
+    _user: AuthenticatedUser = Depends(require_role(["doctor", "admin"]))
+):
+    """Returns curated benchmark trials (Completed vs Terminated) for empirical verification. Requires doctor or admin role."""
     return {
+        "data_source": "synthetic_benchmark",
+        "data_disclaimer": (
+            "These benchmark records are curated from publicly available ClinicalTrials.gov data "
+            "and do not represent proprietary clinical trial information."
+        ),
         "benchmark_count": len(CURATED_BENCHMARKS),
         "trials": CURATED_BENCHMARKS
     }
 
 
 @router.get("/clinicaltrials-live/{nct_id}")
-async def fetch_live_clinical_trial(nct_id: str):
+async def fetch_live_clinical_trial(
+    nct_id: str,
+    _user: AuthenticatedUser = Depends(require_role(["doctor", "admin"]))
+):
     """
     Fetches real-time protocol summary directly from ClinicalTrials.gov API v2.
+    Requires doctor or admin role.
     """
     url = f"{settings.CLINICAL_TRIALS_API_BASE}/studies/{nct_id}"
     async with httpx.AsyncClient(timeout=10.0) as client:
@@ -94,11 +108,15 @@ async def fetch_live_clinical_trial(nct_id: str):
             data = resp.json()
             protocol_section = data.get("protocolSection", {})
             return {
+                "data_source": "ClinicalTrials.gov",
                 "nct_id": nct_id,
                 "brief_title": protocol_section.get("identificationModule", {}).get("briefTitle"),
                 "status": protocol_section.get("statusModule", {}).get("overallStatus"),
                 "conditions": protocol_section.get("conditionsModule", {}).get("conditions", []),
                 "eligibility_criteria_text": protocol_section.get("eligibilityModule", {}).get("eligibilityCriteria")
             }
-        except httpx.RequestError as e:
-            raise HTTPException(status_code=503, detail=f"Failed to connect to ClinicalTrials.gov API: {str(e)}")
+        except HTTPException:
+            raise
+        except httpx.RequestError:
+            logger.exception("Failed to connect to ClinicalTrials.gov for NCT ID: %s", nct_id)
+            raise HTTPException(status_code=503, detail="ClinicalTrials.gov API is currently unavailable. Please try again later.")

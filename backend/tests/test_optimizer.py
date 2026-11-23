@@ -8,14 +8,29 @@ from app.main import app
 client = TestClient(app)
 
 
+def get_doctor_auth_headers():
+    resp = client.post("/api/v1/auth/signin", json={
+        "email": "elena.vance@novartis.com",
+        "password": "Novartis2026!"
+    })
+    assert resp.status_code == 200
+    token = resp.json()["token"]
+    return {"Authorization": f"Bearer {token}"}
+
+
 def test_propose_amendments():
     # 1. Fetch canonical sample protocol
     sample_resp = client.get("/api/v1/protocol/sample")
     assert sample_resp.status_code == 200
     protocol = sample_resp.json()
 
-    # 2. Call optimizer propose-amendments
-    opt_resp = client.post("/api/v1/optimizer/propose-amendments", json=protocol)
+    # 2. Verify unauthenticated call is rejected with 401
+    unauth_resp = client.post("/api/v1/optimizer/propose-amendments", json=protocol)
+    assert unauth_resp.status_code == 401
+
+    # 3. Call optimizer propose-amendments with doctor credentials
+    headers = get_doctor_auth_headers()
+    opt_resp = client.post("/api/v1/optimizer/propose-amendments", json=protocol, headers=headers)
     assert opt_resp.status_code == 200
     proposals = opt_resp.json()
     assert len(proposals) >= 3
@@ -43,7 +58,13 @@ def test_apply_amendment_renal():
         "protocol": protocol,
         "amendment_id": "AMD-01"
     }
-    resp = client.post("/api/v1/optimizer/apply-amendment", json=payload)
+
+    # Verify unauthenticated call is rejected with 401
+    unauth_resp = client.post("/api/v1/optimizer/apply-amendment", json=payload)
+    assert unauth_resp.status_code == 401
+
+    headers = get_doctor_auth_headers()
+    resp = client.post("/api/v1/optimizer/apply-amendment", json=payload, headers=headers)
     assert resp.status_code == 200
     updated = resp.json()
 
@@ -63,7 +84,13 @@ def test_apply_amendment_decentralize_biopsy():
         "protocol": protocol,
         "amendment_id": "AMD-02"
     }
-    resp = client.post("/api/v1/optimizer/apply-amendment", json=payload)
+
+    # Verify unauthenticated call is rejected with 401
+    unauth_resp = client.post("/api/v1/optimizer/apply-amendment", json=payload)
+    assert unauth_resp.status_code == 401
+
+    headers = get_doctor_auth_headers()
+    resp = client.post("/api/v1/optimizer/apply-amendment", json=payload, headers=headers)
     assert resp.status_code == 200
     updated = resp.json()
 

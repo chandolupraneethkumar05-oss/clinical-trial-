@@ -93,3 +93,53 @@ Where:
 * $w_{\text{temporal}} = 0.35$ (Clinic dwell time + average transit friction)
 * $w_{\text{invasive}} = 0.45$ (Biopsies, contrast CT/MRI, serial PK blood sampling)
 * $w_{\text{cognitive}} = 0.20$ (Fasting restrictions, diary compliance, visit density)
+
+---
+
+## Security & Authentication Architecture
+
+### 1. Zero-Cost Enterprise Cryptography
+* **Password Hashing:** Bcrypt (cost 12) with automatic adaptive migration from legacy SHA-256 hashes upon successful authentication. Plaintext passwords and salts are never stored or hardcoded.
+* **JWT Access Tokens:** Cryptographically signed Bearer tokens using standard HMAC-SHA256 (`HS256`). Default expiration is calibrated to 60 minutes.
+* **Production Secret Protection:** In production (`ENVIRONMENT=production`), application startup strictly fails if `JWT_SECRET_KEY` is missing or matches development defaults.
+* **Two-Step Password Recovery:** Single-use, time-limited reset tokens (15-minute TTL). Reset tokens are cryptographically hashed and never leaked in API responses in production environments.
+* **Google OIDC Integration:** Server-side verification of Google Identity ID tokens using `google-auth`. Verifies token signature, issuer, audience (`GOOGLE_CLIENT_ID`), expiration, and `email_verified=True`. Implements zero-cost ₹0 authentication architecture with no paid IDP dependencies.
+
+### 2. Role-Based Access Control (RBAC)
+ProtocolShield enforces strict server-side RBAC across three clinical personas:
+
+| Role | Access Scope | Public Registration |
+|---|---|---|
+| **Patient (`patient`)** | PatientPortal, self eligibility screening, burden preview | **Default role** for all public signups |
+| **Doctor (`doctor`)** | StudioWorkspace, AI Protocol Optimizer, Funnel Simulator, Cohort Analytics | Requires administrator promotion |
+| **Administrator (`admin`)** | Full system governance, cohort database re-seeding, user management | Provisioned via administrator credentials |
+
+* **Privilege Escalation Prevention:** The public signup endpoint ignores any `role` value passed by the client and strictly assigns the `patient` role. Privileged investigator and administrator accounts can only be provisioned through controlled administrative channels.
+
+### 3. Clinical Safety Guardrails & Disclaimers
+* **Hard Exclusions:** Clinical safety rules (e.g. untreated active brain metastases or active autoimmune conditions under immunotherapy protocols) unconditionally evaluate to `NOT_ELIGIBLE`. High overall criteria match percentages (even ≥85%) are strictly prevented from overriding hard clinical exclusions.
+* **Investigator Confirmation Disclaimer:** All patient screening endpoints and UI views include a prominent disclaimer requiring confirmation by a qualified clinical investigator before any eligibility determination is finalized.
+* **Synthetic Cohort Attribution:** All cohort data (10,000 statistical patient records) is explicitly labeled as synthetic epidemiological simulation data and is never represented as actual patient records.
+
+---
+
+## Configuration & Environment Variables
+
+Copy `.env.example` to `.env` to configure the environment:
+
+```bash
+cp .env.example .env
+```
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `ENVIRONMENT` | `development` | Runtime environment (`development` or `production`) |
+| `JWT_SECRET_KEY` | *(dev default)* | Cryptographic signing secret for JWT tokens |
+| `JWT_ALGORITHM` | `HS256` | JWT signing algorithm |
+| `ACCESS_TOKEN_EXPIRE_MINUTES` | `60` | JWT access token lifetime |
+| `FRONTEND_URL` | `http://localhost:5173` | Allowed CORS origin for the Vite frontend |
+| `BACKEND_CORS_ORIGINS` | `["http://localhost:5173", ...]` | Allowed CORS origins list |
+| `GOOGLE_CLIENT_ID` | *(optional)* | Google OAuth 2.0 Web Client ID |
+| `GOOGLE_CLIENT_SECRET` | *(optional)* | Google OAuth 2.0 Client Secret |
+| `EMAIL_PROVIDER` | *(optional)* | Production email provider for password resets |
+

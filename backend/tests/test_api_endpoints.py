@@ -33,13 +33,30 @@ def test_get_procedures_catalog():
     assert any("CT" in name for name in procedure_names)
 
 
+def get_doctor_auth_headers():
+    resp = client.post("/api/v1/auth/signin", json={
+        "email": "elena.vance@novartis.com",
+        "password": "Novartis2026!"
+    })
+    assert resp.status_code == 200
+    token = resp.json()["token"]
+    return {"Authorization": f"Bearer {token}"}
+
+
 def test_cohort_stats_endpoint():
-    resp = client.get("/api/v1/cohort/stats")
+    # Verify unauthenticated request rejected with 401
+    unauth_resp = client.get("/api/v1/cohort/stats")
+    assert unauth_resp.status_code == 401
+
+    # Verify authenticated doctor request succeeds
+    headers = get_doctor_auth_headers()
+    resp = client.get("/api/v1/cohort/stats", headers=headers)
     assert resp.status_code == 200
     stats = resp.json()
     assert stats["total_patients"] >= 1000
     assert "stages" in stats
     assert "averages" in stats
+    assert stats.get("is_synthetic_data") is True
 
 
 def test_cohort_funnel_simulation_endpoint():
@@ -59,31 +76,51 @@ def test_cohort_funnel_simulation_endpoint():
         "exclude_active_autoimmune": True,
         "target_biomarker_egfr_negative": True
     }
-    resp = client.post("/api/v1/cohort/simulate-funnel", json=payload)
+    # Verify unauthenticated request rejected with 401
+    unauth_resp = client.post("/api/v1/cohort/simulate-funnel", json=payload)
+    assert unauth_resp.status_code == 401
+
+    # Verify authenticated doctor request succeeds
+    headers = get_doctor_auth_headers()
+    resp = client.post("/api/v1/cohort/simulate-funnel", json=payload, headers=headers)
     assert resp.status_code == 200
     res = resp.json()
     assert res["final_eligible_count"] > 0
     assert res["screen_failure_rate"] > 0
     assert len(res["sensitivity_opportunities"]) == 3
+    assert res.get("is_synthetic_data") is True
 
 
 def test_historical_benchmarks_endpoint():
-    resp = client.get("/api/v1/benchmark/historical-trials")
+    # Verify unauthenticated request rejected with 401
+    unauth_resp = client.get("/api/v1/benchmark/historical-trials")
+    assert unauth_resp.status_code == 401
+
+    # Verify authenticated doctor request succeeds
+    headers = get_doctor_auth_headers()
+    resp = client.get("/api/v1/benchmark/historical-trials", headers=headers)
     assert resp.status_code == 200
     data = resp.json()
     assert data["benchmark_count"] >= 3
     assert any(t["actual_status"] == "COMPLETED" for t in data["trials"])
     assert any(t["actual_status"] == "TERMINATED" for t in data["trials"])
+    assert data.get("data_source") == "synthetic_benchmark"
 
 
 def test_retention_curve_endpoint_get_and_post():
-    # Verify GET
-    get_resp = client.get("/api/v1/cohort/retention-curve?enrolled_size=400&composite_pbi=62.5")
+    # Verify unauthenticated rejected with 401
+    unauth_get = client.get("/api/v1/cohort/retention-curve?enrolled_size=400&composite_pbi=62.5")
+    assert unauth_get.status_code == 401
+
+    # Verify authenticated GET
+    headers = get_doctor_auth_headers()
+    get_resp = client.get("/api/v1/cohort/retention-curve?enrolled_size=400&composite_pbi=62.5", headers=headers)
     assert get_resp.status_code == 200
     assert "retention_curve" in get_resp.json()
     assert len(get_resp.json()["retention_curve"]) > 10
+    assert get_resp.json().get("is_synthetic_data") is True
 
-    # Verify POST
-    post_resp = client.post("/api/v1/cohort/retention-curve?enrolled_size=400&composite_pbi=62.5")
+    # Verify authenticated POST
+    post_resp = client.post("/api/v1/cohort/retention-curve?enrolled_size=400&composite_pbi=62.5", headers=headers)
     assert post_resp.status_code == 200
     assert "retention_curve" in post_resp.json()

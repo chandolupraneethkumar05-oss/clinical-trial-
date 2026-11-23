@@ -58,9 +58,18 @@ export const AIOptimizerModal: FC<AIOptimizerModalProps> = ({
       try {
         setLoading(true);
         setError(null);
+        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+        try {
+          const stored = localStorage.getItem('protocolshield_user');
+          if (stored) {
+            const token = JSON.parse(stored)?.token;
+            if (token) headers['Authorization'] = `Bearer ${token}`;
+          }
+        } catch {}
+
         const res = await fetch('/api/v1/optimizer/propose-amendments', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers,
           body: JSON.stringify(protocol)
         });
 

@@ -172,8 +172,18 @@ export const ProtocolUploadModal: FC<ProtocolUploadModalProps> = ({
       const form = new FormData();
       form.append('file', selectedFile);
 
+      const headers: Record<string, string> = {};
+      try {
+        const stored = localStorage.getItem('protocolshield_user');
+        if (stored) {
+          const token = JSON.parse(stored)?.token;
+          if (token) headers['Authorization'] = `Bearer ${token}`;
+        }
+      } catch {}
+
       const res = await fetch('/api/v1/protocol/upload', {
         method: 'POST',
+        headers,
         body: form,
       });
 

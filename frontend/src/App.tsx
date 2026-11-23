@@ -143,13 +143,30 @@ export default function App() {
     return () => window.removeEventListener('hashchange', handleHashChange);
   }, []);
 
+  // ── Helper: Authenticated Headers for API Requests ─────────────────────────
+  const getAuthHeaders = (extraHeaders: Record<string, string> = {}): Record<string, string> => {
+    const headers: Record<string, string> = { ...extraHeaders };
+    const token = user?.token || (() => {
+      try {
+        const stored = localStorage.getItem('protocolshield_user');
+        return stored ? JSON.parse(stored)?.token : null;
+      } catch {
+        return null;
+      }
+    })();
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
+    return headers;
+  };
+
   // ── 6. Initial Data Fetching from FastAPI Backend ──────────────────────────
   useEffect(() => {
     async function loadInitialData() {
       try {
         setLoading(true);
 
-        // 1. Fetch Protocol Sample
+        // 1. Fetch Protocol Sample (public sample endpoint)
         const protoRes = await fetch('/api/v1/protocol/sample');
         if (protoRes.ok) {
           const protoJson = await protoRes.json();
@@ -158,7 +175,7 @@ export default function App() {
           // 2. Fetch Initial Funnel
           const funnelRes = await fetch('/api/v1/cohort/simulate-funnel', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
             body: JSON.stringify(protoJson.eligibility.structured_filters || {})
           });
           if (funnelRes.ok) {
@@ -166,9 +183,10 @@ export default function App() {
             setFunnelData(fJson);
             setTotalCohortSize(fJson.total_population || 10000);
 
-            // 3. Fetch Initial Retention Curve (GET endpoint verified)
+            // 3. Fetch Initial Retention Curve
             const retRes = await fetch(
-              `/api/v1/cohort/retention-curve?enrolled_size=${fJson.final_eligible_count}&composite_pbi=${protoJson.burden.composite_pbi_score}`
+              `/api/v1/cohort/retention-curve?enrolled_size=${fJson.final_eligible_count}&composite_pbi=${protoJson.burden.composite_pbi_score}`,
+              { headers: getAuthHeaders() }
             );
             if (retRes.ok) {
               const rJson = await retRes.json();
@@ -178,7 +196,9 @@ export default function App() {
         }
 
         // 4. Fetch Historical Benchmarks
-        const benchRes = await fetch('/api/v1/benchmark/historical-trials');
+        const benchRes = await fetch('/api/v1/benchmark/historical-trials', {
+          headers: getAuthHeaders()
+        });
         if (benchRes.ok) {
           const bJson = await benchRes.json();
           setBenchmarks(bJson.trials);
@@ -191,14 +211,14 @@ export default function App() {
     }
 
     loadInitialData();
-  }, []);
+  }, [user]);
 
   // ── 7. Simulations & Protocol Mutation Handlers ───────────────────────────
   const handleSimulateFunnel = async (criteria: Record<string, unknown>): Promise<FunnelSimulationResult> => {
     try {
       const res = await fetch('/api/v1/cohort/simulate-funnel', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify(criteria)
       });
       if (res.ok) {
@@ -212,7 +232,10 @@ export default function App() {
 
   const handleCalculateRetention = async (enrolled: number, pbi: number): Promise<RetentionPoint[]> => {
     try {
-      const res = await fetch(`/api/v1/cohort/retention-curve?enrolled_size=${enrolled}&composite_pbi=${pbi}`);
+      const res = await fetch(
+        `/api/v1/cohort/retention-curve?enrolled_size=${enrolled}&composite_pbi=${pbi}`,
+        { headers: getAuthHeaders() }
+      );
       if (res.ok) {
         const json = await res.json();
         return json.retention_curve;
@@ -264,6 +287,7 @@ export default function App() {
       form.append('file', file);
       const res = await fetch('/api/v1/protocol/upload', {
         method: 'POST',
+        headers: getAuthHeaders(),
         body: form,
       });
       if (res.ok) {
@@ -282,7 +306,7 @@ export default function App() {
     try {
       const res = await fetch('/api/v1/optimizer/apply-amendment', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({
           protocol,
           amendment_id: amendmentId

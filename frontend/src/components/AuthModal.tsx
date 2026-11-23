@@ -92,7 +92,6 @@ export const AuthModal: FC<AuthModalProps> = ({
   const [confirmPassword, setConfirmPassword] = useState('');
   const [fullName, setFullName] = useState('');
   const [organization, setOrganization] = useState('');
-  const [selectedRole, setSelectedRole] = useState<'doctor' | 'patient' | 'admin'>('doctor');
   const [showPassword, setShowPassword] = useState(false);
   const [agreeTerms, setAgreeTerms] = useState(false);
 
@@ -215,8 +214,10 @@ export const AuthModal: FC<AuthModalProps> = ({
           name: fullName.trim(),
           email: email.trim().toLowerCase(),
           password,
-          role: selectedRole,
-          organization: organization || detectedDomain || (selectedRole === 'patient' ? 'Patient Community' : 'Clinical Research Network'),
+          // Note: role is intentionally omitted — the backend always assigns
+          // the 'patient' role to public registrations. Doctor/admin accounts
+          // require administrator provisioning.
+          organization: organization || detectedDomain || 'Clinical Research Network',
         }),
       });
 
@@ -241,34 +242,13 @@ export const AuthModal: FC<AuthModalProps> = ({
 
   // ── Google OAuth Handler ───────────────────────────────────────────────────
   const handleGoogleSignIn = async () => {
-    setIsLoading(true);
-    setErrorMessage('');
-    try {
-      const res = await fetch('/api/v1/auth/google', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          id_token: 'evaluator_test_token',
-        }),
-      });
-
-      if (!res.ok) {
-        const errData = await res.json().catch(() => ({ detail: 'Google Sign-In is not configured.' }));
-        setErrorMessage(errData.detail || 'Google OAuth requires GOOGLE_CLIENT_ID configuration. Please sign in with email credentials or use the 1-click Demo Personas below.');
-        setIsLoading(false);
-        return;
-      }
-
-      const data = await res.json();
-      setIsLoading(false);
-      onLoginSuccess({
-        ...data.user,
-        token: data.token,
-      });
-    } catch {
-      setIsLoading(false);
-      setErrorMessage('Google OAuth is not configured on this server instance (requires GOOGLE_CLIENT_ID). Please use email credentials or 1-click Demo Personas below.');
-    }
+    // Google Sign-In requires a real Google OAuth credential to be loaded.
+    // We do not send fake tokens to the backend — that would be a security violation.
+    // If the Google Identity SDK is not loaded, show a configuration message.
+    setErrorMessage(
+      'Google Sign-In requires GOOGLE_CLIENT_ID to be configured on this server. ' +
+      'Please sign in with email credentials or use the 1-click Demo Personas below.'
+    );
   };
 
   // ── Quick Persona Login Handler ───────────────────────────────────────────
@@ -305,7 +285,9 @@ export const AuthModal: FC<AuthModalProps> = ({
       }
     }
     setIsLoading(false);
-    onLoginSuccess(persona);
+    // Security: Never bypass backend authentication.
+    // If no default password is configured for this persona, show an error.
+    setErrorMessage('Demo persona login is unavailable: no credentials configured. Please use the email/password form.');
   };
 
   // ── Forgot Password Handlers ───────────────────────────────────────────────
@@ -610,51 +592,15 @@ export const AuthModal: FC<AuthModalProps> = ({
              ══════════════════════════════════════════════════════════════════ */}
           {view === 'signup' && (
             <form onSubmit={handleSignUp} className="space-y-3">
-              {/* Role Selection */}
-              <div className="space-y-1">
-                <label className="text-[11px] font-medium text-charcoal-700 block">
-                  Select User Role
-                </label>
-                <div className="grid grid-cols-3 gap-1.5">
-                  <button
-                    type="button"
-                    onClick={() => setSelectedRole('doctor')}
-                    className={`p-2 rounded-xl border text-center transition-all cursor-pointer ${
-                      selectedRole === 'doctor'
-                        ? 'bg-charcoal-900 text-white border-charcoal-900 font-semibold shadow-xs'
-                        : 'bg-linen-50 text-charcoal-700 border-linen-300 hover:bg-linen-100'
-                    }`}
-                  >
-                    <span className="text-[11px] block font-medium">Investigator</span>
-                    <span className="text-[9px] text-terracotta-400 font-mono block">Clinical Lead</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => setSelectedRole('patient')}
-                    className={`p-2 rounded-xl border text-center transition-all cursor-pointer ${
-                      selectedRole === 'patient'
-                        ? 'bg-charcoal-900 text-white border-charcoal-900 font-semibold shadow-xs'
-                        : 'bg-linen-50 text-charcoal-700 border-linen-300 hover:bg-linen-100'
-                    }`}
-                  >
-                    <span className="text-[11px] block font-medium">Patient</span>
-                    <span className="text-[9px] text-sage-400 font-mono block">Volunteer</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => setSelectedRole('admin')}
-                    className={`p-2 rounded-xl border text-center transition-all cursor-pointer ${
-                      selectedRole === 'admin'
-                        ? 'bg-charcoal-900 text-white border-charcoal-900 font-semibold shadow-xs'
-                        : 'bg-linen-50 text-charcoal-700 border-linen-300 hover:bg-linen-100'
-                    }`}
-                  >
-                    <span className="text-[11px] block font-medium">Administrator</span>
-                    <span className="text-[9px] text-amber-400 font-mono block">Governance</span>
-                  </button>
+              {/* Role Notice */}
+              <div className="p-2.5 rounded-xl border border-linen-300 bg-linen-100/70 flex items-center justify-between">
+                <div>
+                  <span className="text-[11px] block font-semibold text-charcoal-900">Account Type: Patient / Trial Volunteer</span>
+                  <span className="text-[10px] text-charcoal-500 block">Public registrations enroll as Patient accounts. Clinical Lead and Administrator roles require controlled provisioning.</span>
                 </div>
+                <span className="text-[10px] font-mono px-2 py-0.5 rounded-md bg-sage-100 text-sage-800 border border-sage-300 font-semibold shrink-0 ml-2">
+                  Patient Role
+                </span>
               </div>
 
               {/* Full Name & Organization */}

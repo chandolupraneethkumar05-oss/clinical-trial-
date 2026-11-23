@@ -1,13 +1,16 @@
 """
 ProtocolShield Protocol Management & Burden Analysis API Routes
 """
-from fastapi import APIRouter, HTTPException, UploadFile, File
+import logging
+from fastapi import APIRouter, HTTPException, UploadFile, File, Depends
 from app.models.protocol import ClinicalTrialProtocol, ProtocolEligibilityCriteria
 from app.models.burden import ProtocolVisit, AssessmentProcedure, PatientBurdenBreakdown
 from app.engine.burden_scorer import burden_engine, STANDARD_PROCEDURE_CATALOG
 from app.engine.pdf_parser import ProtocolPDFParser
+from app.core.security import require_role, AuthenticatedUser
 
 router = APIRouter(prefix="/protocol", tags=["Protocol Analysis"])
+logger = logging.getLogger(__name__)
 
 
 # ── Canonical Sample Protocol Factories ──────────────────────────────────────
@@ -366,7 +369,10 @@ async def get_sample_protocol_by_type(protocol_type: str):
 
 
 @router.post("/upload", response_model=ClinicalTrialProtocol)
-async def upload_protocol_pdf(file: UploadFile = File(...)):
+async def upload_protocol_pdf(
+    file: UploadFile = File(...),
+    _user: AuthenticatedUser = Depends(require_role(["doctor", "admin"]))
+):
     """
     Accepts a clinical trial protocol PDF and extracts:
     - Schedule of Assessments (SoA) with procedure mapping
@@ -375,6 +381,7 @@ async def upload_protocol_pdf(file: UploadFile = File(...)):
     - Composite Patient Burden Index (Tufts CSDD scoring)
 
     Falls back gracefully to enriched canonical defaults when PDF extraction yields sparse data.
+    Requires doctor or administrator role.
     """
     if not file.filename or not file.filename.lower().endswith(".pdf"):
         raise HTTPException(
@@ -393,20 +400,26 @@ async def upload_protocol_pdf(file: UploadFile = File(...)):
 
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
+        logger.exception("Protocol PDF extraction failed for file: %s", file.filename)
         raise HTTPException(
             status_code=500,
-            detail=f"Protocol extraction failed: {str(e)}"
+            detail="Protocol extraction failed. Please ensure the file is a valid clinical trial protocol PDF."
         )
 
 
 @router.post("/score-burden", response_model=PatientBurdenBreakdown)
-async def score_protocol_burden(visits: list[ProtocolVisit], duration_weeks: int = 52):
-    """Calculates composite Patient Burden Index and friction analytics for submitted visits."""
+async def score_protocol_burden(
+    visits: list[ProtocolVisit],
+    duration_weeks: int = 52,
+    _user: AuthenticatedUser = Depends(require_role(["doctor", "admin"]))
+):
+    """Calculates composite Patient Burden Index and friction analytics for submitted visits. Requires doctor or admin role."""
     try:
         return burden_engine.calculate_protocol_burden(visits, study_duration_weeks=duration_weeks)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Burden computation error: {str(e)}")
+    except Exception:
+        logger.exception("Protocol burden scoring failed")
+        raise HTTPException(status_code=500, detail="An unexpected error occurred calculating protocol burden.")
 
 
 @router.get("/procedures-catalog")

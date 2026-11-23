@@ -35,7 +35,7 @@ interface TrialMatch {
   title: string;
   indication: string;
   phase: string;
-  match_status: 'ELIGIBLE' | 'BORDERLINE' | 'INELIGIBLE';
+  match_status: 'POTENTIALLY_ELIGIBLE' | 'REQUIRES_REVIEW' | 'NOT_ELIGIBLE' | 'ELIGIBLE' | 'BORDERLINE' | 'INELIGIBLE';
   match_score_pct: number;
   passed_criteria_count: number;
   total_criteria_count: number;
@@ -49,6 +49,8 @@ interface TrialMatch {
     travel_distance_miles: number;
     telehealth_eligible_visits: number;
   };
+  investigator_confirmation_required?: boolean;
+  investigator_disclaimer?: string;
 }
 
 export const PatientPortal: FC<PatientPortalProps> = ({
@@ -180,7 +182,12 @@ export const PatientPortal: FC<PatientPortalProps> = ({
           <div className="p-4 rounded-2xl bg-linen-50 border border-linen-200 text-center min-w-[200px]">
             <span className="text-[10px] font-mono text-charcoal-500 block uppercase">Matched Opportunities</span>
             <span className="font-serif text-3xl font-bold text-charcoal-900 block mt-0.5">
-              {matches.filter((m) => m.match_status === 'ELIGIBLE' || m.match_status === 'BORDERLINE').length}
+              {matches.filter((m) =>
+                m.match_status === 'POTENTIALLY_ELIGIBLE' ||
+                m.match_status === 'REQUIRES_REVIEW' ||
+                m.match_status === 'ELIGIBLE' ||
+                m.match_status === 'BORDERLINE'
+              ).length}
             </span>
             <span className="text-[10px] font-mono text-sage-700 bg-sage-50 px-2 py-0.5 rounded-full inline-block mt-1">
               Active Clinical Trials
@@ -343,8 +350,8 @@ export const PatientPortal: FC<PatientPortalProps> = ({
 
             <div className="space-y-5">
               {matches.map((trial) => {
-                const isEligible = trial.match_status === 'ELIGIBLE';
-                const isBorderline = trial.match_status === 'BORDERLINE';
+                const isEligible = trial.match_status === 'POTENTIALLY_ELIGIBLE' || trial.match_status === 'ELIGIBLE';
+                const isBorderline = trial.match_status === 'REQUIRES_REVIEW' || trial.match_status === 'BORDERLINE';
                 const isEnrolled = enrolledTrialId === trial.protocol_id;
 
                 return (
@@ -377,7 +384,7 @@ export const PatientPortal: FC<PatientPortalProps> = ({
                               : 'bg-red-50 text-red-700 border-red-200'
                           }`}
                         >
-                          {isEligible ? '✓ Full Match' : isBorderline ? '⚡ Borderline Opportunity' : '✕ Excluded'}
+                          {isEligible ? '✓ Potentially Eligible' : isBorderline ? '⚡ Requires Review' : '✕ Excluded'}
                         </span>
                       </div>
                     </div>
@@ -494,6 +501,14 @@ export const PatientPortal: FC<PatientPortalProps> = ({
                         </button>
                       )}
                     </div>
+
+                    {/* Investigator Clinical Review Disclaimer */}
+                    {trial.investigator_disclaimer && (
+                      <div className="p-2.5 rounded-xl bg-linen-100/60 border border-linen-200 text-[10px] text-charcoal-500 flex items-center space-x-2">
+                        <AlertCircle className="h-3.5 w-3.5 text-charcoal-400 shrink-0" />
+                        <span>{trial.investigator_disclaimer}</span>
+                      </div>
+                    )}
                   </div>
                 );
               })}

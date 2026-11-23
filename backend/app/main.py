@@ -2,6 +2,7 @@
 ProtocolShield Enterprise Backend Entry Point
 FastAPI Application, Life-cycle handlers, and Route Aggregator.
 """
+import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -14,12 +15,21 @@ from app.api.routes_auth import router as auth_router
 from app.api.routes_patient import router as patient_router
 from app.engine.synthetic_data import seed_database_if_empty
 
+# Configure application-level logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+)
+logger = logging.getLogger(__name__)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Validate secrets before accepting any requests (exits in production if insecure)
+    settings.validate_production_secrets()
     # Startup: Ensure analytical DuckDB database is initialized and seeded
     total_records = seed_database_if_empty(total_patients=10000)
-    print(f"[*] ProtocolShield initialized. DuckDB cohort verified with {total_records} patient records.")
+    logger.info("ProtocolShield initialized. DuckDB cohort verified with %d patient records.", total_records)
     yield
     # Shutdown logic if needed
 
@@ -31,13 +41,14 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# CORS Middleware
+# CORS Middleware — restrict allowed origins, methods, and headers for security
+# allow_origins is configured from BACKEND_CORS_ORIGINS environment variable
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.BACKEND_CORS_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "Accept", "X-Requested-With"],
 )
 
 # Include Routers
