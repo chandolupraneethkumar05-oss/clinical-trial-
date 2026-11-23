@@ -242,13 +242,60 @@ export const AuthModal: FC<AuthModalProps> = ({
 
   // ── Google OAuth Handler ───────────────────────────────────────────────────
   const handleGoogleSignIn = async () => {
-    // Google Sign-In requires a real Google OAuth credential to be loaded.
-    // We do not send fake tokens to the backend — that would be a security violation.
-    // If the Google Identity SDK is not loaded, show a configuration message.
-    setErrorMessage(
-      'Google Sign-In requires GOOGLE_CLIENT_ID to be configured on this server. ' +
-      'Please sign in with email credentials or use the 1-click Demo Personas below.'
-    );
+    const googleClientId = (import.meta as any).env?.VITE_GOOGLE_CLIENT_ID;
+    if (!googleClientId) {
+      setErrorMessage(
+        'Google Sign-In is not activated yet. To activate: add GOOGLE_CLIENT_ID in your root .env and VITE_GOOGLE_CLIENT_ID in frontend/.env.'
+      );
+      return;
+    }
+
+    const google = (window as any).google;
+    if (google?.accounts?.id) {
+      google.accounts.id.initialize({
+        client_id: googleClientId,
+        callback: async (response: { credential?: string }) => {
+          if (!response?.credential) {
+            setErrorMessage('Google did not return an identity token. Please try again.');
+            return;
+          }
+          setIsLoading(true);
+          setErrorMessage('');
+          try {
+            const res = await fetch('/api/v1/auth/google', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ id_token: response.credential }),
+            });
+
+            if (!res.ok) {
+              const errData = await res.json().catch(() => ({ detail: 'Google Sign-In failed.' }));
+              setErrorMessage(errData.detail || 'Google ID token verification failed on server.');
+              setIsLoading(false);
+              return;
+            }
+
+            const data = await res.json();
+            setIsLoading(false);
+            onLoginSuccess({
+              ...data.user,
+              token: data.token,
+            });
+          } catch {
+            setIsLoading(false);
+            setErrorMessage('Network error during Google authentication.');
+          }
+        },
+      });
+
+      google.accounts.id.prompt((notification: any) => {
+        if (notification.isNotDisplayed()) {
+          setErrorMessage('Google Sign-In prompt was suppressed by browser. Please ensure third-party sign-in is allowed.');
+        }
+      });
+    } else {
+      setErrorMessage('Google Identity Services SDK is still loading. Please check internet connection and try again.');
+    }
   };
 
   // ── Quick Persona Login Handler ───────────────────────────────────────────
