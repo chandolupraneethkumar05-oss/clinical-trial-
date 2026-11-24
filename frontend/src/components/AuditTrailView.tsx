@@ -70,14 +70,14 @@ export const AuditTrailView: FC<AuditTrailViewProps> = ({ events = DEFAULT_AUDIT
           <div className="flex items-center space-x-2">
             <ShieldCheck className="h-4 w-4 text-terracotta-600" />
             <h2 className="font-serif font-bold text-sm text-charcoal-900 tracking-tight">
-              21 CFR Part 11 Electronic Audit Log
+              Cryptographic SHA-256 Audit Trail (21 CFR Part 11 Architecture)
             </h2>
             <span className="text-[10px] font-mono font-semibold px-2 py-0.5 rounded-full bg-sage-100 text-sage-800 border border-sage-200">
-              IMMUTABLE LEDGER
+              TAMPER-EVIDENT LEDGER
             </span>
           </div>
           <p className="text-[11px] text-charcoal-500 font-mono mt-0.5">
-            Cryptographically sealed operational audit events covering protocol parameter changes, cohort queries, and feasibility scores.
+            Cryptographically chained operational audit events covering protocol parameter changes, cohort queries, and feasibility scores.
           </p>
         </div>
 
@@ -86,7 +86,7 @@ export const AuditTrailView: FC<AuditTrailViewProps> = ({ events = DEFAULT_AUDIT
           className="inline-flex items-center space-x-1.5 px-3.5 py-1.5 text-xs font-semibold rounded-full border border-linen-300 bg-white text-charcoal-700 hover:bg-linen-100 transition-colors shadow-2xs self-start sm:self-center"
         >
           <Download className="h-3.5 w-3.5 text-terracotta-600" />
-          <span>Export Certificate</span>
+          <span>Export Audit Certificate</span>
         </button>
       </div>
 
@@ -148,6 +148,15 @@ export const AuditTrailView: FC<AuditTrailViewProps> = ({ events = DEFAULT_AUDIT
             ))}
           </tbody>
         </table>
+      </div>
+
+      {/* ── Regulatory Compliance Footnote ──────────────────────────────────── */}
+      <div className="p-3 bg-linen-50 border-t border-linen-200 text-[11px] text-charcoal-500 font-sans flex items-start space-x-2">
+        <ShieldCheck className="h-4 w-4 text-terracotta-600 shrink-0 mt-0.5" />
+        <p className="leading-relaxed">
+          <strong className="text-charcoal-700 font-semibold">Regulatory Notice: </strong>
+          The cryptographically linked SHA-256 hash log provides tamper-evident integrity for protocol amendments and cohort queries. Production deployment under FDA 21 CFR Part 11 requires institutional computer system validation (IQ/OQ/PQ), digital signatures, and sponsor standard operating procedures.
+        </p>
       </div>
     </div>
   );

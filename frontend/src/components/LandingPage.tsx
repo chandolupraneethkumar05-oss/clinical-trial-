@@ -134,54 +134,54 @@ export const LandingPage: FC<LandingPageProps> = ({
 
   const activeData = retentionScenarios[activeScenario];
 
-  // Case study data dictionary
+  // Case study data dictionary (Synthetic simulation models inspired by public protocols)
   const caseStudies = {
     nsclc: {
       title: 'Phase III Non-Small Cell Lung Cancer (NSCLC)',
-      sponsor: 'Global Top-5 Pharmaceutical Sponsor',
-      target: 'EGFR Exon 20 Insertion / TKI Combination',
-      challenge: 'Over-stringent eGFR cutoffs (60 mL/min) and dual contrast CT restaging at Weeks 6 and 12 were causing a 91.2% initial screen failure rate.',
+      sponsor: 'Public Protocol Reference (EGFR / TKI Paradigm)',
+      target: 'EGFR Exon 20 Insertion / TKI Combination (Synthetic Simulation)',
+      challenge: 'Over-stringent eGFR cutoffs (60 mL/min) and dual contrast CT restaging at Weeks 6 and 12 caused an initial 91.2% screen failure rate in the synthetic cohort.',
       result: 'ProtocolShield simulated relaxing eGFR to 50 mL/min and staggering the second imaging window by 14 days.',
       metrics: [
-        { label: 'Screen Failures Recovered', value: '+34%' },
-        { label: 'Accrual Time Shortened', value: '4.2 Months' },
-        { label: 'Avoided Trial Cost', value: '$2.4M' }
+        { label: 'Screen Failures Recovered (Model)', value: '+34%' },
+        { label: 'Accrual Time Shortened (Est.)', value: '4.2 Months' },
+        { label: 'Avoided Trial Cost (Model)', value: '$2.4M' }
       ]
     },
     breast: {
       title: 'Phase II Triple-Negative Breast Cancer',
-      sponsor: 'Academic Oncology Clinical Trials Network',
-      target: 'ADC + Immunotherapy Neoadjuvant',
-      challenge: 'Serial 12-hour PK blood draws on Cycle 1 Day 1 and Cycle 2 Day 1 resulted in 42% early patient consent revocations.',
+      sponsor: 'Public Protocol Reference (Neoadjuvant ADC Paradigm)',
+      target: 'ADC + Immunotherapy Neoadjuvant (Synthetic Simulation)',
+      challenge: 'Serial 12-hour PK blood draws on Cycle 1 Day 1 and Cycle 2 Day 1 resulted in 42% early patient consent revocations in simulation.',
       result: 'Algorithmic burden analysis proved population PK modeling could drop 4 of the 8 serial draws without statistical loss.',
       metrics: [
         { label: 'Clinic Dwell Reduced', value: '-5.5 Hours' },
-        { label: 'Dropout Rate', value: '42% → 14%' },
-        { label: 'Participant Satisfaction', value: '96%' }
+        { label: 'Simulated Dropout Rate', value: '42% → 14%' },
+        { label: 'Patient Burden Index', value: '78 → 44' }
       ]
     },
     myeloma: {
       title: 'Phase III Relapsed Multiple Myeloma',
-      sponsor: 'Commercial Biotechnology Leader',
-      target: 'BCMA Bispecific T-Cell Engager',
+      sponsor: 'Public Protocol Reference (Bispecific T-Cell Paradigm)',
+      target: 'BCMA Bispecific T-Cell Engager (Synthetic Simulation)',
       challenge: 'Mandatory on-site hospitalization for 48 hours during step-up dosing severely bottlenecked site recruitment capacity.',
       result: 'ProtocolShield modeled safety biomarkers to identify low-risk cytokine release profiles eligible for community outpatient monitoring.',
       metrics: [
-        { label: 'Site Activation Speed', value: '2.8x Faster' },
+        { label: 'Site Activation Speed (Model)', value: '2.8x Faster' },
         { label: 'Patient Travel Burden', value: '-62%' },
-        { label: 'Enrolled Cohort', value: '100% on schedule' }
+        { label: 'Simulated Cohort Enrollment', value: '100% on schedule' }
       ]
     },
     pediatric: {
-      title: 'Rare Pediatric Solid Tumor Registry',
-      sponsor: 'Consortium for Rare Childhood Cancers',
-      target: 'NTRK Fusion Targeted Inhibitor',
+      title: 'Rare Pediatric Solid Tumor Model',
+      sponsor: 'Rare Disease Protocol Reference',
+      target: 'NTRK Fusion Targeted Inhibitor (Synthetic Simulation)',
       challenge: 'Families faced an average 180-mile round-trip travel every 2 weeks, leading to devastating early protocol withdrawals.',
-      result: 'Simulated decentralized mobile phlebotomy and local community pharmacy drug delivery with verified ICH-GCP audit trail.',
+      result: 'Simulated decentralized mobile phlebotomy and local community pharmacy delivery with verified SHA-256 audit trail.',
       metrics: [
         { label: 'Family Travel Mileage', value: '-78%' },
         { label: 'Study Retention at 1 Yr', value: '88%' },
-        { label: 'Regulatory Acceptance', value: 'FDA Accepted' }
+        { label: 'Audit Trail Verification', value: 'SHA-256 Verified' }
       ]
     }
   };
@@ -278,28 +278,28 @@ export const LandingPage: FC<LandingPageProps> = ({
               <div className="inline-flex items-center space-x-2 px-3 py-1 rounded-full bg-white/10 border border-white/15 text-xs text-slate-200 backdrop-blur-xs">
                 <span className="h-2 w-2 rounded-full bg-terracotta-500 animate-pulse" />
                 <span className="font-mono text-[11px] tracking-wider uppercase font-semibold text-white">
-                  Autonomous Trial Feasibility Engine 1.0
+                  Clinical Trial Feasibility & Recruitment Simulator
                 </span>
               </div>
 
               <h1 className="font-serif text-5xl sm:text-6xl lg:text-7xl font-normal tracking-tight text-white leading-[1.06]">
-                For every protocol <br />
-                <span className="italic font-light text-slate-300">before the first patient consents.</span>
+                Check whether your trial plan is practical <br />
+                <span className="italic font-light text-slate-300">before enrolling the first patient.</span>
               </h1>
 
               <p className="text-sm sm:text-base text-slate-300 max-w-2xl leading-relaxed font-normal">
-                Stress-test protocols against <strong className="text-white font-semibold">10,000 synthetic patient phenotypes</strong>—pinpoint accrual bottlenecks and patient fatigue decay curves before IRB submission.
+                Test study protocols against <strong className="text-white font-semibold">10,000 synthetic patient records</strong>. Find recruitment bottlenecks, avoid unnecessary patient burden, and reduce trial delays.
               </p>
 
               {/* Glanceable Capability Chips */}
               <div className="flex flex-wrap items-center gap-2 pt-1 font-mono text-[11px] text-slate-300">
                 <span className="px-2.5 py-1 rounded-lg bg-white/10 border border-white/15 backdrop-blur-xs flex items-center space-x-1.5">
                   <span className="h-1.5 w-1.5 rounded-full bg-terracotta-400" />
-                  <span>10,000 Synthetic Cohort</span>
+                  <span>10,000 Synthetic Cohort (Demo)</span>
                 </span>
                 <span className="px-2.5 py-1 rounded-lg bg-white/10 border border-white/15 backdrop-blur-xs flex items-center space-x-1.5">
                   <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
-                  <span>Sub-5ms DuckDB OLAP</span>
+                  <span>Fast In-Memory Analysis (DuckDB)</span>
                 </span>
                 <span className="px-2.5 py-1 rounded-lg bg-white/10 border border-white/15 backdrop-blur-xs flex items-center space-x-1.5">
                   <span className="h-1.5 w-1.5 rounded-full bg-amber-400" />
@@ -307,7 +307,7 @@ export const LandingPage: FC<LandingPageProps> = ({
                 </span>
                 <span className="px-2.5 py-1 rounded-lg bg-white/10 border border-white/15 backdrop-blur-xs flex items-center space-x-1.5">
                   <span className="h-1.5 w-1.5 rounded-full bg-blue-400" />
-                  <span>21 CFR Part 11 Audit Trail</span>
+                  <span>Tamper-Evident SHA-256 Audit Log</span>
                 </span>
               </div>
 
@@ -354,7 +354,7 @@ export const LandingPage: FC<LandingPageProps> = ({
                   
                   <div className="absolute top-2.5 left-2.5 flex items-center space-x-1.5 bg-black/60 backdrop-blur-xs text-[10px] font-mono text-white px-2 py-0.5 rounded-full border border-white/10">
                     <span className="h-1.5 w-1.5 rounded-full bg-terracotta-500 animate-pulse" />
-                    <span>CASE STUDY</span>
+                    <span>SIMULATION BENCHMARK</span>
                   </div>
 
                   <span className="absolute bottom-2.5 right-2.5 text-[10px] font-mono bg-black/70 text-white px-2 py-0.5 rounded-md">
@@ -364,14 +364,14 @@ export const LandingPage: FC<LandingPageProps> = ({
 
                 <div>
                   <div className="flex items-center justify-between text-[11px] font-mono text-terracotta-300">
-                    <span>MEMORIAL SLOAN KETTERING</span>
+                    <span>SIMULATION BENCHMARK</span>
                     <span>-34% ATTRITION</span>
                   </div>
                   <h4 className="font-serif font-bold text-sm text-white mt-1 leading-snug group-hover:text-terracotta-200 transition-colors">
-                    Phase III NSCLC: Restoring Protocol Feasibility
+                    Phase III Lung Cancer: Restoring Feasibility
                   </h4>
                   <p className="text-[11px] text-slate-300 mt-1 leading-relaxed">
-                    Click to view how ProtocolShield pinpointed a visit clustering hazard at Week 12 and recovered 142 excluded patients.
+                    Click to view how adjusting kidney thresholds and visit schedules recovered 142 excluded patients in synthetic simulation.
                   </p>
                 </div>
               </div>
@@ -382,11 +382,16 @@ export const LandingPage: FC<LandingPageProps> = ({
 
         {/* Sponsor & Cancer Center Banner Strip */}
         <div className="relative z-10 border-t border-white/10 bg-charcoal-950/90 py-4.5 px-4 sm:px-6 lg:px-8">
-          <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-4 text-xs text-slate-400">
-            <span className="text-[10px] font-mono tracking-wider uppercase text-slate-400 font-semibold">
-              Modeled on trial standards from premier cancer centers:
-            </span>
-            <div className="flex flex-wrap items-center gap-6 text-[11px] font-mono font-medium text-slate-300">
+          <div className="max-w-7xl mx-auto flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-slate-400">
+            <div>
+              <span className="text-[10px] font-mono tracking-wider uppercase text-slate-400 font-semibold block">
+                Eligibility patterns inspired by public protocols from oncology leaders:
+              </span>
+              <span className="text-[10px] font-sans text-slate-400 italic">
+                (Independent synthetic research benchmarks — not an endorsement or formal affiliation)
+              </span>
+            </div>
+            <div className="flex flex-wrap items-center gap-5 text-[11px] font-mono font-medium text-slate-300">
               <span className="hover:text-white transition-colors">MAYO CLINIC</span>
               <span className="hover:text-white transition-colors">MEMORIAL SLOAN KETTERING</span>
               <span className="hover:text-white transition-colors">MD ANDERSON</span>
@@ -412,13 +417,13 @@ export const LandingPage: FC<LandingPageProps> = ({
         <section id="paradox" className="py-20 px-4 sm:px-6 lg:px-8 max-w-7xl mx-auto">
           <div className="max-w-3xl mb-14 space-y-2.5">
             <span className="text-xs font-mono font-bold uppercase tracking-widest text-terracotta-600 block">
-              THE PROTOCOL BURDEN PARADOX
+              WHY TRIAL PROTOCOLS FAIL
             </span>
             <h2 className="font-serif text-3xl sm:text-4xl lg:text-5xl text-charcoal-900 font-normal leading-tight">
               Millions invested in oncology discovery. 86% miss recruitment deadlines.
             </h2>
             <p className="text-sm sm:text-base text-charcoal-600 font-normal leading-relaxed pt-1">
-              Over-engineered study protocols create unbearable patient burdens and narrow exclusion gates, forcing multi-month trial delays.
+              Over-complicated study protocols create heavy patient burdens and strict exclusion gates, leading to months of trial delays.
             </p>
           </div>
 
@@ -428,13 +433,13 @@ export const LandingPage: FC<LandingPageProps> = ({
             <div className="bg-white rounded-3xl border border-linen-300 p-6 shadow-xs flex flex-col justify-between hover:shadow-lg hover:-translate-y-1 hover:border-terracotta-300 transition-all duration-300">
               <div>
                 <span className="text-[10px] font-mono font-bold uppercase tracking-wider text-charcoal-400 block mb-2">
-                  01 • SCREENING YIELD TRAP
+                  01 • STRICT SCREENING
                 </span>
                 <h3 className="font-serif font-bold text-lg text-charcoal-900 leading-snug">
                   8.77% Initial Yield
                 </h3>
                 <p className="text-xs text-charcoal-600 mt-2.5 leading-relaxed">
-                  Strict renal (eGFR &lt; 60) and liver cutoffs filter out over 91% of otherwise viable oncology candidates.
+                  Strict kidney (eGFR &lt; 60) and organ cutoffs filter out over 91% of otherwise viable oncology candidates.
                 </p>
                 <div className="mt-3">
                   <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-red-50 text-red-700 border border-red-200">
@@ -451,22 +456,22 @@ export const LandingPage: FC<LandingPageProps> = ({
             <div className="bg-white rounded-3xl border border-linen-300 p-6 shadow-xs flex flex-col justify-between hover:shadow-lg hover:-translate-y-1 hover:border-terracotta-300 transition-all duration-300">
               <div>
                 <span className="text-[10px] font-mono font-bold uppercase tracking-wider text-charcoal-400 block mb-2">
-                  02 • TRAVEL FRICTION
+                  02 • TRAVEL AND DISTANCE
                 </span>
                 <h3 className="font-serif font-bold text-lg text-charcoal-900 leading-snug">
                   31.6 Miles Round-Trip
                 </h3>
                 <p className="text-xs text-charcoal-600 mt-2.5 leading-relaxed">
-                  Suburban patients face heavy transit hours and caregiver dependency, driving accelerated study dropouts.
+                  Suburban and rural patients face heavy transit hours and caregiver reliance, driving accelerated study dropouts.
                 </p>
                 <div className="mt-3">
                   <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200">
-                    Geographic Disparity
+                    Geographic Distance
                   </span>
                 </div>
               </div>
               <div className="mt-6 pt-4 border-t border-linen-200 flex items-center justify-between text-[11px] font-mono text-terracotta-600 font-semibold">
-                <span>2.4x Higher Rural Dropout</span>
+                <span>2.4x Higher Remote Dropout</span>
                 <ArrowRight className="h-3.5 w-3.5" />
               </div>
             </div>
@@ -474,17 +479,17 @@ export const LandingPage: FC<LandingPageProps> = ({
             <div className="bg-white rounded-3xl border border-linen-300 p-6 shadow-xs flex flex-col justify-between hover:shadow-lg hover:-translate-y-1 hover:border-terracotta-300 transition-all duration-300">
               <div>
                 <span className="text-[10px] font-mono font-bold uppercase tracking-wider text-charcoal-400 block mb-2">
-                  03 • VISIT CLUSTERING
+                  03 • LONG CLINIC VISITS
                 </span>
                 <h3 className="font-serif font-bold text-lg text-charcoal-900 leading-snug">
                   6.5 Hours Clinic Dwell
                 </h3>
                 <p className="text-xs text-charcoal-600 mt-2.5 leading-relaxed">
-                  Stacking IV infusions, contrast CTs, and biopsies onto single visits triggers catastrophic patient fatigue cliffs.
+                  Stacking IV infusions, contrast CTs, and biopsies onto single visits triggers high patient fatigue and dropouts.
                 </p>
                 <div className="mt-3">
                   <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-terracotta-50 text-terracotta-700 border border-terracotta-200">
-                    Fatigue Cliff Hazard
+                    Patient Fatigue Spike
                   </span>
                 </div>
               </div>
@@ -497,17 +502,17 @@ export const LandingPage: FC<LandingPageProps> = ({
             <div className="bg-white rounded-3xl border border-linen-300 p-6 shadow-xs flex flex-col justify-between hover:shadow-lg hover:-translate-y-1 hover:border-terracotta-300 transition-all duration-300">
               <div>
                 <span className="text-[10px] font-mono font-bold uppercase tracking-wider text-charcoal-400 block mb-2">
-                  04 • FINANCIAL PENALTY
+                  04 • COST OF DELAY
                 </span>
                 <h3 className="font-serif font-bold text-lg text-charcoal-900 leading-snug">
                   $600k – $2.0M / Month
                 </h3>
                 <p className="text-xs text-charcoal-600 mt-2.5 leading-relaxed">
-                  Each stalled month bleeds sponsor trial operations and shortens commercial exclusivity before launch.
+                  Each delayed month adds significant operational expense and postpones life-saving therapy access (Tufts CSDD benchmark).
                 </p>
                 <div className="mt-3">
                   <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-sage-50 text-sage-800 border border-sage-200">
-                    Trial Delay Penalty
+                    Trial Delay Expense
                   </span>
                 </div>
               </div>
@@ -533,10 +538,10 @@ export const LandingPage: FC<LandingPageProps> = ({
                   PATIENT RETENTION SIMULATOR
                 </span>
                 <h2 className="font-serif text-3xl sm:text-4xl text-charcoal-900 font-normal leading-tight">
-                  Restoring feasibility to the heart of protocol design.
+                  Restoring feasibility to clinical protocol design.
                 </h2>
                 <p className="text-sm text-charcoal-700 leading-relaxed font-normal">
-                  When trial protocols demand excessive clinic visits, frequent scans, and painful repeat biopsies, subjects quit. ProtocolShield projects patient fatigue decay curves using the <strong className="text-charcoal-900 font-semibold">Tufts Center for the Study of Drug Development (CSDD)</strong> complexity framework.
+                  When clinical trials demand excessive clinic visits, frequent scans, and painful repeat biopsies, participants drop out. ProtocolShield models patient fatigue decay curves using the established <strong className="text-charcoal-900 font-semibold">Tufts Center for the Study of Drug Development (CSDD)</strong> complexity framework.
                 </p>
 
                 {/* Interactive Scenario Selection Buttons */}
@@ -645,7 +650,7 @@ export const LandingPage: FC<LandingPageProps> = ({
                 {/* Dynamic Metric Ticker Strip */}
                 <div className="grid grid-cols-3 gap-3">
                   <div className="bg-white p-3.5 rounded-2xl border border-linen-200">
-                    <span className="text-[10px] font-mono text-charcoal-400 block">52-WK RETENTION</span>
+                    <span className="text-[10px] font-mono text-charcoal-400 block">52-WK RETENTION (MODEL)</span>
                     <span className="font-serif text-2xl font-bold text-charcoal-900">
                       {activeData.retentionAt52}%
                     </span>
@@ -653,7 +658,7 @@ export const LandingPage: FC<LandingPageProps> = ({
                   </div>
 
                   <div className="bg-white p-3.5 rounded-2xl border border-linen-200">
-                    <span className="text-[10px] font-mono text-charcoal-400 block">PATIENTS RECOVERED</span>
+                    <span className="text-[10px] font-mono text-charcoal-400 block">PATIENTS SAVED (SIMULATION)</span>
                     <span className="font-serif text-2xl font-bold text-terracotta-600">
                       +{activeData.patientsSaved}
                     </span>
@@ -661,11 +666,11 @@ export const LandingPage: FC<LandingPageProps> = ({
                   </div>
 
                   <div className="bg-white p-3.5 rounded-2xl border border-linen-200">
-                    <span className="text-[10px] font-mono text-charcoal-400 block">CAPITAL PROTECTED</span>
+                    <span className="text-[10px] font-mono text-charcoal-400 block">ESTIMATED COST SAVED</span>
                     <span className="font-serif text-2xl font-bold text-sage-700">
                       {activeData.capitalSaved}
                     </span>
-                    <span className="text-[10px] text-charcoal-500 block mt-0.5">Delay Penalties</span>
+                    <span className="text-[10px] text-charcoal-500 block mt-0.5">Delay Penalties (Tufts Model)</span>
                   </div>
                 </div>
 
@@ -1054,11 +1059,15 @@ export const LandingPage: FC<LandingPageProps> = ({
                   <span>CLINICAL GOVERNANCE & AUDIT</span>
                 </div>
                 <h3 className="font-serif text-3xl font-normal leading-snug">
-                  Engineered for strict pharmaceutical compliance.
+                  Engineered for strict clinical audit standards.
                 </h3>
                 <p className="text-xs sm:text-sm text-charcoal-300 mt-3 leading-relaxed">
-                  Every calculation, parameter variance, and amendment proposal is logged with SHA-256 cryptographic verification compliant with FDA 21 CFR Part 11 and ICH E6(R2).
+                  Every calculation, parameter variance, and amendment proposal is recorded in an immutable SHA-256 cryptographic hash chain designed to support 21 CFR Part 11 record-integrity and ICH GCP E6(R2) traceability requirements.
                 </p>
+                <div className="mt-4 p-3 rounded-xl bg-charcoal-950/80 border border-white/10 text-[11px] text-slate-300">
+                  <span className="font-semibold text-terracotta-300">Compliance Architecture Notice: </span>
+                  Technical design delivers cryptographic tamper-evidence. Full regulatory compliance requires formal institutional validation (IQ/OQ/PQ) and sponsor SOPs.
+                </div>
               </div>
 
               {/* Glowing Compliance Badges */}
@@ -1069,7 +1078,7 @@ export const LandingPage: FC<LandingPageProps> = ({
                   </div>
                   <div>
                     <span className="font-serif font-bold text-xs text-white block">21 CFR Part 11</span>
-                    <span className="text-[10px] text-slate-400 font-mono">Immutable Audit Trail</span>
+                    <span className="text-[10px] text-slate-400 font-mono">Cryptographic Hash Chain</span>
                   </div>
                 </div>
 
@@ -1079,15 +1088,15 @@ export const LandingPage: FC<LandingPageProps> = ({
                   </div>
                   <div>
                     <span className="font-serif font-bold text-xs text-white block">ICH GCP E6(R2)</span>
-                    <span className="text-[10px] text-slate-400 font-mono">Trial Feasibility Rules</span>
+                    <span className="text-[10px] text-slate-400 font-mono">Traceable Feasibility Log</span>
                   </div>
                 </div>
               </div>
 
               <div className="pt-2 border-t border-white/10 flex flex-wrap gap-2 text-[10px] font-mono text-slate-400">
-                <span className="px-3 py-1 rounded-full bg-white/5 border border-white/10">SHA-256 INTEGRITY</span>
+                <span className="px-3 py-1 rounded-full bg-white/5 border border-white/10">SHA-256 HASH CHAIN</span>
                 <span className="px-3 py-1 rounded-full bg-white/5 border border-white/10">ZERO CLOUD DATA EGRESS</span>
-                <span className="px-3 py-1 rounded-full bg-white/5 border border-white/10">HIPAA DE-IDENTIFIED</span>
+                <span className="px-3 py-1 rounded-full bg-white/5 border border-white/10">SYNTHETIC DE-IDENTIFIED DATA</span>
               </div>
             </div>
 
@@ -1097,28 +1106,28 @@ export const LandingPage: FC<LandingPageProps> = ({
               <div className="bg-white rounded-3xl border border-linen-300 p-6 flex flex-col justify-center shadow-xs hover:border-terracotta-300 transition-colors">
                 <span className="font-serif text-4xl sm:text-5xl font-bold text-charcoal-900">80%</span>
                 <span className="text-xs text-charcoal-600 mt-2 font-medium">
-                  Phase III trials delayed due to slow accrual and subject dropouts.
+                  Phase III trials delayed due to slow accrual and subject dropouts (Tufts CSDD benchmark).
                 </span>
               </div>
 
               <div className="bg-white rounded-3xl border border-linen-300 p-6 flex flex-col justify-center shadow-xs hover:border-terracotta-300 transition-colors">
                 <span className="font-serif text-4xl sm:text-5xl font-bold text-terracotta-600">$2.4M</span>
                 <span className="text-xs text-charcoal-600 mt-2 font-medium">
-                  Average recruitment delay penalty saved per Phase III protocol.
+                  Estimated trial delay expense avoided per optimized Phase III protocol (Model estimate).
                 </span>
               </div>
 
               <div className="bg-white rounded-3xl border border-linen-300 p-6 flex flex-col justify-center shadow-xs hover:border-terracotta-300 transition-colors">
                 <span className="font-serif text-4xl sm:text-5xl font-bold text-charcoal-900">10,000</span>
                 <span className="text-xs text-charcoal-600 mt-2 font-medium">
-                  Synthetic FHIR patient profiles queried in sub-5ms with DuckDB.
+                  Synthetic patient records screened in sub-5ms with in-process DuckDB.
                 </span>
               </div>
 
               <div className="bg-white rounded-3xl border border-linen-300 p-6 flex flex-col justify-center shadow-xs hover:border-terracotta-300 transition-colors">
                 <span className="font-serif text-4xl sm:text-5xl font-bold text-sage-700">100%</span>
                 <span className="text-xs text-charcoal-600 mt-2 font-medium">
-                  Auditable mathematical scoring with zero black-box hallucinations.
+                  Auditable mathematical scoring with deterministic criteria execution.
                 </span>
               </div>
 
@@ -1145,16 +1154,16 @@ export const LandingPage: FC<LandingPageProps> = ({
 
         <div className="relative z-10 max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-20 space-y-6">
           <div className="inline-flex items-center space-x-1.5 text-xs font-mono uppercase tracking-widest text-terracotta-200 font-bold">
-            <span>SPONSOR PERSPECTIVE</span>
+            <span>CLINICAL ADVISOR PERSPECTIVE (ILLUSTRATIVE PERSONA)</span>
           </div>
 
           <blockquote className="font-serif text-2xl sm:text-3xl lg:text-4xl font-normal leading-snug text-white">
-            "For trial sponsors and oncology investigators, preserving patient dignity while accelerating cures is the ultimate mission. ProtocolShield allowed us to pinpoint a fatal biopsy clustering flaw before submitting to the IRB, saving our Phase III study at least six months of recruitment stall."
+            "For trial sponsors and oncology investigators, protecting patient safety and comfort while finding effective treatments is the primary goal. Protocol-level simulation allows teams to spot visit-clustering risks and burdensome tests before submitting to an ethics review committee."
           </blockquote>
 
           <div className="pt-2">
-            <strong className="block text-base font-semibold text-white">Dr. Julian Sterling, MD, PhD</strong>
-            <span className="text-xs text-slate-300 font-mono">Former Chair of Clinical Protocol Review • Eastern Cooperative Oncology Group</span>
+            <strong className="block text-base font-semibold text-white">Clinical Research Advisor Persona</strong>
+            <span className="text-xs text-slate-300 font-mono">Representative Oncology Protocol Design Perspective</span>
           </div>
         </div>
       </section>
@@ -1174,13 +1183,13 @@ export const LandingPage: FC<LandingPageProps> = ({
         <section id="case-studies" className="py-20 px-4 sm:px-6 lg:px-8 max-w-7xl mx-auto">
           <div className="max-w-3xl mb-12 space-y-2">
             <span className="text-xs font-mono font-bold uppercase tracking-widest text-terracotta-600 block">
-              REAL-WORLD TRIAL FEASIBILITY CASES
+              SYNTHETIC SIMULATION BENCHMARK CASES
             </span>
             <h2 className="font-serif text-3xl sm:text-4xl text-charcoal-900 font-normal">
-              Validated across oncology, rare disease, and hematology.
+              Validated across oncology, rare disease, and hematology models.
             </h2>
             <p className="text-xs sm:text-sm text-charcoal-600 font-normal">
-              Explore how sponsor teams optimize protocol feasibility prior to study activation.
+              Explore how protocol design teams evaluate eligibility trade-offs across 10,000 synthetic patient records inspired by public Phase II/III trial architectures.
             </p>
           </div>
 
@@ -1344,17 +1353,17 @@ export const LandingPage: FC<LandingPageProps> = ({
             <div className="bg-linen-50 rounded-3xl border border-linen-300 p-7 shadow-xs flex flex-col justify-between hover:shadow-md transition-shadow">
               <div>
                 <span className="text-[10px] font-mono text-charcoal-400 uppercase block mb-2 font-bold">
-                  CLINICALTRIALS.GOV API
+                  CLINICALTRIALS.GOV BENCHMARKS
                 </span>
                 <h4 className="font-serif font-bold text-base text-charcoal-900 leading-snug">
-                  Empirical Validation Against 20 Phase III Historical Protocols
+                  Calibrated Against Public Phase III Trial Schema Architectures
                 </h4>
                 <p className="text-xs text-charcoal-600 mt-2.5 leading-relaxed">
-                  ProtocolShield was back-tested against completed vs terminated oncology trials, accurately predicting accrual failures with high clinical specificity.
+                  ProtocolShield is benchmarked against public historical trial schemas from ClinicalTrials.gov, modeling recruitment velocity patterns across major oncology indications.
                 </p>
               </div>
               <span className="mt-6 pt-3 border-t border-linen-200 text-[10px] font-mono text-terracotta-600 font-semibold block">
-                Empirical Portfolio Verification
+                Public Trial Portfolio Calibration
               </span>
             </div>
 
@@ -1570,7 +1579,7 @@ export const LandingPage: FC<LandingPageProps> = ({
                 <div className="space-y-4">
                   <div className="flex items-center justify-between text-xs font-mono text-terracotta-400">
                     <span>STAGE 4: WHAT-IF SENSITIVITY & EXPORT</span>
-                    <span>21 CFR Part 11 Validated Package</span>
+                    <span>Tamper-Evident Audit Package (SHA-256)</span>
                   </div>
                   <div className="bg-charcoal-900 p-4 rounded-xl border border-white/10 font-mono text-xs text-emerald-400 space-y-1.5">
                     <p>✓ Minimum eGFR adjusted to 50 mL/min (+142 patients)</p>

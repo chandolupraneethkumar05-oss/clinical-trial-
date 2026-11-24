@@ -97,19 +97,24 @@ export const PatientPortal: FC<PatientPortalProps> = ({
 
   // Persist interest to backend DuckDB
   const handleExpressInterest = async (protocolId: string) => {
-    setEnrolledTrialId(protocolId);
     try {
       const headers: Record<string, string> = { 'Content-Type': 'application/json' };
       if (user.token) {
         headers['Authorization'] = `Bearer ${user.token}`;
       }
-      await fetch('/api/v1/patient/interest', {
+      const res = await fetch('/api/v1/patient/interest', {
         method: 'POST',
         headers,
         body: JSON.stringify({ protocol_id: protocolId })
       });
+      if (res.ok) {
+        setEnrolledTrialId(protocolId);
+      } else {
+        const errJson = await res.json().catch(() => ({}));
+        console.error('Failed to register interest:', errJson.detail || 'Server error');
+      }
     } catch (err) {
-      console.error('Failed to register interest:', err);
+      console.error('Network failure registering interest:', err);
     }
   };
 
@@ -231,6 +236,19 @@ export const PatientPortal: FC<PatientPortalProps> = ({
             <span className="text-[10px] font-mono text-sage-700 bg-sage-50 px-2 py-0.5 rounded-full inline-block mt-1">
               Active Clinical Trials
             </span>
+          </div>
+        </div>
+
+        {/* Clinical Safety Notice */}
+        <div className="p-4 rounded-2xl bg-amber-50/80 border border-amber-200 text-xs text-amber-900 flex items-start space-x-3 shadow-2xs">
+          <AlertCircle className="h-5 w-5 text-amber-600 shrink-0 mt-0.5" />
+          <div className="space-y-1">
+            <span className="font-serif font-bold text-xs text-amber-950 block">
+              Clinical Safety & Informational Notice
+            </span>
+            <p className="text-[11px] leading-relaxed text-amber-800">
+              ProtocolShield is an educational protocol feasibility and recruitment planning simulator. This eligibility evaluation is an automated preliminary check based on user-entered values and does not constitute medical advice, diagnosis, or a binding clinical enrollment decision. Formal trial eligibility must always be verified and confirmed by a licensed clinical investigator and the trial site clinical team.
+            </p>
           </div>
         </div>
 
