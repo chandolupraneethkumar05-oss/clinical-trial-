@@ -52,6 +52,19 @@ async def apply_protocol_amendment(
         updated_protocol = protocol_optimizer.apply_amendment_to_protocol(
             payload.protocol, payload.amendment_id
         )
+        try:
+            from app.api.routes_audit import record_audit_event
+            record_audit_event(
+                user_id=_user.id,
+                user_name=_user.name,
+                user_role=_user.role,
+                action="PROTOCOL_AMENDMENT_APPLIED",
+                resource_type="PROTOCOL",
+                resource_id=payload.protocol.protocol_id,
+                details=f"Applied amendment proposal '{payload.amendment_id}' to protocol {payload.protocol.protocol_id} ({payload.protocol.title})."
+            )
+        except Exception:
+            logger.exception("Failed to record audit event for applied amendment")
         return updated_protocol
     except Exception:
         logger.exception("Failed to apply protocol amendment")

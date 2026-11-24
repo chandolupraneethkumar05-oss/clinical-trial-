@@ -1,15 +1,32 @@
 """
 ProtocolShield Protocol & Schedule of Assessments Models
 """
-from typing import Optional
+from typing import Optional, Any
 from pydantic import BaseModel, Field
 from app.models.burden import ProtocolVisit, PatientBurdenBreakdown
+
+
+class StructuredCriterion(BaseModel):
+    criterion_id: str
+    description: str
+    criterion_type: str = "INCLUSION"  # "INCLUSION" | "EXCLUSION"
+    clinical_parameter: str
+    comparator: str = ">="  # ">=", "<=", "==", "IN", "!="
+    threshold: Any
+    unit: Optional[str] = None
+    is_required: bool = True
+    is_hard_rule: bool = False
+    source_section: Optional[str] = "Section 4.0 Eligibility Criteria"
+    extraction_confidence: float = 1.0
+    validation_status: str = "VALIDATED"  # "VALIDATED" | "HEURISTIC" | "UNVALIDATED"
+    missing_data_behavior: str = "NEEDS_INVESTIGATOR_REVIEW"  # "UNKNOWN" | "NEEDS_INVESTIGATOR_REVIEW"
 
 
 class ProtocolEligibilityCriteria(BaseModel):
     inclusion_criteria: list[str] = Field(default_factory=list)
     exclusion_criteria: list[str] = Field(default_factory=list)
     structured_filters: dict = Field(default_factory=dict, description="Normalized machine-readable filters")
+    criteria: list[StructuredCriterion] = Field(default_factory=list, description="Structured criteria with validation provenance")
 
 
 class ClinicalTrialProtocol(BaseModel):

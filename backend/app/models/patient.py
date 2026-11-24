@@ -59,6 +59,8 @@ class CohortFilterCriteria(BaseModel):
     min_egfr: float = 50.0
     max_total_bilirubin: float = 1.5
     max_alt_multiplier: float = 2.5  # Multiple of Upper Limit of Normal (ULN)
+    max_alt_u_l: Optional[float] = None  # Explicit ALT threshold in U/L if specified by protocol
+    alt_uln_reference: float = 56.0  # Documented adult clinical reference standard ULN (U/L)
     max_prior_lines: int = 2
     allow_stable_brain_mets: bool = True
     exclude_active_autoimmune: bool = True

@@ -168,6 +168,30 @@ export default function App() {
     setShowAuthModal(true);
   }, []);
 
+  // Proactively validate active session with backend /auth/me on mount
+  useEffect(() => {
+    async function validateSession() {
+      const token = user?.token;
+      if (!token) return;
+      try {
+        const res = await fetch('/api/v1/auth/me', {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        if (res.status === 401 || !res.ok) {
+          handleSessionExpired();
+        } else {
+          const freshData = await res.json();
+          if (freshData?.user) {
+            setUser((prev) => (prev ? { ...prev, ...freshData.user } : prev));
+          }
+        }
+      } catch {
+        // Network failure or offline mode
+      }
+    }
+    validateSession();
+  }, [user?.token, handleSessionExpired]);
+
   // ── 6. Initial Data Fetching from FastAPI Backend ──────────────────────────
   useEffect(() => {
     async function loadInitialData() {

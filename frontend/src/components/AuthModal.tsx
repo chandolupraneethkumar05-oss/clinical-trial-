@@ -24,48 +24,36 @@ interface AuthModalProps {
   onLoginSuccess: (user: AuthUser) => void;
 }
 
-const DEMO_PERSONAS: (AuthUser & { defaultPassword?: string })[] = [
-  {
-    id: 'usr-demo-001',
-    name: 'Dr. Elena Vance',
-    email: 'elena.vance@novartis.com',
-    role: 'doctor',
-    roleLabel: 'Doctor / Clinical Investigator',
-    organization: 'Novartis Oncology',
-    provider: 'email',
-    defaultPassword: 'Novartis2026!',
-  },
-  {
-    id: 'usr-demo-002',
-    name: 'Dr. Marcus Chen',
-    email: 'marcus.chen@mskcc.org',
-    role: 'doctor',
-    roleLabel: 'Doctor / Clinical Investigator',
-    organization: 'Memorial Sloan Kettering',
-    provider: 'email',
-    defaultPassword: 'MSKCC2026!',
-  },
-  {
-    id: 'usr-demo-003',
-    name: 'Sarah Jenkins, RAC',
-    email: 'sarah.jenkins@iqvia.com',
-    role: 'admin',
-    roleLabel: 'Regulatory Administrator',
-    organization: 'IQVIA Biotech',
-    provider: 'email',
-    defaultPassword: 'IQVIA2026!',
-  },
-  {
-    id: 'usr-demo-004',
-    name: 'John Miller',
-    email: 'john.miller@patient.org',
-    role: 'patient',
-    roleLabel: 'Patient / Trial Volunteer',
-    organization: 'Oncology Patient Cohort',
-    provider: 'email',
-    defaultPassword: 'Patient2026!',
-  },
-];
+interface SampleIdentity {
+  id: string;
+  name: string;
+  email: string;
+  role: 'doctor' | 'patient';
+  roleLabel: string;
+  organization: string;
+}
+
+// Development-only sample identities for manual testing (strictly emails, zero passwords)
+const DEV_SAMPLE_IDENTITIES: SampleIdentity[] = import.meta.env.DEV
+  ? [
+      {
+        id: 'usr-dev-001',
+        name: 'Dr. Elena Vance',
+        email: 'elena.vance@novartis.com',
+        role: 'doctor',
+        roleLabel: 'Doctor / Clinical Investigator',
+        organization: 'Novartis Oncology',
+      },
+      {
+        id: 'usr-dev-002',
+        name: 'John Miller',
+        email: 'john.miller@patient.org',
+        role: 'patient',
+        roleLabel: 'Patient / Trial Volunteer',
+        organization: 'Oncology Patient Cohort',
+      },
+    ]
+  : [];
 
 const KNOWN_ENTERPRISE_DOMAINS: Record<string, string> = {
   'novartis.com': 'Novartis Clinical Network',
@@ -298,43 +286,11 @@ export const AuthModal: FC<AuthModalProps> = ({
     }
   };
 
-  // ── Quick Persona Login Handler ───────────────────────────────────────────
-  const handleQuickPersonaLogin = async (persona: typeof DEMO_PERSONAS[0]) => {
-    setIsLoading(true);
+  // ── Development Sample Identity Selection ─────────────────────────────────
+  const handleSelectDevIdentity = (identity: SampleIdentity) => {
+    setEmail(identity.email);
+    setPassword('');
     setErrorMessage('');
-    if (persona.defaultPassword) {
-      try {
-        const res = await fetch('/api/v1/auth/signin', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            email: persona.email,
-            password: persona.defaultPassword,
-          }),
-        });
-        if (res.ok) {
-          const data = await res.json();
-          setIsLoading(false);
-          onLoginSuccess({
-            ...data.user,
-            token: data.token,
-          });
-          return;
-        }
-        const err = await res.json().catch(() => ({ detail: 'Authentication error' }));
-        setErrorMessage(err.detail || 'Failed to authenticate persona.');
-        setIsLoading(false);
-        return;
-      } catch {
-        setIsLoading(false);
-        setErrorMessage('Network connection error: Backend server unreachable.');
-        return;
-      }
-    }
-    setIsLoading(false);
-    // Security: Never bypass backend authentication.
-    // If no default password is configured for this persona, show an error.
-    setErrorMessage('Demo persona login is unavailable: no credentials configured. Please use the email/password form.');
   };
 
   // ── Forgot Password Handlers ───────────────────────────────────────────────
@@ -592,9 +548,6 @@ export const AuthModal: FC<AuthModalProps> = ({
                   <label className="text-[11px] font-medium text-charcoal-700 block">
                     Password
                   </label>
-                  <span className="text-[10px] font-mono text-charcoal-400">
-                    Demo: <code className="text-terracotta-600 bg-terracotta-50 px-1 py-0.5 rounded">Novartis2026!</code>
-                  </span>
                 </div>
                 <div className="relative">
                   <Lock className="absolute left-3 top-2.5 h-4 w-4 text-charcoal-400" />
@@ -988,39 +941,39 @@ export const AuthModal: FC<AuthModalProps> = ({
           )}
 
           {/* ══════════════════════════════════════════════════════════════════
-              QUICK DEMO PERSONAS BAR
+              LOCAL DEVELOPMENT TESTING IDENTITIES (ZERO SECRETS / ZERO PASSWORDS)
              ══════════════════════════════════════════════════════════════════ */}
-          <div className="pt-2 border-t border-linen-200 space-y-2">
-            <div className="flex items-center space-x-1.5 text-[10px] font-mono text-charcoal-500 uppercase tracking-widest">
-              <Sparkles className="h-3 w-3 text-terracotta-500" />
-              <span>Instant Evaluator Demo Personas</span>
-            </div>
+          {import.meta.env.DEV && DEV_SAMPLE_IDENTITIES.length > 0 && (
+            <div className="pt-2 border-t border-linen-200 space-y-2">
+              <div className="flex items-center space-x-1.5 text-[10px] font-mono text-charcoal-500 uppercase tracking-widest">
+                <Sparkles className="h-3 w-3 text-terracotta-500" />
+                <span>Local Dev Quick-Fill (Emails Only - Enter Password to Sign In)</span>
+              </div>
 
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-              {DEMO_PERSONAS.map((persona) => (
-                <button
-                  key={persona.id}
-                  type="button"
-                  onClick={() => handleQuickPersonaLogin(persona)}
-                  className="p-2 bg-linen-50 hover:bg-linen-100 border border-linen-200 rounded-xl text-left transition-all hover:border-terracotta-300 group cursor-pointer"
-                >
-                  <span className="text-xs font-semibold text-charcoal-900 block truncate group-hover:text-terracotta-600">
-                    {persona.name}
-                  </span>
-                  <span className="text-[10px] text-charcoal-500 block truncate font-mono">
-                    {persona.roleLabel || persona.role}
-                  </span>
-                  <span className={`text-[9px] px-1.5 py-0.2 rounded font-mono inline-block mt-1 font-semibold ${
-                    persona.role === 'admin' ? 'bg-amber-100 text-amber-800' :
-                    persona.role === 'patient' ? 'bg-blue-100 text-blue-800' :
-                    'bg-sage-100 text-sage-800'
-                  }`}>
-                    {persona.role === 'admin' ? 'Admin' : persona.role === 'patient' ? 'Patient' : 'Doctor'}
-                  </span>
-                </button>
-              ))}
+              <div className="grid grid-cols-2 gap-2">
+                {DEV_SAMPLE_IDENTITIES.map((identity) => (
+                  <button
+                    key={identity.id}
+                    type="button"
+                    onClick={() => handleSelectDevIdentity(identity)}
+                    className="p-2 bg-linen-50 hover:bg-linen-100 border border-linen-200 rounded-xl text-left transition-all hover:border-terracotta-300 group cursor-pointer"
+                  >
+                    <span className="text-xs font-semibold text-charcoal-900 block truncate group-hover:text-terracotta-600">
+                      {identity.name}
+                    </span>
+                    <span className="text-[10px] text-charcoal-500 block truncate font-mono">
+                      {identity.roleLabel}
+                    </span>
+                    <span className={`text-[9px] px-1.5 py-0.2 rounded font-mono inline-block mt-1 font-semibold ${
+                      identity.role === 'patient' ? 'bg-blue-100 text-blue-800' : 'bg-sage-100 text-sage-800'
+                    }`}>
+                      {identity.role === 'patient' ? 'Patient' : 'Doctor'}
+                    </span>
+                  </button>
+                ))}
+              </div>
             </div>
-          </div>
+          )}
         </div>
       </div>
     </div>

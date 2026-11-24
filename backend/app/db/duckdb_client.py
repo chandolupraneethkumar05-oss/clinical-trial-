@@ -3,6 +3,7 @@ ProtocolShield DuckDB Database Client
 High-performance analytical vector database for 10,000+ patient records.
 Thread-safe connection manager with cursor pooling to prevent file-locking collisions.
 """
+import contextlib
 import duckdb
 import threading
 from pathlib import Path
@@ -73,6 +74,12 @@ class DuckDBClient:
         try:
             self._shared_conn = duckdb.connect(self.db_path)
         except duckdb.IOException as exc:
+            if settings.ENVIRONMENT in {"production", "prod"}:
+                raise RuntimeError(
+                    f"[STARTUP FAILURE] Production DuckDB database at {self.db_path} is locked by another process or unavailable ({exc}). "
+                    "DuckDB file locking requires single-process execution (e.g. uvicorn --workers 1 or single-worker container). "
+                    "In-memory fallback is disabled in production to prevent silent state loss."
+                ) from exc
             import warnings
             warnings.warn(
                 f"DuckDB database at {self.db_path} is locked by another process ({exc}). "
@@ -90,6 +97,28 @@ class DuckDBClient:
         with self._lock:
             cursor = self._shared_conn.cursor()
             return ThreadSafeDuckDBCursor(cursor, self._lock)
+
+    @contextlib.contextmanager
+    def transaction(self):
+        """
+        Context manager for atomic transaction execution on DuckDB.
+        Yields a ThreadSafeDuckDBCursor within an active BEGIN TRANSACTION block.
+        Automatically commits on normal exit, rolls back on exception.
+        """
+        with self._lock:
+            conn = self.get_connection()
+            conn.execute("BEGIN TRANSACTION")
+            try:
+                yield conn
+                conn.execute("COMMIT")
+            except Exception:
+                try:
+                    conn.execute("ROLLBACK")
+                except Exception:
+                    pass
+                raise
+            finally:
+                conn.close()
 
     def _init_schema(self):
         """Initializes tables and analytical indices if they don't exist."""
@@ -135,6 +164,7 @@ class DuckDBClient:
                     role VARCHAR DEFAULT 'doctor',
                     organization VARCHAR,
                     provider VARCHAR DEFAULT 'email',
+                    token_version INTEGER DEFAULT 1,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
 
@@ -164,6 +194,7 @@ class DuckDBClient:
                     resource_type VARCHAR NOT NULL,
                     resource_id VARCHAR,
                     details VARCHAR,
+                    previous_hash VARCHAR NOT NULL,
                     verification_hash VARCHAR NOT NULL
                 );
 
@@ -181,9 +212,24 @@ class DuckDBClient:
                     patient_name VARCHAR,
                     patient_email VARCHAR,
                     status VARCHAR DEFAULT 'SUBMITTED',
-                    submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE (patient_id, protocol_id)
                 );
             """)
+
+            # Safe schema upgrades for existing installations
+            try:
+                conn.execute("ALTER TABLE users ADD COLUMN token_version INTEGER DEFAULT 1")
+            except Exception:
+                pass
+            try:
+                conn.execute("ALTER TABLE audit_logs ADD COLUMN previous_hash VARCHAR DEFAULT '0000000000000000000000000000000000000000000000000000000000000000'")
+            except Exception:
+                pass
+            try:
+                conn.execute("ALTER TABLE audit_logs ADD COLUMN verification_hash VARCHAR DEFAULT ''")
+            except Exception:
+                pass
         finally:
             conn.close()
 

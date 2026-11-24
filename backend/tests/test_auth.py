@@ -4,6 +4,7 @@ Tests signup, signin, secure 2-step forgot-password workflow, JWT tokens, and /m
 """
 from fastapi.testclient import TestClient
 from app.main import app
+from app.core.config import settings
 import uuid
 
 client = TestClient(app)
@@ -92,46 +93,59 @@ def test_secure_two_step_forgot_password():
         "organization": "Roche"
     })
 
-    # 2. Step 1: Request password reset (does not leak email existence)
-    req_resp = client.post("/api/v1/auth/forgot-password/request", json={
+    # When EXPOSE_DEV_RESET_TOKEN is False (default), dev_reset_token is not returned
+    settings.EXPOSE_DEV_RESET_TOKEN = False
+    req_resp_hidden = client.post("/api/v1/auth/forgot-password/request", json={
         "email": random_email
     })
-    assert req_resp.status_code == 200
-    req_data = req_resp.json()
-    assert req_data["success"] is True
-    # In dev environment, reset token is provided for verification
-    reset_token = req_data.get("dev_reset_token")
-    assert reset_token is not None
+    assert req_resp_hidden.status_code == 200
+    assert "dev_reset_token" not in req_resp_hidden.json()
 
-    # 3. Step 2: Complete reset using single-use token
-    reset_resp = client.post("/api/v1/auth/forgot-password/reset", json={
-        "token": reset_token,
-        "new_password": "NewSecretPassword2026!"
-    })
-    assert reset_resp.status_code == 200
-    assert reset_resp.json()["success"] is True
+    # Enable EXPOSE_DEV_RESET_TOKEN for test harness verification
+    settings.EXPOSE_DEV_RESET_TOKEN = True
+    try:
+        # 2. Step 1: Request password reset (does not leak email existence)
+        req_resp = client.post("/api/v1/auth/forgot-password/request", json={
+            "email": random_email
+        })
+        assert req_resp.status_code == 200
+        req_data = req_resp.json()
+        assert req_data["success"] is True
+        # In dev environment with EXPOSE_DEV_RESET_TOKEN=True, reset token is provided for verification
+        reset_token = req_data.get("dev_reset_token")
+        assert reset_token is not None
 
-    # 4. Attempting to reuse the same token must fail
-    reuse_resp = client.post("/api/v1/auth/forgot-password/reset", json={
-        "token": reset_token,
-        "new_password": "AnotherPassword2026!"
-    })
-    assert reuse_resp.status_code == 400
+        # 3. Step 2: Complete reset using single-use token
+        reset_resp = client.post("/api/v1/auth/forgot-password/reset", json={
+            "token": reset_token,
+            "new_password": "NewSecretPassword2026!"
+        })
+        assert reset_resp.status_code == 200
+        assert reset_resp.json()["success"] is True
 
-    # 5. Old password no longer works
-    bad_login = client.post("/api/v1/auth/signin", json={
-        "email": random_email,
-        "password": "OldPassword123!"
-    })
-    assert bad_login.status_code == 401
+        # 4. Attempting to reuse the same token must fail
+        reuse_resp = client.post("/api/v1/auth/forgot-password/reset", json={
+            "token": reset_token,
+            "new_password": "AnotherPassword2026!"
+        })
+        assert reuse_resp.status_code == 400
 
-    # 6. Sign in succeeds with new password
-    good_login = client.post("/api/v1/auth/signin", json={
-        "email": random_email,
-        "password": "NewSecretPassword2026!"
-    })
-    assert good_login.status_code == 200
-    assert good_login.json()["success"] is True
+        # 5. Old password no longer works
+        bad_login = client.post("/api/v1/auth/signin", json={
+            "email": random_email,
+            "password": "OldPassword123!"
+        })
+        assert bad_login.status_code == 401
+
+        # 6. Sign in succeeds with new password
+        good_login = client.post("/api/v1/auth/signin", json={
+            "email": random_email,
+            "password": "NewSecretPassword2026!"
+        })
+        assert good_login.status_code == 200
+        assert good_login.json()["success"] is True
+    finally:
+        settings.EXPOSE_DEV_RESET_TOKEN = False
 
 
 def test_get_current_user_me_endpoint():
@@ -215,3 +229,167 @@ def test_cohort_simulator_sql_injection_resilience():
     assert "final_eligible_count" in result
     assert "funnel_stages" in result
     assert result["final_eligible_count"] >= 0
+
+
+def test_public_signup_cannot_create_doctor():
+    random_email = f"malicious.doctor.{uuid.uuid4().hex[:6]}@attacker.org"
+    signup_payload = {
+        "name": "Attacker Impersonator",
+        "email": random_email,
+        "password": "ValidPassword2026!",
+        "role": "doctor",
+        "organization": "Fake Clinic"
+    }
+    resp = client.post("/api/v1/auth/signup", json=signup_payload)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["success"] is True
+    # Public signups strictly force patient role
+    assert data["user"]["role"] == "patient"
+
+
+def test_existing_admin_credentials_never_overwritten_by_seed():
+    from app.api.routes_auth import seed_default_users_if_empty, hash_password
+    from app.db.duckdb_client import db_client
+    conn = db_client.get_connection()
+    try:
+        # Check current Sarah Jenkins hash
+        orig_row = conn.execute("SELECT password_hash, role FROM users WHERE email = 'sarah.jenkins@iqvia.com'").fetchone()
+        if not orig_row:
+            return  # If not present in test DB, skip
+        orig_hash, orig_role = orig_row
+
+        # Manually set a custom password hash
+        custom_hash = hash_password("CustomAdminSecret2026!")
+        conn.execute("UPDATE users SET password_hash = ? WHERE email = 'sarah.jenkins@iqvia.com'", (custom_hash,))
+
+        # Run seed operation again
+        import app.api.routes_auth as ra
+        ra._demo_seeded = False
+        seed_default_users_if_empty()
+
+        # Verify custom hash and role were NOT overwritten
+        after_row = conn.execute("SELECT password_hash, role FROM users WHERE email = 'sarah.jenkins@iqvia.com'").fetchone()
+        assert after_row[0] == custom_hash
+        assert after_row[1] == "admin"
+    finally:
+        # Restore original hash
+        if orig_row:
+            conn.execute("UPDATE users SET password_hash = ? WHERE email = 'sarah.jenkins@iqvia.com'", (orig_hash,))
+        conn.close()
+
+
+def test_existing_roles_never_overwritten_by_seed():
+    from app.api.routes_auth import seed_default_users_if_empty
+    from app.db.duckdb_client import db_client
+    conn = db_client.get_connection()
+    try:
+        # Change Dr. Elena Vance role to patient temporarily
+        orig_row = conn.execute("SELECT role FROM users WHERE email = 'elena.vance@novartis.com'").fetchone()
+        if not orig_row:
+            return
+        orig_role = orig_row[0]
+
+        conn.execute("UPDATE users SET role = 'patient' WHERE email = 'elena.vance@novartis.com'")
+
+        # Run seed operation
+        import app.api.routes_auth as ra
+        ra._demo_seeded = False
+        seed_default_users_if_empty()
+
+        # Seed must be INSERT-ONLY, cannot overwrite role back to doctor
+        updated_row = conn.execute("SELECT role FROM users WHERE email = 'elena.vance@novartis.com'").fetchone()
+        assert updated_row[0] == "patient"
+    finally:
+        if orig_row:
+            conn.execute("UPDATE users SET role = ? WHERE email = 'elena.vance@novartis.com'", (orig_role,))
+        conn.close()
+
+
+def test_production_startup_does_not_seed_demo_users():
+    from app.core.config import settings
+    from app.api.routes_auth import seed_default_users_if_empty
+    from app.db.duckdb_client import db_client
+
+    # Temporarily set environment to production
+    orig_env = settings.ENVIRONMENT
+    orig_seeding = settings.ENABLE_DEMO_SEEDING
+    try:
+        settings.ENVIRONMENT = "production"
+        settings.ENABLE_DEMO_SEEDING = False
+
+        import app.api.routes_auth as ra
+        ra._demo_seeded = False
+        seed_default_users_if_empty()
+
+        # Should execute without errors and not seed any accounts
+        assert ra._demo_seeded is True
+    finally:
+        settings.ENVIRONMENT = orig_env
+        settings.ENABLE_DEMO_SEEDING = orig_seeding
+
+
+def test_admin_can_promote_user_role():
+    # Login as admin Sarah Jenkins
+    admin_login = client.post("/api/v1/auth/signin", json={
+        "email": "sarah.jenkins@iqvia.com",
+        "password": "IQVIA2026!"
+    })
+    admin_token = admin_login.json()["token"]
+
+    # Create a patient user
+    pat_email = f"user.promote.{uuid.uuid4().hex[:6]}@hospital.org"
+    reg_resp = client.post("/api/v1/auth/signup", json={
+        "name": "Candidate Doctor",
+        "email": pat_email,
+        "password": "ValidPassword2026!"
+    })
+    user_id = reg_resp.json()["user"]["id"]
+    assert reg_resp.json()["user"]["role"] == "patient"
+
+    # Admin promotes to doctor
+    prom_resp = client.post(
+        "/api/v1/auth/promote-user",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"user_id": user_id, "target_role": "doctor"}
+    )
+    assert prom_resp.status_code == 200
+    assert prom_resp.json()["new_role"] == "doctor"
+
+    # Verify user profile now reflects doctor
+    from app.db.duckdb_client import db_client
+    conn = db_client.get_connection()
+    try:
+        row = conn.execute("SELECT role FROM users WHERE id = ?", (user_id,)).fetchone()
+        assert row[0] == "doctor"
+    finally:
+        conn.close()
+
+
+def test_non_admin_cannot_promote_user_role():
+    # Login as doctor Elena Vance
+    doc_login = client.post("/api/v1/auth/signin", json={
+        "email": "elena.vance@novartis.com",
+        "password": "Novartis2026!"
+    })
+    doc_token = doc_login.json()["token"]
+
+    # Attempt to promote someone
+    prom_resp = client.post(
+        "/api/v1/auth/promote-user",
+        headers={"Authorization": f"Bearer {doc_token}"},
+        json={"user_id": "usr-demo-004", "target_role": "admin"}
+    )
+    assert prom_resp.status_code == 403
+
+
+def test_demo_credentials_not_present_in_frontend_assets():
+    import glob
+    import os
+    dist_files = glob.glob("frontend/dist/assets/*.js")
+    if not dist_files:
+        return
+    for js_path in dist_files:
+        content = open(js_path, encoding="utf-8").read()
+        for forbidden in ["IQVIA2026!", "Novartis2026!", "MSKCC2026!", "Patient2026!", "sarah.jenkins@iqvia.com"]:
+            assert forbidden not in content, f"Forbidden credential '{forbidden}' leaked in {js_path}"

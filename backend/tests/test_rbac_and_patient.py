@@ -280,3 +280,231 @@ def test_screen_against_uploaded_protocol():
     data = screen_resp.json()
     protocol_ids = [m["protocol_id"] for m in data["matches"]]
     assert "UPLOADED-TRIAL-CUSTOM-999" in protocol_ids
+
+
+def test_bcrypt_password_length_limits():
+    # Passwords < 8 characters must raise HTTPException(400)
+    with pytest.raises(HTTPException) as exc_short:
+        hash_password("short7!")
+    assert exc_short.value.status_code == 400
+
+    # Passwords > 72 bytes must raise HTTPException(400)
+    over_72_bytes = "A" * 73
+    with pytest.raises(HTTPException) as exc_long:
+        hash_password(over_72_bytes)
+    assert exc_long.value.status_code == 400
+
+    # Passwords with 72 bytes must succeed
+    exact_72_bytes = "A" * 72
+    h = hash_password(exact_72_bytes)
+    assert h.startswith("$2b$")
+    valid, _ = verify_password(exact_72_bytes, h)
+    assert valid is True
+
+    # Verifying over 72 bytes returns False safely
+    valid_too_long, _ = verify_password(over_72_bytes, h)
+    assert valid_too_long is False
+
+
+def test_jwt_issuer_and_audience_validation():
+    import jwt
+    from app.core.config import settings
+
+    # Token with wrong issuer
+    now = 1774300000
+    bad_iss_payload = {
+        "sub": "usr-123",
+        "email": "test@domain.com",
+        "role": "doctor",
+        "iss": "malicious-issuer",
+        "aud": settings.JWT_AUDIENCE,
+        "exp": now + 3600,
+        "iat": now
+    }
+    bad_iss_token = jwt.encode(bad_iss_payload, settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
+    with pytest.raises(HTTPException) as exc_iss:
+        decode_access_token(bad_iss_token)
+    assert exc_iss.value.status_code == 401
+
+    # Token with wrong audience
+    bad_aud_payload = {
+        "sub": "usr-123",
+        "email": "test@domain.com",
+        "role": "doctor",
+        "iss": settings.JWT_ISSUER,
+        "aud": "wrong-client",
+        "exp": now + 3600,
+        "iat": now
+    }
+    bad_aud_token = jwt.encode(bad_aud_payload, settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
+    with pytest.raises(HTTPException) as exc_aud:
+        decode_access_token(bad_aud_token)
+    assert exc_aud.value.status_code == 401
+
+
+def test_jwt_unsupported_algorithm_rejected():
+    import jwt
+    from app.core.config import settings
+    claims = {
+        "sub": "usr-123",
+        "email": "test@domain.com",
+        "role": "doctor",
+        "iss": settings.JWT_ISSUER,
+        "aud": settings.JWT_AUDIENCE,
+        "exp": 1999999999,
+        "iat": 1700000000
+    }
+    # Attempt "none" algorithm
+    none_token = jwt.encode(claims, key="", algorithm="none")
+    with pytest.raises(HTTPException) as exc:
+        decode_access_token(none_token)
+    assert exc.value.status_code == 401
+
+
+def test_password_reset_invalidates_active_jwt_sessions():
+    import uuid
+    # 1. Sign up and sign in user
+    rand_email = f"session.inval.{uuid.uuid4().hex[:6]}@clinic.org"
+    reg = client.post("/api/v1/auth/signup", json={
+        "name": "Session Test Patient",
+        "email": rand_email,
+        "password": "Password123!"
+    })
+    assert reg.status_code == 200
+    old_token = reg.json()["token"]
+
+    # Verify old token works initially on /me
+    me_resp1 = client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {old_token}"})
+    assert me_resp1.status_code == 200
+
+    # 2. Issue password reset
+    from app.core.config import settings
+    orig_env = settings.ENVIRONMENT
+    orig_expose = settings.EXPOSE_DEV_RESET_TOKEN
+    try:
+        settings.ENVIRONMENT = "development"
+        settings.EXPOSE_DEV_RESET_TOKEN = True
+
+        rst_req = client.post("/api/v1/auth/forgot-password/request", json={"email": rand_email})
+        assert rst_req.status_code == 200
+        raw_token = rst_req.json().get("dev_reset_token")
+        assert raw_token is not None
+
+        # 3. Complete password reset
+        rst_comp = client.post("/api/v1/auth/forgot-password/reset", json={
+            "token": raw_token,
+            "new_password": "NewSecretPassword2026!"
+        })
+        assert rst_comp.status_code == 200
+
+        # 4. Old JWT access token MUST now be rejected with 401 due to token_version increment
+        me_resp2 = client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {old_token}"})
+        assert me_resp2.status_code == 401
+
+        # 5. Reset token reuse MUST be rejected
+        rst_reuse = client.post("/api/v1/auth/forgot-password/reset", json={
+            "token": raw_token,
+            "new_password": "AnotherPassword2026!"
+        })
+        assert rst_reuse.status_code == 400
+    finally:
+        settings.ENVIRONMENT = orig_env
+        settings.EXPOSE_DEV_RESET_TOKEN = orig_expose
+
+
+def test_rate_limiter_anti_spoofing():
+    from app.core.security import SlidingWindowRateLimiter
+    from app.core.config import settings
+
+    limiter = SlidingWindowRateLimiter()
+
+    # Simulate direct client sending arbitrary X-Forwarded-For
+    direct_client_ip = "203.0.113.195"  # Public untrusted client
+    # The client shouldn't be able to bypass rate limits by cycling X-Forwarded-For
+    key1 = f"test:{direct_client_ip}"
+    allowed1, _ = limiter.check(key1, max_requests=2, window_seconds=60)
+    allowed2, _ = limiter.check(key1, max_requests=2, window_seconds=60)
+    allowed3, _ = limiter.check(key1, max_requests=2, window_seconds=60)
+    assert allowed1 is True
+    assert allowed2 is True
+    assert allowed3 is False  # Blocked!
+
+
+def test_patient_id_spoofing_arbitrary_string_rejected():
+    # Login as patient John Miller
+    login_resp = client.post("/api/v1/auth/signin", json={
+        "email": "john.miller@patient.org",
+        "password": "Patient2026!"
+    })
+    token = login_resp.json()["token"]
+
+    # Attempt to spoof using an arbitrary string ID in clinical record endpoint
+    spoof_resp = client.get(
+        "/api/v1/patient/records/ARBITRARY_PATIENT_IDENTITY_999",
+        headers={"Authorization": f"Bearer {token}"}
+    )
+    assert spoof_resp.status_code == 403
+    assert "Security violation" in spoof_resp.json()["detail"]
+
+
+def test_cross_patient_interest_access_blocked():
+    import uuid
+    # Create patient A and express interest
+    email_a = f"pat.a.{uuid.uuid4().hex[:6]}@domain.org"
+    reg_a = client.post("/api/v1/auth/signup", json={
+        "name": "Patient Alpha",
+        "email": email_a,
+        "password": "Password123!"
+    })
+    token_a = reg_a.json()["token"]
+
+    int_resp_a = client.post(
+        "/api/v1/patient/interest",
+        json={"protocol_id": "PS-ONC-2026-001"},
+        headers={"Authorization": f"Bearer {token_a}"}
+    )
+    assert int_resp_a.status_code == 200
+    interest_id_a = int_resp_a.json()["interest_id"]
+
+    # Patient A can access their own interest record
+    view_a = client.get(
+        f"/api/v1/patient/interests/{interest_id_a}",
+        headers={"Authorization": f"Bearer {token_a}"}
+    )
+    assert view_a.status_code == 200
+    assert view_a.json()["id"] == interest_id_a
+
+    # Create patient B
+    email_b = f"pat.b.{uuid.uuid4().hex[:6]}@domain.org"
+    reg_b = client.post("/api/v1/auth/signup", json={
+        "name": "Patient Beta",
+        "email": email_b,
+        "password": "Password123!"
+    })
+    token_b = reg_b.json()["token"]
+
+    # Patient B attempts to access Patient A's interest record -> MUST return 403 Forbidden
+    view_b = client.get(
+        f"/api/v1/patient/interests/{interest_id_a}",
+        headers={"Authorization": f"Bearer {token_b}"}
+    )
+    assert view_b.status_code == 403
+    assert "Access denied" in view_b.json()["detail"]
+
+
+def test_cross_patient_interest_submission_spoofing_blocked():
+    # Login as patient John Miller
+    login_resp = client.post("/api/v1/auth/signin", json={
+        "email": "john.miller@patient.org",
+        "password": "Patient2026!"
+    })
+    token = login_resp.json()["token"]
+
+    # Attempt to express interest on behalf of another patient ID
+    int_resp = client.post(
+        "/api/v1/patient/interest",
+        json={"protocol_id": "PS-ONC-2026-001", "patient_id": "usr-demo-001"},
+        headers={"Authorization": f"Bearer {token}"}
+    )
+    assert int_resp.status_code == 403
+    assert "Security violation" in int_resp.json()["detail"]

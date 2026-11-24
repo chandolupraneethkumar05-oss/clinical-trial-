@@ -24,6 +24,7 @@ from app.core.security import (
     verify_password,
     create_access_token,
     get_current_user,
+    require_role,
     AuthenticatedUser,
     enforce_rate_limit,
     revoke_token,
@@ -44,15 +45,28 @@ _demo_seeded = False
 
 
 def seed_default_users_if_empty():
-    """Seeds or synchronizes verified demo profiles across all three roles."""
+    """
+    Seeds verified demo profiles strictly in development and test environments.
+    Guarantees:
+      1. Strictly disabled in production.
+      2. Requires settings.ENABLE_DEMO_SEEDING to be True.
+      3. INSERT-ONLY: never overwrites existing user passwords, roles, or attributes.
+      4. Never restores deleted accounts in production.
+    """
     global _demo_seeded
     if _demo_seeded:
+        return
+
+    env = settings.ENVIRONMENT.lower()
+    if env not in {"development", "test"} or not settings.ENABLE_DEMO_SEEDING:
+        # Fails closed in production or when demo seeding is disabled
+        _demo_seeded = True
         return
 
     conn = db_client.get_connection()
     try:
         existing_count = conn.execute(
-            "SELECT count(*) FROM users WHERE email IN ('elena.vance@novartis.com', 'marcus.chen@mskcc.org', 'sarah.jenkins@iqvia.com', 'john.miller@patient.org')"
+            "SELECT count(*) FROM users WHERE lower(email) IN ('elena.vance@novartis.com', 'marcus.chen@mskcc.org', 'sarah.jenkins@iqvia.com', 'john.miller@patient.org')"
         ).fetchone()[0]
         if existing_count == 4:
             _demo_seeded = True
@@ -96,18 +110,15 @@ def seed_default_users_if_empty():
                 "email"
             )
         ]
+        # Strict INSERT-ONLY operation: do not overwrite existing credentials or roles
         for user_id, name, email, pw_hash, role, org, provider in demo_users:
-            existing = conn.execute("SELECT id FROM users WHERE email = ?", [email]).fetchone()
-            if existing:
-                conn.execute(
-                    "UPDATE users SET role = ?, password_hash = ? WHERE email = ?",
-                    [role, pw_hash, email]
-                )
-            else:
+            existing = conn.execute("SELECT id FROM users WHERE lower(email) = ?", [email.lower()]).fetchone()
+            if not existing:
                 conn.execute(
                     "INSERT INTO users (id, name, email, password_hash, role, organization, provider) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    [user_id, name, email, pw_hash, role, org, provider]
+                    [user_id, name, email.lower(), pw_hash, role, org, provider]
                 )
+        _demo_seeded = True
     finally:
         conn.close()
 
@@ -126,9 +137,14 @@ class AuthUserResponse(BaseModel):
 class SignUpRequest(BaseModel):
     name: str = Field(..., min_length=2, max_length=100)
     email: str = Field(..., min_length=5, max_length=150)
-    password: str = Field(..., min_length=8)
-    role: Optional[str] = Field(default=ROLE_DOCTOR, description="'patient' | 'doctor' | 'admin'")
-    organization: Optional[str] = "Clinical Trial Sponsor / CRO"
+    password: str = Field(..., min_length=8, max_length=72, description="Bcrypt max password size 72 bytes")
+    role: Optional[str] = Field(default=ROLE_PATIENT, description="Public signup always creates 'patient' accounts")
+    organization: Optional[str] = "Clinical Trial Volunteer Cohort"
+
+
+class PromoteUserRequest(BaseModel):
+    user_id: str = Field(..., min_length=3)
+    target_role: str = Field(..., description="'doctor' | 'admin'")
 
 
 class SignInRequest(BaseModel):
@@ -203,7 +219,8 @@ async def signup(payload: SignUpRequest):
             "sub": user_id,
             "email": clean_email,
             "name": user_obj.name,
-            "role": assigned_role
+            "role": assigned_role,
+            "token_version": 1
         })
 
         return AuthResponse(
@@ -228,7 +245,7 @@ async def signin(payload: SignInRequest):
     try:
         clean_email = payload.email.strip().lower()
         user_row = conn.execute(
-            "SELECT id, name, email, password_hash, role, organization, provider FROM users WHERE lower(email) = ?",
+            "SELECT id, name, email, password_hash, role, organization, provider, token_version FROM users WHERE lower(email) = ?",
             (clean_email,)
         ).fetchone()
 
@@ -238,7 +255,8 @@ async def signin(payload: SignInRequest):
                 detail="Invalid work email or password."
             )
 
-        user_id, name, email, stored_hash, role, org, provider = user_row
+        user_id, name, email, stored_hash, role, org, provider = user_row[:7]
+        user_token_version = user_row[7] if len(user_row) > 7 and user_row[7] is not None else 1
         is_valid, needs_rehash = verify_password(payload.password, stored_hash)
 
         if not is_valid:
@@ -266,7 +284,8 @@ async def signin(payload: SignInRequest):
             "sub": user_id,
             "email": email,
             "name": name,
-            "role": user_role
+            "role": user_role,
+            "token_version": user_token_version
         })
 
         return AuthResponse(
@@ -309,8 +328,9 @@ async def forgot_password_request(payload: ForgotPasswordInitRequest):
                 (reset_id, clean_email, token_hash, expires_at)
             )
 
-            # In development/hackathon mode, provide the token for verification without a mail server
-            if settings.ENVIRONMENT == "development" or settings.DEBUG:
+            # Security: Never return raw reset tokens in production responses.
+            # Only expose dev_reset_token if explicitly configured via EXPOSE_DEV_RESET_TOKEN in development/test.
+            if settings.ENVIRONMENT != "production" and settings.EXPOSE_DEV_RESET_TOKEN:
                 dev_token_display = raw_token
 
         resp = {
@@ -319,17 +339,21 @@ async def forgot_password_request(payload: ForgotPasswordInitRequest):
         }
         if dev_token_display:
             resp["dev_reset_token"] = dev_token_display
-            resp["dev_note"] = "Local Hackathon Development Mode: Token displayed for testing self-service reset."
+            resp["dev_note"] = "Local Development Mode: Token displayed for testing self-service reset."
 
         return resp
     finally:
         conn.close()
 
 
-@router.post("/forgot-password/reset")
+@router.post(
+    "/forgot-password/reset",
+    dependencies=[Depends(enforce_rate_limit(max_requests=5, window_seconds=60, prefix="auth_reset_pw"))]
+)
 async def forgot_password_reset(payload: ForgotPasswordResetRequest):
     """
-    Step 2: Consumes the reset token, updates password to Bcrypt hash, and invalidates token.
+    Step 2: Atomically consumes the reset token, updates password to Bcrypt hash,
+    invalidates outstanding tokens, and revokes prior user sessions by incrementing token_version.
     """
     seed_default_users_if_empty()
     conn = db_client.get_connection()
@@ -337,39 +361,52 @@ async def forgot_password_reset(payload: ForgotPasswordResetRequest):
         token_hash = hashlib.sha256(payload.token.strip().encode("utf-8")).hexdigest()
         now = datetime.now(timezone.utc)
 
-        reset_row = conn.execute(
-            """
-            SELECT id, email, expires_at, used 
-            FROM password_resets 
-            WHERE token_hash = ? AND used = FALSE
-            """,
-            (token_hash,)
-        ).fetchone()
+        conn.execute("BEGIN TRANSACTION")
+        try:
+            reset_row = conn.execute(
+                """
+                SELECT id, email, expires_at, used 
+                FROM password_resets 
+                WHERE token_hash = ? AND used = FALSE
+                """,
+                (token_hash,)
+            ).fetchone()
 
-        if not reset_row:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="The password reset token is invalid or has already been used."
+            if not reset_row:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="The password reset token is invalid or has already been used."
+                )
+
+            reset_id, email, expires_at, used = reset_row
+
+            # Verify expiration
+            if isinstance(expires_at, str):
+                exp_dt = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+            else:
+                exp_dt = expires_at.replace(tzinfo=timezone.utc) if expires_at.tzinfo is None else expires_at
+
+            if now > exp_dt:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="The password reset token has expired. Please request a new reset link."
+                )
+
+            # Update password hash with Bcrypt and increment token_version for instant session invalidation
+            new_pwd_hash = hash_password(payload.new_password)
+            conn.execute(
+                "UPDATE users SET password_hash = ?, token_version = COALESCE(token_version, 1) + 1 WHERE lower(email) = ?",
+                (new_pwd_hash, email.lower())
             )
-
-        reset_id, email, expires_at, used = reset_row
-        
-        # Verify expiration
-        if isinstance(expires_at, str):
-            exp_dt = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
-        else:
-            exp_dt = expires_at.replace(tzinfo=timezone.utc) if expires_at.tzinfo is None else expires_at
-
-        if now > exp_dt:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="The password reset token has expired. Please request a new reset link."
-            )
-
-        # Update password hash with Bcrypt
-        new_pwd_hash = hash_password(payload.new_password)
-        conn.execute("UPDATE users SET password_hash = ? WHERE lower(email) = ?", (new_pwd_hash, email.lower()))
-        conn.execute("UPDATE password_resets SET used = TRUE WHERE id = ?", (reset_id,))
+            # Atomically mark this token and all outstanding reset tokens for this user as consumed
+            conn.execute("UPDATE password_resets SET used = TRUE WHERE lower(email) = ?", (email.lower(),))
+            conn.execute("COMMIT")
+        except Exception:
+            try:
+                conn.execute("ROLLBACK")
+            except Exception:
+                pass
+            raise
 
         return {
             "success": True,
@@ -379,7 +416,11 @@ async def forgot_password_reset(payload: ForgotPasswordResetRequest):
         conn.close()
 
 
-@router.post("/google", response_model=AuthResponse)
+@router.post(
+    "/google",
+    response_model=AuthResponse,
+    dependencies=[Depends(enforce_rate_limit(max_requests=10, window_seconds=60, prefix="auth_google"))]
+)
 async def google_auth(payload: GoogleSignInRequest):
     """
     Server-side Google OAuth 2.0 / OIDC ID Token verification.
@@ -400,6 +441,14 @@ async def google_auth(payload: GoogleSignInRequest):
             settings.GOOGLE_CLIENT_ID
         )
 
+        # Validate issuer
+        issuer = id_info.get("iss")
+        if issuer not in {"accounts.google.com", "https://accounts.google.com"}:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid Google token issuer."
+            )
+
         # Security: reject tokens with unverified email addresses
         if id_info.get("email_verified") is not True:
             raise HTTPException(
@@ -410,8 +459,8 @@ async def google_auth(payload: GoogleSignInRequest):
         email = id_info.get("email", "").lower().strip()
         google_sub = id_info.get("sub", "")
         name = id_info.get("name", "Google User")
-        if not email:
-            raise HTTPException(status_code=400, detail="Google token does not contain a verified email.")
+        if not email or not google_sub:
+            raise HTTPException(status_code=400, detail="Google token does not contain a verified email or subject identifier.")
 
     except HTTPException:
         raise
@@ -425,20 +474,22 @@ async def google_auth(payload: GoogleSignInRequest):
     conn = db_client.get_connection()
     try:
         user_row = conn.execute(
-            "SELECT id, name, email, role, organization FROM users WHERE lower(email) = ?",
+            "SELECT id, name, email, role, organization, token_version FROM users WHERE lower(email) = ?",
             (email,)
         ).fetchone()
 
         if user_row:
-            user_id, name, email, role, org = user_row
+            user_id, name, email, role, org, token_ver = user_row
+            user_token_version = token_ver or 1
             logger.info("Google OIDC login: existing user user_id=%s", user_id)
         else:
-            # New Google user: always create as patient
+            # New Google user: always create as patient; never automatically elevate
             user_id = f"usr-{uuid.uuid4().hex[:8]}"
             role = ROLE_PATIENT
             org = "Google Workspace"
+            user_token_version = 1
             conn.execute(
-                "INSERT INTO users (id, name, email, password_hash, role, organization, provider) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO users (id, name, email, password_hash, role, organization, provider, token_version) VALUES (?, ?, ?, ?, ?, ?, ?, 1)",
                 (user_id, name, email, "google_oidc_managed", role, org, "google")
             )
             logger.info("New patient account via Google OIDC: user_id=%s", user_id)
@@ -457,7 +508,8 @@ async def google_auth(payload: GoogleSignInRequest):
             "sub": user_id,
             "email": email,
             "name": name,
-            "role": user_role
+            "role": user_role,
+            "token_version": user_token_version
         })
 
         return AuthResponse(
@@ -504,3 +556,61 @@ async def logout(
         "success": True,
         "message": f"Session for {user.email} terminated and token invalidated successfully."
     }
+
+
+@router.post("/promote-user")
+async def promote_user(
+    payload: PromoteUserRequest,
+    current_admin: AuthenticatedUser = Depends(require_role(["admin"]))
+):
+    """
+    Administrative endpoint for explicit, authorized role promotion.
+    Requires an authenticated administrator with verified permissions.
+    """
+    target = payload.target_role.lower().strip()
+    if target not in {ROLE_DOCTOR, ROLE_ADMIN}:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid target role '{payload.target_role}'. Promotion target must be 'doctor' or 'admin'."
+        )
+
+    conn = db_client.get_connection()
+    try:
+        user_row = conn.execute(
+            "SELECT id, email, role FROM users WHERE id = ?",
+            (payload.user_id,)
+        ).fetchone()
+
+        if not user_row:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"User with ID '{payload.user_id}' does not exist."
+            )
+
+        conn.execute("UPDATE users SET role = ? WHERE id = ?", (target, payload.user_id))
+        logger.info(
+            "Admin %s (%s) promoted user %s (%s) from %s to %s",
+            current_admin.id, current_admin.email, payload.user_id, user_row[1], user_row[2], target
+        )
+        try:
+            from app.api.routes_audit import record_audit_event
+            record_audit_event(
+                user_id=current_admin.id,
+                user_name=current_admin.name,
+                user_role=current_admin.role,
+                action="USER_ROLE_PROMOTION",
+                resource_type="USER",
+                resource_id=payload.user_id,
+                details=f"Admin {current_admin.email} promoted user {user_row[1]} ({payload.user_id}) from {user_row[2]} to {target}."
+            )
+        except Exception:
+            logger.exception("Failed to record audit event for user promotion")
+        return {
+            "success": True,
+            "user_id": payload.user_id,
+            "previous_role": user_row[2],
+            "new_role": target,
+            "message": f"User {payload.user_id} successfully promoted to {target}."
+        }
+    finally:
+        conn.close()

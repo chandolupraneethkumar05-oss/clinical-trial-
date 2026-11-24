@@ -41,7 +41,11 @@ class CohortSimulationEngine:
 
         if stage_level >= 3:
             # Stage 3: Hematologic & Renal/Hepatic Lab Cutoffs
-            max_alt = criteria.max_alt_multiplier * 56.0  # ULN 56 U/L
+            if criteria.max_alt_u_l is not None:
+                max_alt = criteria.max_alt_u_l
+            else:
+                alt_uln = getattr(criteria, "alt_uln_reference", 56.0)
+                max_alt = criteria.max_alt_multiplier * alt_uln
             clauses.append("anc >= ?")
             params.append(criteria.min_anc)
             clauses.append("platelets >= ?")

@@ -34,8 +34,19 @@ class Settings(BaseSettings):
     # Generate with: python -c "import secrets; print(secrets.token_urlsafe(48))"
     JWT_SECRET_KEY: str = "protocolshield_super_secure_jwt_secret_key_2026_dev_only"
     JWT_ALGORITHM: str = "HS256"
+    JWT_ISSUER: str = "protocolshield-api"
+    JWT_AUDIENCE: str = "protocolshield-client"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60  # 1 hour default; set lower in prod (15–30 min)
     PASSWORD_RESET_EXPIRE_MINUTES: int = 15  # 15 minutes, non-negotiable
+
+    # Demo & Development Security Guardrails
+    # Explicitly disabled in production; production startup fails closed if set to True.
+    ENABLE_DEMO_SEEDING: bool = True  # Allowed ONLY in development/test environments
+    EXPOSE_DEV_RESET_TOKEN: bool = False  # Development-only flag for local verification; never in prod
+
+    # Anti-Spoofing & Trusted Reverse Proxies
+    # Only requests from these IP addresses will have their X-Forwarded-For headers inspected.
+    TRUSTED_PROXIES: list[str] = ["127.0.0.1", "::1"]
 
     # Google OAuth (optional — email/password login works without this)
     GOOGLE_CLIENT_ID: str = ""
@@ -87,6 +98,21 @@ class Settings(BaseSettings):
         is_production = env in {"production", "prod", "staging"}
 
         if is_production:
+            if self.DEBUG:
+                logger.critical("[STARTUP FAILURE] DEBUG must be False in production.")
+                sys.exit(1)
+            if self.ENABLE_DEMO_SEEDING:
+                logger.critical(
+                    "[STARTUP FAILURE] Insecure demo-seeding configuration detected: "
+                    "ENABLE_DEMO_SEEDING must be False in production environments."
+                )
+                sys.exit(1)
+            if self.EXPOSE_DEV_RESET_TOKEN:
+                logger.critical(
+                    "[STARTUP FAILURE] Insecure reset-token configuration detected: "
+                    "EXPOSE_DEV_RESET_TOKEN must be False in production environments."
+                )
+                sys.exit(1)
             # Reject known weak or placeholder JWT secrets
             if self.JWT_SECRET_KEY.lower() in _INSECURE_DEV_SECRETS:
                 logger.critical(

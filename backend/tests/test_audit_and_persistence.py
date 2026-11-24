@@ -104,3 +104,126 @@ def test_patient_express_interest_lifecycle():
     assert doc_interests.status_code == 200
     doc_items = doc_interests.json()
     assert any(i["protocol_id"] == "PS-ONC-2026-001" for i in doc_items)
+
+
+# ── Cryptographic Audit Chain & DuckDB Reliability Tests ─────────────────────
+
+def test_audit_chain_verification_endpoint():
+    """
+    Verifies that GET /api/v1/audit/verify traverses the SHA-256 hash chain,
+    validates genesis linkage, and confirms 100% cryptographic integrity.
+    """
+    doctor_token = get_token_for("elena.vance@novartis.com", "Novartis2026!")
+    patient_token = get_token_for("john.miller@patient.org", "Patient2026!")
+
+    # 1. Patients are forbidden from verification endpoint
+    patient_resp = client.get(
+        "/api/v1/audit/verify",
+        headers={"Authorization": f"Bearer {patient_token}"}
+    )
+    assert patient_resp.status_code == 403
+
+    # 2. Doctors/investigators receive verified cryptographic report
+    resp = client.get(
+        "/api/v1/audit/verify",
+        headers={"Authorization": f"Bearer {doctor_token}"}
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["valid"] is True, data.get("details")
+    assert data["total_records_verified"] >= 5
+    assert data["latest_head_hash"] is not None
+    assert "Successfully verified" in data["details"]
+
+
+def test_audit_chain_tamper_detection():
+    """
+    Simulates unauthorized direct database modification of an audit record
+    and verifies that GET /api/v1/audit/verify detects the break in the chain.
+    """
+    from app.db.duckdb_client import db_client
+    doctor_token = get_token_for("elena.vance@novartis.com", "Novartis2026!")
+
+    # Read original record
+    conn = db_client.get_connection()
+    try:
+        orig = conn.execute("SELECT id, details FROM audit_logs ORDER BY timestamp ASC LIMIT 1").fetchone()
+        assert orig is not None
+        target_id, orig_details = orig
+
+        # Tamper with the details directly in the database
+        conn.execute("UPDATE audit_logs SET details = 'UNAUTHORIZED TAMPERING DETECTED' WHERE id = ?", (target_id,))
+    finally:
+        conn.close()
+
+    try:
+        # Verification endpoint must catch the tampering
+        verify_resp = client.get(
+            "/api/v1/audit/verify",
+            headers={"Authorization": f"Bearer {doctor_token}"}
+        )
+        assert verify_resp.status_code == 200
+        data = verify_resp.json()
+        assert data["valid"] is False
+        assert data["tampered_event_id"] == target_id
+        assert "tampered" in data["details"].lower() or "mismatch" in data["details"].lower()
+    finally:
+        # Restore the original details to keep audit log intact
+        restore_conn = db_client.get_connection()
+        try:
+            restore_conn.execute("UPDATE audit_logs SET details = ? WHERE id = ?", (orig_details, target_id))
+        finally:
+            restore_conn.close()
+
+
+def test_duckdb_atomic_transaction_rollback():
+    """
+    Verifies that DuckDBClient.transaction() executes atomically and rolls back
+    all uncommitted changes when an exception is raised within the block.
+    """
+    from app.db.duckdb_client import db_client
+    import uuid
+    import pytest
+
+    test_email = f"rollback.test.{uuid.uuid4().hex[:6]}@trial.org"
+    with pytest.raises(ValueError, match="Simulated crash during transaction"):
+        with db_client.transaction() as conn:
+            conn.execute(
+                """
+                INSERT INTO users (id, name, email, password_hash, role)
+                VALUES (?, 'Dr. Rollback', ?, 'hashed_pw', 'doctor')
+                """,
+                (f"usr-{uuid.uuid4().hex[:6]}", test_email)
+            )
+            # Trigger exception to force rollback
+            raise ValueError("Simulated crash during transaction")
+
+    # Confirm record was rolled back and does not exist in the database
+    check_conn = db_client.get_connection()
+    try:
+        row = check_conn.execute("SELECT id FROM users WHERE email = ?", (test_email,)).fetchone()
+        assert row is None, "Transaction rollback failed: uncommitted row was persisted!"
+    finally:
+        check_conn.close()
+
+
+def test_duckdb_production_startup_fail_closed_on_lock(monkeypatch):
+    """
+    Verifies that in production mode, DuckDBClient does NOT silently fall back
+    to :memory: when a database file is locked, but raises a RuntimeError.
+    """
+    import duckdb
+    from app.core.config import settings
+    from app.db.duckdb_client import DuckDBClient
+    import pytest
+
+    monkeypatch.setattr(settings, "ENVIRONMENT", "production")
+
+    def mock_locked_connect(path):
+        raise duckdb.IOException("File is locked by another process")
+
+    monkeypatch.setattr(duckdb, "connect", mock_locked_connect)
+
+    with pytest.raises(RuntimeError, match=r"\[STARTUP FAILURE\] Production DuckDB database"):
+        DuckDBClient(db_path="/tmp/mock_prod.duckdb")
+

@@ -412,6 +412,20 @@ async def upload_protocol_pdf(
         finally:
             conn.close()
 
+        try:
+            from app.api.routes_audit import record_audit_event
+            record_audit_event(
+                user_id=_user.id,
+                user_name=_user.name,
+                user_role=_user.role,
+                action="PROTOCOL_PDF_UPLOAD",
+                resource_type="PROTOCOL",
+                resource_id=protocol.protocol_id,
+                details=f"Uploaded and extracted clinical trial protocol '{protocol.title}' ({protocol.protocol_id}) from PDF file {file.filename}."
+            )
+        except Exception:
+            logger.exception("Failed to record audit event for protocol upload")
+
         return protocol
 
     except HTTPException:
