@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import type { FC } from 'react';
 import type { AuthUser } from '../types/auth';
 import { UserMenu } from './UserMenu';
@@ -10,7 +10,12 @@ import {
   Sparkles,
   Sliders,
   RefreshCw,
-  ArrowLeft
+  ArrowLeft,
+  XCircle,
+  FileCheck2,
+  HelpCircle,
+  ChevronDown,
+  ChevronUp
 } from 'lucide-react';
 
 interface PatientPortalProps {
@@ -21,7 +26,7 @@ interface PatientPortalProps {
   onBackToLanding?: () => void;
 }
 
-interface CriterionCheck {
+export interface CriterionCheck {
   criterion: string;
   category: string;
   passed: boolean;
@@ -30,7 +35,7 @@ interface CriterionCheck {
   impact_note: string;
 }
 
-interface TrialMatch {
+export interface TrialMatch {
   protocol_id: string;
   title: string;
   indication: string;
@@ -53,6 +58,51 @@ interface TrialMatch {
   investigator_disclaimer?: string;
 }
 
+export interface ClinicalProfile {
+  age: number | null;
+  cancer_stage: string | null;
+  ecog_score: number | null;
+  egfr_ml_min: number | null;
+  distance_to_center_miles: number | null;
+  has_stable_brain_mets: boolean | null;
+  anc: number | null;
+  platelets: number | null;
+  hemoglobin: number | null;
+  total_bilirubin: number | null;
+  alt_u_l: number | null;
+  prior_lines: number | null;
+}
+
+const EMPTY_CLINICAL_PROFILE: ClinicalProfile = {
+  age: null,
+  cancer_stage: null,
+  ecog_score: null,
+  egfr_ml_min: null,
+  distance_to_center_miles: null,
+  has_stable_brain_mets: null,
+  anc: null,
+  platelets: null,
+  hemoglobin: null,
+  total_bilirubin: null,
+  alt_u_l: null,
+  prior_lines: null,
+};
+
+const SYNTHETIC_DEMO_PROFILE: ClinicalProfile = {
+  age: 62,
+  cancer_stage: 'Stage IV (Oligometastatic)',
+  ecog_score: 1,
+  egfr_ml_min: 52.0,
+  distance_to_center_miles: 24.0,
+  has_stable_brain_mets: true,
+  anc: 1850.0,
+  platelets: 165.0,
+  hemoglobin: 11.4,
+  total_bilirubin: 1.1,
+  alt_u_l: 32.0,
+  prior_lines: 0,
+};
+
 export const PatientPortal: FC<PatientPortalProps> = ({
   user,
   onSignOut,
@@ -60,29 +110,30 @@ export const PatientPortal: FC<PatientPortalProps> = ({
   onOpenAuth,
   onBackToLanding,
 }) => {
-  // Candidate Phenotype Input State
-  const [age, setAge] = useState<number>(62);
-  const [cancerStage, setCancerStage] = useState<string>('Stage IV (Oligometastatic)');
-  const [ecogScore, setEcogScore] = useState<number>(1);
-  const [egfr, setEgfr] = useState<number>(52.0);
-  const [distanceMiles, setDistanceMiles] = useState<number>(24.0);
-  const [stableBrainMets, setStableBrainMets] = useState<boolean>(true);
+  // Clinical Profile state - initialized without invented clinical values
+  const [profile, setProfile] = useState<ClinicalProfile>(EMPTY_CLINICAL_PROFILE);
+  const [isDemoMode, setIsDemoMode] = useState<boolean>(false);
+  const [showAdvancedLabs, setShowAdvancedLabs] = useState<boolean>(false);
 
-  // Results State
+  // Screening Execution & Error State
   const [isLoading, setIsLoading] = useState<boolean>(false);
-  const [matches, setMatches] = useState<TrialMatch[]>([]);
+  const [screeningError, setScreeningError] = useState<string | null>(null);
+  const [validationError, setValidationError] = useState<string | null>(null);
+  const [matches, setMatches] = useState<TrialMatch[] | null>(null);
   const [summary, setSummary] = useState<string>('');
   const [enrolledTrialId, setEnrolledTrialId] = useState<string | null>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   // Fetch persisted interests on mount
   useEffect(() => {
+    let isMounted = true;
     async function loadInterests() {
       if (!user.token) return;
       try {
         const res = await fetch('/api/v1/patient/interests', {
           headers: { Authorization: `Bearer ${user.token}` }
         });
-        if (res.ok) {
+        if (res.ok && isMounted) {
           const data = await res.json();
           if (Array.isArray(data) && data.length > 0) {
             setEnrolledTrialId(data[0].protocol_id);
@@ -93,9 +144,19 @@ export const PatientPortal: FC<PatientPortalProps> = ({
       }
     }
     loadInterests();
-  }, [user]);
+    return () => { isMounted = false; };
+  }, [user.token]);
 
-  // Persist interest to backend DuckDB
+  // Clean up any ongoing fetch on unmount
+  useEffect(() => {
+    return () => {
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
+    };
+  }, []);
+
+  // Express interest in study
   const handleExpressInterest = async (protocolId: string) => {
     try {
       const headers: Record<string, string> = { 'Content-Type': 'application/json' };
@@ -118,49 +179,118 @@ export const PatientPortal: FC<PatientPortalProps> = ({
     }
   };
 
-  // Live Screening Query
-  const runScreening = async () => {
+  // Switch between blank clinical profile and synthetic demo profile
+  const handleToggleDemoMode = () => {
+    if (isDemoMode) {
+      setIsDemoMode(false);
+      setProfile(EMPTY_CLINICAL_PROFILE);
+      setMatches(null);
+      setSummary('');
+      setValidationError(null);
+      setScreeningError(null);
+    } else {
+      setIsDemoMode(true);
+      setProfile(SYNTHETIC_DEMO_PROFILE);
+      setMatches(null);
+      setSummary('');
+      setValidationError(null);
+      setScreeningError(null);
+    }
+  };
+
+  // Perform Clinical Eligibility Screening
+  const handleRunScreening = async () => {
+    setValidationError(null);
+    setScreeningError(null);
+
+    // Validate required clinical inputs before sending
+    const missing: string[] = [];
+    if (profile.age === null || isNaN(profile.age) || profile.age < 18 || profile.age > 95) {
+      missing.push('Age (18–95 years)');
+    }
+    if (!profile.cancer_stage) {
+      missing.push('Cancer Stage');
+    }
+    if (profile.ecog_score === null) {
+      missing.push('ECOG Performance Status');
+    }
+    if (profile.egfr_ml_min === null || isNaN(profile.egfr_ml_min) || profile.egfr_ml_min < 10) {
+      missing.push('Kidney Function (eGFR)');
+    }
+
+    if (missing.length > 0) {
+      setValidationError(`Please complete the required clinical information before screening: ${missing.join(', ')}.`);
+      return;
+    }
+
+    // Cancel any previous in-flight request to prevent race conditions
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
+    // Reset results state prior to new request
     setIsLoading(true);
+    setMatches(null);
+    setSummary('');
+
     try {
       const headers: Record<string, string> = { 'Content-Type': 'application/json' };
       if (user.token) {
         headers['Authorization'] = `Bearer ${user.token}`;
       }
 
+      // Build payload containing ONLY provided values (omitted values remain None on backend)
+      const payload: Record<string, unknown> = {
+        patient_id: user.id || 'PT-VOLUNTEER',
+        data_provenance: isDemoMode ? 'synthetic_demo' : 'verified_clinical',
+        age: profile.age,
+        cancer_stage: profile.cancer_stage,
+        ecog_score: profile.ecog_score,
+        egfr_ml_min: profile.egfr_ml_min,
+        distance_to_center_miles: profile.distance_to_center_miles ?? 25.0,
+        has_stable_brain_mets: profile.has_stable_brain_mets ?? false,
+      };
+
+      if (profile.anc !== null && !isNaN(profile.anc)) payload.anc = profile.anc;
+      if (profile.platelets !== null && !isNaN(profile.platelets)) payload.platelets = profile.platelets;
+      if (profile.hemoglobin !== null && !isNaN(profile.hemoglobin)) payload.hemoglobin = profile.hemoglobin;
+      if (profile.total_bilirubin !== null && !isNaN(profile.total_bilirubin)) payload.total_bilirubin = profile.total_bilirubin;
+      if (profile.alt_u_l !== null && !isNaN(profile.alt_u_l)) payload.alt_u_l = profile.alt_u_l;
+      if (profile.prior_lines !== null) payload.prior_lines = profile.prior_lines;
+
       const res = await fetch('/api/v1/patient/screen-eligibility', {
         method: 'POST',
         headers,
-        body: JSON.stringify({
-          patient_id: user.id || 'PT-VOLUNTEER',
-          age,
-          cancer_stage: cancerStage,
-          ecog_score: ecogScore,
-          egfr_ml_min: egfr,
-          distance_to_center_miles: distanceMiles,
-          has_stable_brain_mets: stableBrainMets,
-          anc: 1850.0,
-          platelets: 165.0,
-          hemoglobin: 11.4,
-          total_bilirubin: 1.1,
-          prior_lines: 0,
-        }),
+        body: JSON.stringify(payload),
+        signal: controller.signal,
       });
 
-      if (res.ok) {
-        const data = await res.json();
-        setMatches(data.matches || []);
-        setSummary(data.recruitment_support_summary || '');
+      const data = await res.json().catch(() => null);
+
+      if (!res.ok) {
+        throw new Error(data?.detail || data?.message || `Screening service returned HTTP ${res.status}.`);
       }
-    } catch (err) {
-      console.error('Failed to run patient screening:', err);
+
+      if (!data || !Array.isArray(data.matches)) {
+        throw new Error('Received an unexpected response structure from the screening engine.');
+      }
+
+      setMatches(data.matches);
+      setSummary(data.recruitment_support_summary || '');
+    } catch (err: unknown) {
+      if (err instanceof Error && err.name === 'AbortError') {
+        return;
+      }
+      setMatches(null);
+      setScreeningError(
+        err instanceof Error ? err.message : 'Unable to complete protocol screening. Please verify your connection.'
+      );
     } finally {
       setIsLoading(false);
     }
   };
-
-  useEffect(() => {
-    runScreening();
-  }, [age, cancerStage, ecogScore, egfr, distanceMiles, stableBrainMets]);
 
   return (
     <div className="min-h-screen bg-linen-100 flex flex-col font-sans text-charcoal-900">
@@ -177,11 +307,16 @@ export const PatientPortal: FC<PatientPortalProps> = ({
                   ProtocolShield Patient Portal
                 </span>
                 <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-blue-100 text-blue-800">
-                  Patient Role Active
+                  Patient Profile
                 </span>
+                {isDemoMode && (
+                  <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-amber-100 text-amber-800 border border-amber-300">
+                    Synthetic Demo Patient
+                  </span>
+                )}
               </div>
               <span className="text-[11px] text-charcoal-500 font-mono">
-                Personalized Clinical Trial Eligibility & Burden Matching
+                Clinical Trial Eligibility & Visit Burden Evaluator
               </span>
             </div>
           </div>
@@ -207,7 +342,7 @@ export const PatientPortal: FC<PatientPortalProps> = ({
       </header>
 
       {/* ── Main Portal Body ────────────────────────────────────────────────── */}
-      <div className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
+      <div className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-6">
         
         {/* Welcome Banner */}
         <div className="bg-white rounded-3xl border border-linen-300 p-6 sm:p-8 shadow-xs flex flex-col md:flex-row items-start md:items-center justify-between gap-6">
@@ -219,35 +354,48 @@ export const PatientPortal: FC<PatientPortalProps> = ({
               Welcome, {user.name}
             </h1>
             <p className="text-xs sm:text-sm text-charcoal-600 max-w-2xl leading-relaxed">
-              Your clinical profile is screened in real time against ongoing oncology protocols. ProtocolShield automatically highlights matching trials, explains eligibility criteria in plain language, and models visit burden before you consent.
+              Enter your clinical details below to evaluate matches against active study protocols. ProtocolShield explains eligibility criteria in plain English and models trial visit burden before you consent.
             </p>
           </div>
 
-          <div className="p-4 rounded-2xl bg-linen-50 border border-linen-200 text-center min-w-[200px]">
-            <span className="text-[10px] font-mono text-charcoal-500 block uppercase">Matched Opportunities</span>
-            <span className="font-serif text-3xl font-bold text-charcoal-900 block mt-0.5">
-              {matches.filter((m) =>
-                m.match_status === 'POTENTIALLY_ELIGIBLE' ||
-                m.match_status === 'REQUIRES_REVIEW' ||
-                m.match_status === 'ELIGIBLE' ||
-                m.match_status === 'BORDERLINE'
-              ).length}
-            </span>
-            <span className="text-[10px] font-mono text-sage-700 bg-sage-50 px-2 py-0.5 rounded-full inline-block mt-1">
-              Active Clinical Trials
-            </span>
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
+            <button
+              onClick={handleToggleDemoMode}
+              className={`px-4 py-2 rounded-2xl text-xs font-semibold font-mono border transition-all cursor-pointer ${
+                isDemoMode
+                  ? 'bg-amber-100 text-amber-900 border-amber-300 hover:bg-amber-200'
+                  : 'bg-linen-100 text-charcoal-800 border-linen-300 hover:bg-linen-200'
+              }`}
+            >
+              {isDemoMode ? 'Clear Demo Patient' : 'Load Demo Patient Profile'}
+            </button>
           </div>
         </div>
 
+        {/* Demo Mode Notice */}
+        {isDemoMode && (
+          <div className="p-4 rounded-2xl bg-amber-50/90 border border-amber-300 text-xs text-amber-900 flex items-start space-x-3 shadow-2xs">
+            <AlertCircle className="h-5 w-5 text-amber-600 shrink-0 mt-0.5" />
+            <div className="space-y-1">
+              <span className="font-serif font-bold text-xs text-amber-950 block">
+                Synthetic Demo Patient Profile Active — Not Real Clinical Data
+              </span>
+              <p className="text-[11px] leading-relaxed text-amber-800">
+                You are viewing a demonstration profile populated with synthetic observations (Age 62, Stage IV, eGFR 52). This profile is provided for hackathon demonstration purposes only and is not stored as an authentic clinical patient record.
+              </p>
+            </div>
+          </div>
+        )}
+
         {/* Clinical Safety Notice */}
-        <div className="p-4 rounded-2xl bg-amber-50/80 border border-amber-200 text-xs text-amber-900 flex items-start space-x-3 shadow-2xs">
-          <AlertCircle className="h-5 w-5 text-amber-600 shrink-0 mt-0.5" />
+        <div className="p-4 rounded-2xl bg-blue-50/70 border border-blue-200 text-xs text-blue-900 flex items-start space-x-3 shadow-2xs">
+          <HelpCircle className="h-5 w-5 text-blue-600 shrink-0 mt-0.5" />
           <div className="space-y-1">
-            <span className="font-serif font-bold text-xs text-amber-950 block">
+            <span className="font-serif font-bold text-xs text-blue-950 block">
               Clinical Safety & Informational Notice
             </span>
-            <p className="text-[11px] leading-relaxed text-amber-800">
-              ProtocolShield is an educational protocol feasibility and recruitment planning simulator. This eligibility evaluation is an automated preliminary check based on user-entered values and does not constitute medical advice, diagnosis, or a binding clinical enrollment decision. Formal trial eligibility must always be verified and confirmed by a licensed clinical investigator and the trial site clinical team.
+            <p className="text-[11px] leading-relaxed text-blue-800">
+              ProtocolShield is an educational protocol feasibility and recruitment planning simulator. This automated preliminary check does not constitute medical advice, diagnosis, or a binding clinical enrollment decision. Formal trial eligibility must always be confirmed by a licensed clinical investigator and the trial site clinical team.
             </p>
           </div>
         </div>
@@ -255,7 +403,7 @@ export const PatientPortal: FC<PatientPortalProps> = ({
         {/* Two-Column Grid: Left Controls / Right Matches */}
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
           
-          {/* Left Column: Interactive Patient Phenotype Controls */}
+          {/* Left Column: Patient Profile Form */}
           <div className="lg:col-span-4 space-y-6">
             <div className="bg-white rounded-3xl border border-linen-300 p-6 shadow-xs space-y-5">
               <div className="flex items-center justify-between pb-3 border-b border-linen-200">
@@ -265,41 +413,65 @@ export const PatientPortal: FC<PatientPortalProps> = ({
                     Your Clinical Parameters
                   </h3>
                 </div>
-                <button
-                  onClick={runScreening}
-                  className="p-1 rounded text-charcoal-400 hover:text-charcoal-700"
-                  title="Refresh"
-                >
-                  <RefreshCw className={`h-3.5 w-3.5 ${isLoading ? 'animate-spin' : ''}`} />
-                </button>
+                {profile.age !== null && (
+                  <button
+                    onClick={() => {
+                      setProfile(EMPTY_CLINICAL_PROFILE);
+                      setIsDemoMode(false);
+                      setMatches(null);
+                      setSummary('');
+                    }}
+                    className="text-[10px] font-mono text-charcoal-400 hover:text-charcoal-700 underline cursor-pointer"
+                  >
+                    Reset Form
+                  </button>
+                )}
               </div>
 
-              {/* Age Slider */}
+              {/* Validation Warning */}
+              {validationError && (
+                <div className="p-3 rounded-xl bg-red-50 border border-red-200 text-xs text-red-700 flex items-start space-x-2">
+                  <XCircle className="h-4 w-4 text-red-500 shrink-0 mt-0.5" />
+                  <span className="leading-snug">{validationError}</span>
+                </div>
+              )}
+
+              {/* Age Input */}
               <div className="space-y-1">
                 <div className="flex items-center justify-between text-xs">
-                  <label className="text-charcoal-700 font-medium">Age</label>
-                  <span className="font-mono font-bold text-charcoal-900">{age} years</span>
+                  <label className="text-charcoal-700 font-medium">Age (Years) *</label>
+                  <span className="font-mono font-bold text-charcoal-900">
+                    {profile.age !== null ? `${profile.age} years` : 'Not entered'}
+                  </span>
                 </div>
                 <input
-                  type="range"
-                  min="25"
-                  max="85"
-                  value={age}
-                  onChange={(e) => setAge(Number(e.target.value))}
-                  className="w-full accent-blue-600 cursor-pointer"
+                  type="number"
+                  min="18"
+                  max="95"
+                  placeholder="e.g. 58"
+                  value={profile.age ?? ''}
+                  onChange={(e) => {
+                    const val = e.target.value === '' ? null : Number(e.target.value);
+                    setProfile(p => ({ ...p, age: val }));
+                  }}
+                  className="w-full p-2 text-xs bg-linen-50 border border-linen-300 rounded-xl focus:outline-none focus:border-blue-500 font-mono"
                 />
               </div>
 
               {/* Cancer Stage */}
               <div className="space-y-1">
                 <label className="text-xs font-medium text-charcoal-700 block">
-                  Cancer Stage
+                  Cancer Stage *
                 </label>
                 <select
-                  value={cancerStage}
-                  onChange={(e) => setCancerStage(e.target.value)}
+                  value={profile.cancer_stage ?? ''}
+                  onChange={(e) => {
+                    const val = e.target.value === '' ? null : e.target.value;
+                    setProfile(p => ({ ...p, cancer_stage: val }));
+                  }}
                   className="w-full p-2 text-xs bg-linen-50 border border-linen-300 rounded-xl focus:outline-none focus:border-blue-500 font-mono"
                 >
+                  <option value="">Select cancer stage…</option>
                   <option value="Stage IV (Oligometastatic)">Stage IV (Oligometastatic)</option>
                   <option value="Stage IV (Polymetastatic)">Stage IV (Polymetastatic)</option>
                   <option value="Stage IIIB">Stage IIIB (Locally Advanced)</option>
@@ -307,45 +479,55 @@ export const PatientPortal: FC<PatientPortalProps> = ({
                 </select>
               </div>
 
-              {/* Renal eGFR Slider */}
+              {/* Renal eGFR Input */}
               <div className="space-y-1">
                 <div className="flex items-center justify-between text-xs">
-                  <label className="text-charcoal-700 font-medium">Kidney eGFR</label>
-                  <span className={`font-mono font-bold ${egfr >= 60 ? 'text-sage-700' : egfr >= 50 ? 'text-amber-600' : 'text-red-600'}`}>
-                    {egfr} mL/min
+                  <label className="text-charcoal-700 font-medium">Kidney eGFR (mL/min) *</label>
+                  <span className={`font-mono font-bold ${
+                    profile.egfr_ml_min === null ? 'text-charcoal-400' :
+                    profile.egfr_ml_min >= 60 ? 'text-sage-700' :
+                    profile.egfr_ml_min >= 50 ? 'text-amber-600' : 'text-red-600'
+                  }`}>
+                    {profile.egfr_ml_min !== null ? `${profile.egfr_ml_min} mL/min` : 'Not entered'}
                   </span>
                 </div>
                 <input
-                  type="range"
-                  min="30"
-                  max="90"
+                  type="number"
+                  min="10"
+                  max="150"
                   step="1"
-                  value={egfr}
-                  onChange={(e) => setEgfr(Number(e.target.value))}
-                  className="w-full accent-blue-600 cursor-pointer"
+                  placeholder="e.g. 65"
+                  value={profile.egfr_ml_min ?? ''}
+                  onChange={(e) => {
+                    const val = e.target.value === '' ? null : Number(e.target.value);
+                    setProfile(p => ({ ...p, egfr_ml_min: val }));
+                  }}
+                  className="w-full p-2 text-xs bg-linen-50 border border-linen-300 rounded-xl focus:outline-none focus:border-blue-500 font-mono"
                 />
                 <span className="text-[10px] text-charcoal-500 font-mono block">
-                  {egfr < 60 && egfr >= 50
-                    ? '⚠️ Borderline clearance: Matches protocols adopting AMD-01.'
-                    : egfr >= 60
-                    ? '✓ Normal kidney function threshold.'
-                    : 'Restricted renal clearance.'}
+                  {profile.egfr_ml_min !== null && profile.egfr_ml_min < 60 && profile.egfr_ml_min >= 50
+                    ? '⚠️ Borderline clearance (50–59 mL/min).'
+                    : profile.egfr_ml_min !== null && profile.egfr_ml_min >= 60
+                    ? '✓ Standard renal clearance threshold met.'
+                    : profile.egfr_ml_min !== null
+                    ? '⚠️ Low renal clearance (< 50 mL/min).'
+                    : 'Standard trials require eGFR ≥ 50 or 60 mL/min.'}
                 </span>
               </div>
 
               {/* ECOG Score */}
               <div className="space-y-1">
                 <label className="text-xs font-medium text-charcoal-700 block">
-                  ECOG Performance Status
+                  ECOG Performance Status *
                 </label>
                 <div className="grid grid-cols-3 gap-2 text-center text-xs">
                   {[0, 1, 2].map((s) => (
                     <button
                       key={s}
                       type="button"
-                      onClick={() => setEcogScore(s)}
+                      onClick={() => setProfile(p => ({ ...p, ecog_score: s }))}
                       className={`p-2 rounded-xl border transition-all cursor-pointer ${
-                        ecogScore === s
+                        profile.ecog_score === s
                           ? 'bg-blue-600 text-white border-blue-600 font-semibold'
                           : 'bg-linen-50 text-charcoal-700 border-linen-200 hover:bg-linen-100'
                       }`}
@@ -359,35 +541,124 @@ export const PatientPortal: FC<PatientPortalProps> = ({
                 </div>
               </div>
 
-              {/* Distance to Center */}
+              {/* Distance to Hospital */}
               <div className="space-y-1">
                 <div className="flex items-center justify-between text-xs">
                   <label className="text-charcoal-700 font-medium">Distance to Hospital</label>
-                  <span className="font-mono font-bold text-charcoal-900">{distanceMiles} miles</span>
+                  <span className="font-mono font-bold text-charcoal-900">
+                    {profile.distance_to_center_miles !== null ? `${profile.distance_to_center_miles} mi` : 'Optional'}
+                  </span>
                 </div>
                 <input
-                  type="range"
-                  min="5"
-                  max="120"
-                  step="5"
-                  value={distanceMiles}
-                  onChange={(e) => setDistanceMiles(Number(e.target.value))}
-                  className="w-full accent-blue-600 cursor-pointer"
+                  type="number"
+                  min="1"
+                  max="200"
+                  placeholder="e.g. 25"
+                  value={profile.distance_to_center_miles ?? ''}
+                  onChange={(e) => {
+                    const val = e.target.value === '' ? null : Number(e.target.value);
+                    setProfile(p => ({ ...p, distance_to_center_miles: val }));
+                  }}
+                  className="w-full p-2 text-xs bg-linen-50 border border-linen-300 rounded-xl focus:outline-none focus:border-blue-500 font-mono"
                 />
               </div>
 
-              {/* Stable Brain Mets Toggle */}
-              <div className="pt-2">
+              {/* Treated Brain Metastases History */}
+              <div className="pt-1">
                 <label className="flex items-start space-x-2 text-xs text-charcoal-700 cursor-pointer">
                   <input
                     type="checkbox"
-                    checked={stableBrainMets}
-                    onChange={(e) => setStableBrainMets(e.target.checked)}
+                    checked={profile.has_stable_brain_mets === true}
+                    onChange={(e) => setProfile(p => ({ ...p, has_stable_brain_mets: e.target.checked }))}
                     className="mt-0.5 rounded text-blue-600 focus:ring-blue-500"
                   />
-                  <span>Stable, treated brain metastases history (radiosurgery / radiation completed)</span>
+                  <span>Treated and stable brain metastases history (radiation completed)</span>
                 </label>
               </div>
+
+              {/* Advanced Lab Biomarkers Accordion */}
+              <div className="pt-2 border-t border-linen-200">
+                <button
+                  type="button"
+                  onClick={() => setShowAdvancedLabs(!showAdvancedLabs)}
+                  className="w-full flex items-center justify-between text-xs text-charcoal-600 font-medium hover:text-charcoal-900 cursor-pointer"
+                >
+                  <span>Additional Clinical Labs (Optional)</span>
+                  {showAdvancedLabs ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+                </button>
+
+                {showAdvancedLabs && (
+                  <div className="pt-3 space-y-3">
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="text-[10px] text-charcoal-500 block">ANC (cells/µL)</label>
+                        <input
+                          type="number"
+                          placeholder="e.g. 1850"
+                          value={profile.anc ?? ''}
+                          onChange={(e) => setProfile(p => ({ ...p, anc: e.target.value === '' ? null : Number(e.target.value) }))}
+                          className="w-full p-1.5 text-xs bg-linen-50 border border-linen-300 rounded-lg font-mono"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[10px] text-charcoal-500 block">Platelets (x10³/µL)</label>
+                        <input
+                          type="number"
+                          placeholder="e.g. 165"
+                          value={profile.platelets ?? ''}
+                          onChange={(e) => setProfile(p => ({ ...p, platelets: e.target.value === '' ? null : Number(e.target.value) }))}
+                          className="w-full p-1.5 text-xs bg-linen-50 border border-linen-300 rounded-lg font-mono"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="text-[10px] text-charcoal-500 block">Hemoglobin (g/dL)</label>
+                        <input
+                          type="number"
+                          step="0.1"
+                          placeholder="e.g. 11.4"
+                          value={profile.hemoglobin ?? ''}
+                          onChange={(e) => setProfile(p => ({ ...p, hemoglobin: e.target.value === '' ? null : Number(e.target.value) }))}
+                          className="w-full p-1.5 text-xs bg-linen-50 border border-linen-300 rounded-lg font-mono"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[10px] text-charcoal-500 block">Bilirubin (mg/dL)</label>
+                        <input
+                          type="number"
+                          step="0.1"
+                          placeholder="e.g. 1.0"
+                          value={profile.total_bilirubin ?? ''}
+                          onChange={(e) => setProfile(p => ({ ...p, total_bilirubin: e.target.value === '' ? null : Number(e.target.value) }))}
+                          className="w-full p-1.5 text-xs bg-linen-50 border border-linen-300 rounded-lg font-mono"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Primary Action Button */}
+              <button
+                type="button"
+                onClick={handleRunScreening}
+                disabled={isLoading}
+                className="w-full py-3 px-4 rounded-xl text-xs font-semibold bg-blue-600 hover:bg-blue-700 text-white shadow-xs transition-colors flex items-center justify-center space-x-2 cursor-pointer disabled:opacity-50"
+              >
+                {isLoading ? (
+                  <>
+                    <RefreshCw className="h-4 w-4 animate-spin" />
+                    <span>Evaluating Protocol Eligibility…</span>
+                  </>
+                ) : (
+                  <>
+                    <FileCheck2 className="h-4 w-4" />
+                    <span>Run Eligibility Screening</span>
+                  </>
+                )}
+              </button>
 
             </div>
           </div>
@@ -400,176 +671,226 @@ export const PatientPortal: FC<PatientPortalProps> = ({
                   Evaluated Trial Portfolio
                 </h2>
                 <p className="text-xs text-charcoal-500 font-mono mt-0.5">
-                  {summary || 'Matching candidate phenotype against active protocols…'}
+                  {summary || 'Complete candidate clinical parameters on the left to screen trials.'}
                 </p>
               </div>
             </div>
 
-            <div className="space-y-5">
-              {matches.map((trial) => {
-                const isEligible = trial.match_status === 'POTENTIALLY_ELIGIBLE' || trial.match_status === 'ELIGIBLE';
-                const isBorderline = trial.match_status === 'REQUIRES_REVIEW' || trial.match_status === 'BORDERLINE';
-                const isEnrolled = enrolledTrialId === trial.protocol_id;
+            {/* Error Banner */}
+            {screeningError && (
+              <div className="p-4 rounded-2xl bg-red-50 border border-red-200 text-xs text-red-800 space-y-2">
+                <div className="flex items-center space-x-2 font-semibold">
+                  <XCircle className="h-4 w-4 text-red-600" />
+                  <span>Screening Service Note</span>
+                </div>
+                <p className="text-red-700">{screeningError}</p>
+                <button
+                  onClick={handleRunScreening}
+                  className="px-3 py-1 bg-red-600 text-white text-[11px] rounded-lg font-semibold hover:bg-red-700 cursor-pointer"
+                >
+                  Retry Screening
+                </button>
+              </div>
+            )}
 
-                return (
-                  <div
-                    key={trial.protocol_id}
-                    className="bg-white rounded-3xl border border-linen-300 p-6 shadow-xs space-y-5 transition-all hover:shadow-md"
-                  >
-                    {/* Trial Card Header */}
-                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-linen-200">
-                      <div>
-                        <div className="flex items-center space-x-2 font-mono text-[10px]">
-                          <span className="font-bold text-charcoal-500">{trial.protocol_id}</span>
-                          <span>•</span>
-                          <span className="text-charcoal-600">{trial.phase}</span>
-                          <span>•</span>
-                          <span className="text-charcoal-600">{trial.indication}</span>
+            {/* Loading State */}
+            {isLoading && (
+              <div className="bg-white rounded-3xl border border-linen-300 p-12 text-center space-y-3 shadow-xs">
+                <RefreshCw className="h-7 w-7 text-blue-600 animate-spin mx-auto" />
+                <h3 className="font-serif font-bold text-base text-charcoal-900">
+                  Evaluating Clinical Phenotype Against Active Protocols
+                </h3>
+                <p className="text-xs text-charcoal-500 max-w-md mx-auto">
+                  Performing deterministic 4-state criterion matching against canonical oncology protocols and uploaded clinical trial documents.
+                </p>
+              </div>
+            )}
+
+            {/* Empty State before screening */}
+            {!isLoading && !screeningError && matches === null && (
+              <div className="bg-white rounded-3xl border border-linen-300 p-12 text-center space-y-4 shadow-xs">
+                <div className="h-12 w-12 rounded-2xl bg-blue-50 border border-blue-200 text-blue-600 flex items-center justify-center mx-auto">
+                  <Sliders className="h-6 w-6" />
+                </div>
+                <div className="space-y-1">
+                  <h3 className="font-serif font-bold text-base text-charcoal-900">
+                    No Screening Performed Yet
+                  </h3>
+                  <p className="text-xs text-charcoal-500 max-w-md mx-auto leading-relaxed">
+                    Provide patient parameters (Age, Cancer Stage, ECOG score, and Kidney eGFR) on the left panel, or click <strong>"Load Demo Patient Profile"</strong> to evaluate a synthetic scenario.
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {/* Evaluated Matches List */}
+            {!isLoading && matches !== null && (
+              <div className="space-y-5">
+                {matches.map((trial) => {
+                  const isEligible = trial.match_status === 'POTENTIALLY_ELIGIBLE' || trial.match_status === 'ELIGIBLE';
+                  const isBorderline = trial.match_status === 'REQUIRES_REVIEW' || trial.match_status === 'BORDERLINE';
+                  const isEnrolled = enrolledTrialId === trial.protocol_id;
+
+                  return (
+                    <div
+                      key={trial.protocol_id}
+                      className="bg-white rounded-3xl border border-linen-300 p-6 shadow-xs space-y-5 transition-all hover:shadow-md"
+                    >
+                      {/* Trial Card Header */}
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-linen-200">
+                        <div>
+                          <div className="flex items-center space-x-2 font-mono text-[10px]">
+                            <span className="font-bold text-charcoal-500">{trial.protocol_id}</span>
+                            <span>•</span>
+                            <span className="text-charcoal-600">{trial.phase}</span>
+                            <span>•</span>
+                            <span className="text-charcoal-600">{trial.indication}</span>
+                          </div>
+                          <h3 className="font-serif font-bold text-base text-charcoal-900 mt-1 leading-snug">
+                            {trial.title}
+                          </h3>
                         </div>
-                        <h3 className="font-serif font-bold text-base text-charcoal-900 mt-1 leading-snug">
-                          {trial.title}
-                        </h3>
-                      </div>
 
-                      <div className="flex items-center space-x-2 self-start sm:self-auto">
-                        <span
-                          className={`px-3 py-1 rounded-full text-xs font-bold font-mono border ${
-                            isEligible
-                              ? 'bg-sage-100 text-sage-800 border-sage-200'
-                              : isBorderline
-                              ? 'bg-amber-100 text-amber-800 border-amber-200'
-                              : 'bg-red-50 text-red-700 border-red-200'
-                          }`}
-                        >
-                          {isEligible ? '✓ Potentially Eligible' : isBorderline ? '⚡ Requires Review' : '✕ Excluded'}
-                        </span>
-                      </div>
-                    </div>
-
-                    {/* Criteria Status Breakdown */}
-                    <div className="space-y-2">
-                      <span className="text-[10px] font-mono font-bold uppercase tracking-wider text-charcoal-400 block">
-                        Eligibility Criteria Verification ({trial.passed_criteria_count} of {trial.total_criteria_count} passed)
-                      </span>
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                        {trial.criteria_breakdown.map((c, idx) => (
-                          <div
-                            key={idx}
-                            className={`p-2.5 rounded-xl border text-xs flex items-start space-x-2.5 ${
-                              c.passed
-                                ? 'bg-sage-50/50 border-sage-200 text-sage-900'
-                                : 'bg-amber-50/60 border-amber-200 text-amber-900'
+                        <div className="flex items-center space-x-2 self-start sm:self-auto">
+                          <span
+                            className={`px-3 py-1 rounded-full text-xs font-bold font-mono border ${
+                              isEligible
+                                ? 'bg-sage-100 text-sage-800 border-sage-200'
+                                : isBorderline
+                                ? 'bg-amber-100 text-amber-800 border-amber-200'
+                                : 'bg-red-50 text-red-700 border-red-200'
                             }`}
                           >
-                            {c.passed ? (
-                              <CheckCircle2 className="h-4 w-4 text-sage-600 shrink-0 mt-0.5" />
-                            ) : (
-                              <AlertCircle className="h-4 w-4 text-amber-600 shrink-0 mt-0.5" />
-                            )}
-                            <div className="flex-1">
-                              <span className="font-semibold block">{c.criterion}</span>
-                              <span className="text-[10px] font-mono opacity-80 block">
-                                Your value: {c.patient_value} (Requires {c.required_threshold})
-                              </span>
-                              <p className="text-[10px] mt-0.5 opacity-90 leading-tight">{c.impact_note}</p>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-
-                    {/* Opportunity Box */}
-                    {trial.recruitment_acceleration_opportunity && (
-                      <div className="p-3.5 bg-blue-50 border border-blue-200 rounded-2xl flex items-start space-x-2.5 text-xs text-blue-900">
-                        <Sparkles className="h-4 w-4 text-blue-600 shrink-0 mt-0.5" />
-                        <div>
-                          <span className="font-serif font-bold text-xs text-blue-950 block">
-                            Recruitment Modernization Opportunity
+                            {isEligible ? '✓ Potentially Eligible' : isBorderline ? '⚡ Needs Investigator Review' : '✕ Not Eligible'}
                           </span>
-                          <p className="text-[11px] text-blue-800 mt-0.5 leading-relaxed">
-                            {trial.recruitment_acceleration_opportunity}
-                          </p>
                         </div>
                       </div>
-                    )}
 
-                    {/* Burden & Schedule Metrics */}
-                    <div className="pt-2 border-t border-linen-200 grid grid-cols-2 sm:grid-cols-4 gap-3 text-center font-mono">
-                      <div className="p-2.5 bg-linen-50 rounded-xl border border-linen-200">
-                        <span className="text-[9px] text-charcoal-400 block">TOTAL VISITS</span>
-                        <span className="font-serif text-lg font-bold text-charcoal-900">
-                          {trial.patient_burden_summary.total_study_visits}
+                      {/* Criteria Status Breakdown */}
+                      <div className="space-y-2">
+                        <span className="text-[10px] font-mono font-bold uppercase tracking-wider text-charcoal-400 block">
+                          Eligibility Criteria Breakdown ({trial.passed_criteria_count} of {trial.total_criteria_count} passed)
                         </span>
-                        <span className="text-[9px] text-charcoal-500 block">Over 52 Weeks</span>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                          {trial.criteria_breakdown.map((c, idx) => (
+                            <div
+                              key={idx}
+                              className={`p-2.5 rounded-xl border text-xs flex items-start space-x-2.5 ${
+                                c.passed
+                                  ? 'bg-sage-50/50 border-sage-200 text-sage-900'
+                                  : 'bg-amber-50/60 border-amber-200 text-amber-900'
+                              }`}
+                            >
+                              {c.passed ? (
+                                <CheckCircle2 className="h-4 w-4 text-sage-600 shrink-0 mt-0.5" />
+                              ) : (
+                                <AlertCircle className="h-4 w-4 text-amber-600 shrink-0 mt-0.5" />
+                              )}
+                              <div className="flex-1">
+                                <span className="font-semibold block">{c.criterion}</span>
+                                <span className="text-[10px] font-mono opacity-80 block">
+                                  Patient value: {c.patient_value} (Required: {c.required_threshold})
+                                </span>
+                                <p className="text-[10px] mt-0.5 opacity-90 leading-tight">{c.impact_note}</p>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
                       </div>
 
-                      <div className="p-2.5 bg-linen-50 rounded-xl border border-linen-200">
-                        <span className="text-[9px] text-charcoal-400 block">CLINIC DWELL</span>
-                        <span className="font-serif text-lg font-bold text-charcoal-900">
-                          {Math.round(trial.patient_burden_summary.total_clinic_hours)}h
-                        </span>
-                        <span className="text-[9px] text-charcoal-500 block">Cumulative Care</span>
+                      {/* Recruitment Modernization Box */}
+                      {trial.recruitment_acceleration_opportunity && (
+                        <div className="p-3.5 bg-blue-50 border border-blue-200 rounded-2xl flex items-start space-x-2.5 text-xs text-blue-900">
+                          <Sparkles className="h-4 w-4 text-blue-600 shrink-0 mt-0.5" />
+                          <div>
+                            <span className="font-serif font-bold text-xs text-blue-950 block">
+                              Recruitment Modernization Opportunity
+                            </span>
+                            <p className="text-[11px] text-blue-800 mt-0.5 leading-relaxed">
+                              {trial.recruitment_acceleration_opportunity}
+                            </p>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Burden & Schedule Metrics */}
+                      <div className="pt-2 border-t border-linen-200 grid grid-cols-2 sm:grid-cols-4 gap-3 text-center font-mono">
+                        <div className="p-2.5 bg-linen-50 rounded-xl border border-linen-200">
+                          <span className="text-[9px] text-charcoal-400 block">TOTAL VISITS</span>
+                          <span className="font-serif text-lg font-bold text-charcoal-900">
+                            {trial.patient_burden_summary.total_study_visits}
+                          </span>
+                          <span className="text-[9px] text-charcoal-500 block">52 Study Weeks</span>
+                        </div>
+
+                        <div className="p-2.5 bg-linen-50 rounded-xl border border-linen-200">
+                          <span className="text-[9px] text-charcoal-400 block">CLINIC DWELL</span>
+                          <span className="font-serif text-lg font-bold text-charcoal-900">
+                            {Math.round(trial.patient_burden_summary.total_clinic_hours)}h
+                          </span>
+                          <span className="text-[9px] text-charcoal-500 block">Cumulative Care</span>
+                        </div>
+
+                        <div className="p-2.5 bg-linen-50 rounded-xl border border-linen-200">
+                          <span className="text-[9px] text-charcoal-400 block">TRAVEL MILES</span>
+                          <span className="font-serif text-lg font-bold text-charcoal-900">
+                            {trial.patient_burden_summary.travel_distance_miles} mi
+                          </span>
+                          <span className="text-[9px] text-charcoal-500 block">Per Visit</span>
+                        </div>
+
+                        <div className="p-2.5 bg-linen-50 rounded-xl border border-linen-200">
+                          <span className="text-[9px] text-charcoal-400 block">VIRTUAL VISITS</span>
+                          <span className="font-serif text-lg font-bold text-sage-700">
+                            {trial.patient_burden_summary.telehealth_eligible_visits}
+                          </span>
+                          <span className="text-[9px] text-sage-600 block">Telehealth Options</span>
+                        </div>
                       </div>
 
-                      <div className="p-2.5 bg-linen-50 rounded-xl border border-linen-200">
-                        <span className="text-[9px] text-charcoal-400 block">TRAVEL MILES</span>
-                        <span className="font-serif text-lg font-bold text-charcoal-900">
-                          {trial.patient_burden_summary.travel_distance_miles} mi
+                      {/* Action Bar */}
+                      <div className="pt-2 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+                        <span className="text-[11px] text-charcoal-500 font-mono">
+                          {isEligible
+                            ? '✓ Preliminary eligibility met — clinical coordinator contact available'
+                            : isBorderline
+                            ? '⚡ Investigator review required for borderline criteria'
+                            : 'Confirmed exclusion criterion applies for this protocol'}
                         </span>
-                        <span className="text-[9px] text-charcoal-500 block">Per Visit</span>
+
+                        {isEnrolled ? (
+                          <span className="inline-flex items-center space-x-1.5 px-4 py-2 rounded-xl text-xs font-semibold bg-sage-600 text-white shadow-xs">
+                            <CheckCircle2 className="h-3.5 w-3.5" />
+                            <span>Interest Registered with Site Coordinator</span>
+                          </span>
+                        ) : (
+                          <button
+                            onClick={() => handleExpressInterest(trial.protocol_id)}
+                            className={`inline-flex items-center space-x-1.5 px-4 py-2 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
+                              isEligible || isBorderline
+                                ? 'bg-charcoal-900 hover:bg-charcoal-800 text-white shadow-xs'
+                                : 'bg-linen-200 text-charcoal-400 cursor-not-allowed'
+                            }`}
+                            disabled={!isEligible && !isBorderline}
+                          >
+                            <span>Express Interest in Study</span>
+                            <ArrowRight className="h-3.5 w-3.5" />
+                          </button>
+                        )}
                       </div>
 
-                      <div className="p-2.5 bg-linen-50 rounded-xl border border-linen-200">
-                        <span className="text-[9px] text-charcoal-400 block">VIRTUAL VISITS</span>
-                        <span className="font-serif text-lg font-bold text-sage-700">
-                          {trial.patient_burden_summary.telehealth_eligible_visits}
-                        </span>
-                        <span className="text-[9px] text-sage-600 block">Telehealth Options</span>
-                      </div>
-                    </div>
-
-                    {/* Action Bar */}
-                    <div className="pt-2 flex items-center justify-between">
-                      <span className="text-[11px] text-charcoal-500 font-mono">
-                        {isEligible
-                          ? '✓ Ready for study coordinator contact'
-                          : isBorderline
-                          ? '⚡ Sponsor investigator amendment review recommended'
-                          : 'Not actively enrolling for current clinical profile'}
-                      </span>
-
-                      {isEnrolled ? (
-                        <span className="inline-flex items-center space-x-1.5 px-4 py-2 rounded-xl text-xs font-semibold bg-sage-600 text-white shadow-xs">
-                          <CheckCircle2 className="h-3.5 w-3.5" />
-                          <span>Interest Registered with Site Coordinator</span>
-                        </span>
-                      ) : (
-                        <button
-                          onClick={() => handleExpressInterest(trial.protocol_id)}
-                          className={`inline-flex items-center space-x-1.5 px-4 py-2 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
-                            isEligible || isBorderline
-                              ? 'bg-charcoal-900 hover:bg-charcoal-800 text-white shadow-xs'
-                              : 'bg-linen-200 text-charcoal-400 cursor-not-allowed'
-                          }`}
-                          disabled={!isEligible && !isBorderline}
-                        >
-                          <span>Express Interest in Study</span>
-                          <ArrowRight className="h-3.5 w-3.5" />
-                        </button>
+                      {/* Investigator Clinical Review Disclaimer */}
+                      {trial.investigator_disclaimer && (
+                        <div className="p-2.5 rounded-xl bg-linen-100/60 border border-linen-200 text-[10px] text-charcoal-500 flex items-center space-x-2">
+                          <AlertCircle className="h-3.5 w-3.5 text-charcoal-400 shrink-0" />
+                          <span>{trial.investigator_disclaimer}</span>
+                        </div>
                       )}
                     </div>
-
-                    {/* Investigator Clinical Review Disclaimer */}
-                    {trial.investigator_disclaimer && (
-                      <div className="p-2.5 rounded-xl bg-linen-100/60 border border-linen-200 text-[10px] text-charcoal-500 flex items-center space-x-2">
-                        <AlertCircle className="h-3.5 w-3.5 text-charcoal-400 shrink-0" />
-                        <span>{trial.investigator_disclaimer}</span>
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
+                  );
+                })}
+              </div>
+            )}
 
           </div>
 

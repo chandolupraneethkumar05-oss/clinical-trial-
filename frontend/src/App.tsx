@@ -1,12 +1,7 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, lazy, Suspense } from 'react';
 import { LandingPage } from './components/LandingPage';
-import { StudioWorkspace } from './components/StudioWorkspace';
 import type { StudioTab } from './components/StudioWorkspace';
-import { PatientPortal } from './components/PatientPortal';
-import { ProtocolUploadModal } from './components/ProtocolUploadModal';
-import { AuthModal } from './components/AuthModal';
-import { DEFAULT_AUDIT_EVENTS } from './components/AuditTrailView';
-import type { AuditEvent } from './components/AuditTrailView';
+import type { AuditEvent, AuditVerificationStatus } from './types/audit';
 import type {
   ClinicalProtocol,
   FunnelSimulationResult,
@@ -14,6 +9,12 @@ import type {
   BenchmarkTrial
 } from './types/protocol';
 import type { AuthUser, AuthModalView } from './types/auth';
+
+// Route-level code-splitting for heavy workspace, portal and modal chunks
+const StudioWorkspace = lazy(() => import('./components/StudioWorkspace').then(m => ({ default: m.StudioWorkspace })));
+const PatientPortal = lazy(() => import('./components/PatientPortal').then(m => ({ default: m.PatientPortal })));
+const ProtocolUploadModal = lazy(() => import('./components/ProtocolUploadModal').then(m => ({ default: m.ProtocolUploadModal })));
+const AuthModal = lazy(() => import('./components/AuthModal').then(m => ({ default: m.AuthModal })));
 
 /**
  * Parses browser URL hash into structured application route state.
@@ -78,11 +79,26 @@ export default function App() {
   const [retentionCurve, setRetentionCurve] = useState<RetentionPoint[]>([]);
   const [benchmarks, setBenchmarks] = useState<BenchmarkTrial[]>([]);
   const [appliedAmendmentIds, setAppliedAmendmentIds] = useState<string[]>([]);
-  const [auditEvents, setAuditEvents] = useState<AuditEvent[]>(DEFAULT_AUDIT_EVENTS);
+  
+  // Real audit state — initialized empty, populated exclusively from backend
+  const [auditEvents, setAuditEvents] = useState<AuditEvent[]>([]);
+  const [auditLoading, setAuditLoading] = useState<boolean>(false);
+  const [auditError, setAuditError] = useState<string | null>(null);
+  const [auditVerification, setAuditVerification] = useState<AuditVerificationStatus | null>(null);
 
   // ── 4. Modal Overlays ─────────────────────────────────────────────────────
   const [showUploadModal, setShowUploadModal] = useState<boolean>(false);
-  const [showAuthModal, setShowAuthModal] = useState<boolean>(false);
+  const [showAuthModal, setShowAuthModal] = useState<boolean>(() => {
+    if (initialRoute.view === 'studio') {
+      try {
+        const stored = localStorage.getItem('protocolshield_user');
+        return !stored;
+      } catch {
+        return false;
+      }
+    }
+    return false;
+  });
   const [authModalView, setAuthModalView] = useState<AuthModalView>('signin');
 
   // ── 5. Route Synchronization Helper ───────────────────────────────────────
@@ -109,11 +125,9 @@ export default function App() {
     window.location.hash = `#/studio?tab=${tab}`;
   }, []);
 
-  // Intercept unauthorized direct deep-linking on initial mount
+  // Intercept unauthorized direct deep-linking on initial mount without triggering cascading renders
   useEffect(() => {
     if (!user && pendingRoute) {
-      setAuthModalView('signin');
-      setShowAuthModal(true);
       window.location.hash = '#/';
     }
   }, [user, pendingRoute]);
@@ -144,7 +158,7 @@ export default function App() {
   }, []);
 
   // ── Helper: Authenticated Headers for API Requests ─────────────────────────
-  const getAuthHeaders = (extraHeaders: Record<string, string> = {}): Record<string, string> => {
+  const getAuthHeaders = useCallback((extraHeaders: Record<string, string> = {}): Record<string, string> => {
     const headers: Record<string, string> = { ...extraHeaders };
     const token = user?.token || (() => {
       try {
@@ -158,7 +172,7 @@ export default function App() {
       headers['Authorization'] = `Bearer ${token}`;
     }
     return headers;
-  };
+  }, [user?.token]);
 
   const handleSessionExpired = useCallback(() => {
     localStorage.removeItem('protocolshield_user');
@@ -167,6 +181,43 @@ export default function App() {
     setAuthModalView('signin');
     setShowAuthModal(true);
   }, []);
+
+  // Fetch real audit log records and verification status from backend
+  const fetchAuditData = useCallback(async () => {
+    if (!user || user.role === 'patient') return;
+    setAuditLoading(true);
+    setAuditError(null);
+    try {
+      const headers = getAuthHeaders();
+      const [logsRes, verifyRes] = await Promise.all([
+        fetch('/api/v1/audit/logs', { headers }),
+        fetch('/api/v1/audit/verify', { headers })
+      ]);
+
+      if (logsRes.status === 401 || verifyRes.status === 401) {
+        handleSessionExpired();
+        return;
+      }
+
+      if (logsRes.ok) {
+        const logsData = await logsRes.json();
+        setAuditEvents(Array.isArray(logsData) ? logsData : []);
+      } else {
+        setAuditEvents([]);
+        setAuditError('Unable to load operational audit logs.');
+      }
+
+      if (verifyRes.ok) {
+        const verifyData = await verifyRes.json();
+        setAuditVerification(verifyData);
+      }
+    } catch {
+      setAuditEvents([]);
+      setAuditError('Connection failure retrieving audit ledger.');
+    } finally {
+      setAuditLoading(false);
+    }
+  }, [user, getAuthHeaders, handleSessionExpired]);
 
   // Proactively validate active session with backend /auth/me on mount
   useEffect(() => {
@@ -242,19 +293,7 @@ export default function App() {
 
         // 5. Fetch Audit Trail from backend (for investigators/admins)
         if (user && user.role !== 'patient') {
-          const auditRes = await fetch('/api/v1/audit/logs', {
-            headers: getAuthHeaders()
-          });
-          if (auditRes.status === 401) {
-            handleSessionExpired();
-            return;
-          }
-          if (auditRes.ok) {
-            const aJson = await auditRes.json();
-            if (Array.isArray(aJson) && aJson.length > 0) {
-              setAuditEvents(aJson);
-            }
-          }
+          await fetchAuditData();
         }
       } catch (err) {
         console.warn('Backend connection note:', err);
@@ -264,7 +303,7 @@ export default function App() {
     }
 
     loadInitialData();
-  }, [user]);
+  }, [user, getAuthHeaders, handleSessionExpired, fetchAuditData]);
 
   // ── 7. Simulations & Protocol Mutation Handlers ───────────────────────────
   const handleSimulateFunnel = async (criteria: Record<string, unknown>): Promise<FunnelSimulationResult> => {
@@ -475,79 +514,92 @@ export default function App() {
 
   return (
     <>
-      {viewMode === 'landing' ? (
-        <LandingPage
-          totalCohortSize={totalCohortSize}
-          onLaunchStudio={() => navigateTo('studio', 'sandbox')}
-          user={user}
-          onOpenAuth={() => handleOpenAuth('signin')}
-          onSignOut={handleSignOut}
-          onSwitchPersona={() => handleOpenAuth('signin')}
-        />
-      ) : user?.role === 'patient' ? (
-        <PatientPortal
-          user={user}
-          onSignOut={handleSignOut}
-          onSwitchPersona={() => handleOpenAuth('signin')}
-          onOpenAuth={() => handleOpenAuth('signin')}
-          onBackToLanding={() => navigateTo('landing')}
-        />
-      ) : loading || !protocol || !funnelData ? (
-          <div className="min-h-screen bg-linen-100 flex items-center justify-center p-4">
-            <div className="bg-white border border-linen-300 p-8 rounded-2xl shadow-sm text-center space-y-3 max-w-sm w-full">
-              <div className="h-8 w-8 border-3 border-charcoal-900 border-t-transparent rounded-full animate-spin mx-auto" />
-              <p className="font-serif text-sm font-bold text-charcoal-900 tracking-tight">Initializing ProtocolShield Studio...</p>
-              <p className="text-xs text-charcoal-500 font-mono">Loading 10,000 Patient Cohort in DuckDB</p>
-              <button
-                onClick={() => navigateTo('landing')}
-                className="text-xs text-terracotta-600 hover:underline pt-2 block mx-auto font-mono cursor-pointer"
-              >
-                ← Return to Overview
-              </button>
-            </div>
+      <Suspense fallback={
+        <div className="min-h-screen bg-linen-100 flex items-center justify-center p-8 text-xs font-mono text-charcoal-500">
+          <div className="text-center space-y-2">
+            <div className="h-6 w-6 border-2 border-charcoal-900 border-t-transparent rounded-full animate-spin mx-auto" />
+            <p>Loading application view…</p>
           </div>
-        ) : (
-          <StudioWorkspace
-            protocol={protocol}
+        </div>
+      }>
+        {viewMode === 'landing' ? (
+          <LandingPage
             totalCohortSize={totalCohortSize}
-            funnelData={funnelData}
-            retentionCurve={retentionCurve}
-            benchmarks={benchmarks}
+            onLaunchStudio={() => navigateTo('studio', 'sandbox')}
             user={user}
-            activeTab={activeStudioTab}
-            onTabChange={handleTabChange}
-            onBackToLanding={() => navigateTo('landing')}
-            onSimulateFunnel={handleSimulateFunnel}
-            onCalculateRetention={handleCalculateRetention}
-            onOpenUpload={() => setShowUploadModal(true)}
             onOpenAuth={() => handleOpenAuth('signin')}
             onSignOut={handleSignOut}
             onSwitchPersona={() => handleOpenAuth('signin')}
-            onSwitchTemplate={handleSwitchTemplate}
-            onUploadFile={handleUploadFile}
-            onApplyAmendment={handleApplyAmendment}
-            appliedAmendmentIds={appliedAmendmentIds}
-            auditEvents={auditEvents}
           />
-        )
-      }
+        ) : user?.role === 'patient' ? (
+          <PatientPortal
+            user={user}
+            onSignOut={handleSignOut}
+            onSwitchPersona={() => handleOpenAuth('signin')}
+            onOpenAuth={() => handleOpenAuth('signin')}
+            onBackToLanding={() => navigateTo('landing')}
+          />
+        ) : loading || !protocol || !funnelData ? (
+            <div className="min-h-screen bg-linen-100 flex items-center justify-center p-4">
+              <div className="bg-white border border-linen-300 p-8 rounded-2xl shadow-sm text-center space-y-3 max-w-sm w-full">
+                <div className="h-8 w-8 border-3 border-charcoal-900 border-t-transparent rounded-full animate-spin mx-auto" />
+                <p className="font-serif text-sm font-bold text-charcoal-900 tracking-tight">Initializing ProtocolShield Studio...</p>
+                <p className="text-xs text-charcoal-500 font-mono">Loading 10,000 Patient Cohort in DuckDB</p>
+                <button
+                  onClick={() => navigateTo('landing')}
+                  className="text-xs text-terracotta-600 hover:underline pt-2 block mx-auto font-mono cursor-pointer"
+                >
+                  ← Return to Overview
+                </button>
+              </div>
+            </div>
+          ) : (
+            <StudioWorkspace
+              protocol={protocol}
+              totalCohortSize={totalCohortSize}
+              funnelData={funnelData}
+              retentionCurve={retentionCurve}
+              benchmarks={benchmarks}
+              user={user}
+              activeTab={activeStudioTab}
+              onTabChange={handleTabChange}
+              onBackToLanding={() => navigateTo('landing')}
+              onSimulateFunnel={handleSimulateFunnel}
+              onCalculateRetention={handleCalculateRetention}
+              onOpenUpload={() => setShowUploadModal(true)}
+              onOpenAuth={() => handleOpenAuth('signin')}
+              onSignOut={handleSignOut}
+              onSwitchPersona={() => handleOpenAuth('signin')}
+              onSwitchTemplate={handleSwitchTemplate}
+              onUploadFile={handleUploadFile}
+              onApplyAmendment={handleApplyAmendment}
+              appliedAmendmentIds={appliedAmendmentIds}
+              auditEvents={auditEvents}
+              auditLoading={auditLoading}
+              auditError={auditError}
+              onRetryAudit={fetchAuditData}
+              auditVerification={auditVerification}
+            />
+          )
+        }
 
-      {/* Protocol Upload Modal */}
-      {showUploadModal && (
-        <ProtocolUploadModal
-          onClose={() => setShowUploadModal(false)}
-          onProtocolLoaded={handleProtocolLoaded}
-        />
-      )}
+        {/* Protocol Upload Modal */}
+        {showUploadModal && (
+          <ProtocolUploadModal
+            onClose={() => setShowUploadModal(false)}
+            onProtocolLoaded={handleProtocolLoaded}
+          />
+        )}
 
-      {/* Enterprise Authentication Modal */}
-      {showAuthModal && (
-        <AuthModal
-          initialView={authModalView}
-          onClose={() => setShowAuthModal(false)}
-          onLoginSuccess={handleLoginSuccess}
-        />
-      )}
+        {/* Enterprise Authentication Modal */}
+        {showAuthModal && (
+          <AuthModal
+            initialView={authModalView}
+            onClose={() => setShowAuthModal(false)}
+            onLoginSuccess={handleLoginSuccess}
+          />
+        )}
+      </Suspense>
     </>
   );
 }

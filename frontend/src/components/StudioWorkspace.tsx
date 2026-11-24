@@ -14,7 +14,7 @@ import { BurdenOverviewTab } from './BurdenOverviewTab';
 import { WhatIfSensitivityConsole } from './WhatIfSensitivityConsole';
 import { BenchmarkGrid } from './BenchmarkGrid';
 import { AuditTrailView } from './AuditTrailView';
-import type { AuditEvent } from './AuditTrailView';
+import type { AuditEvent, AuditVerificationStatus } from '../types/audit';
 import { ProtocolInspectorDrawer } from './ProtocolInspectorDrawer';
 import { AIOptimizerModal } from './AIOptimizerModal';
 import { UserMenu } from './UserMenu';
@@ -63,6 +63,10 @@ interface StudioWorkspaceProps {
   onApplyAmendment?: (amendmentId: string) => Promise<void>;
   appliedAmendmentIds?: string[];
   auditEvents?: AuditEvent[];
+  auditLoading?: boolean;
+  auditError?: string | null;
+  onRetryAudit?: () => void;
+  auditVerification?: AuditVerificationStatus | null;
 }
 
 export const StudioWorkspace: FC<StudioWorkspaceProps> = ({
@@ -85,7 +89,11 @@ export const StudioWorkspace: FC<StudioWorkspaceProps> = ({
   onUploadFile,
   onApplyAmendment,
   appliedAmendmentIds = [],
-  auditEvents,
+  auditEvents = [],
+  auditLoading = false,
+  auditError = null,
+  onRetryAudit,
+  auditVerification = null,
 }) => {
   const [internalTab, setInternalTab] = useState<StudioTab>('sandbox');
   const currentTab = activeTab ?? internalTab;
@@ -636,7 +644,13 @@ export const StudioWorkspace: FC<StudioWorkspaceProps> = ({
             )}
 
             {currentTab === 'audit' && (
-              <AuditTrailView events={auditEvents} />
+              <AuditTrailView 
+                events={auditEvents}
+                isLoading={auditLoading}
+                error={auditError}
+                onRetry={onRetryAudit}
+                verificationStatus={auditVerification}
+              />
             )}
           </div>
         </div>

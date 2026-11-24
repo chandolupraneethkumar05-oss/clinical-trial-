@@ -98,7 +98,6 @@ export const ProtocolUploadModal: FC<ProtocolUploadModalProps> = ({
   // Cycle through loading messages
   useEffect(() => {
     if (uploadState === 'loading') {
-      setLoadingMsgIdx(0);
       intervalRef.current = setInterval(() => {
         setLoadingMsgIdx((i) => Math.min(i + 1, LOADING_MESSAGES.length - 1));
       }, 850);
@@ -145,6 +144,7 @@ export const ProtocolUploadModal: FC<ProtocolUploadModalProps> = ({
   const handleLoadSample = async (protocolType: string) => {
     setSelectedSample(protocolType);
     setSelectedFile(null);
+    setLoadingMsgIdx(0);
     setUploadState('loading');
     setErrorMessage('');
 
@@ -165,6 +165,7 @@ export const ProtocolUploadModal: FC<ProtocolUploadModalProps> = ({
   // ── Upload PDF ────────────────────────────────────────────────────────────
   const handleUploadPDF = async () => {
     if (!selectedFile) return;
+    setLoadingMsgIdx(0);
     setUploadState('loading');
     setErrorMessage('');
 

@@ -325,3 +325,57 @@ def test_cohort_simulator_and_screening_alt_consistency():
     assert 140.0 in params or any(p == 140.0 for p in params)
     assert "alt_u_l <= ?" in query
 
+
+def test_minimal_clinical_profile_screening_evaluates_unknown_safely(patient_token):
+    """
+    Verifies that when a patient submits only minimal required fields (age, cancer_stage,
+    ecog_score, egfr_ml_min) with zero optional laboratory values provided (None or omitted),
+    the screening engine safely processes the request without error, assigns UNKNOWN to
+    the missing lab criteria, and evaluates eligible candidates to REQUIRES_REVIEW (never
+    false-positive POTENTIALLY_ELIGIBLE).
+    """
+    minimal_patient = {
+        "patient_id": "PT-MINIMAL-PROFILE-01",
+        "age": 60,
+        "cancer_stage": "Stage IV",
+        "ecog_score": 1,
+        "egfr_ml_min": 65.0,
+        "has_active_brain_mets": False,
+        "has_stable_brain_mets": False,
+        "has_active_autoimmune": False,
+        "prior_lines": 1,
+        "distance_to_center_miles": 25.0
+        # All lab biomarkers (anc, platelets, hemoglobin, total_bilirubin, alt_u_l) omitted
+    }
+    resp = client.post(
+        "/api/v1/patient/screen-eligibility",
+        json=minimal_patient,
+        headers={"Authorization": f"Bearer {patient_token}"}
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "matches" in data
+    assert len(data["matches"]) > 0
+
+    # Because lab criteria are missing, candidate cannot be POTENTIALLY_ELIGIBLE
+    for match in data["matches"]:
+        assert match["match_status"] in ["REQUIRES_REVIEW", "NOT_ELIGIBLE"]
+        assert match["match_status"] != "POTENTIALLY_ELIGIBLE"
+
+        # Check that missing labs are marked UNKNOWN
+        breakdown = match["criteria_breakdown"]
+        anc_check = next((c for c in breakdown if "ANC" in c["criterion"]), None)
+        if anc_check:
+            assert anc_check["status"] == "UNKNOWN"
+            assert anc_check["passed"] is False
+
+        plt_check = next((c for c in breakdown if "Platelets" in c["criterion"] or "PLT" in c["criterion"]), None)
+        if plt_check:
+            assert plt_check["status"] == "UNKNOWN"
+            assert plt_check["passed"] is False
+
+    # Investigator disclaimer must be present
+    assert "investigator_disclaimer" in data
+    assert "investigator" in data["investigator_disclaimer"].lower()
+
+

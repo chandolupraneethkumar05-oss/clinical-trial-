@@ -420,10 +420,10 @@ export const LandingPage: FC<LandingPageProps> = ({
               WHY TRIAL PROTOCOLS FAIL
             </span>
             <h2 className="font-serif text-3xl sm:text-4xl lg:text-5xl text-charcoal-900 font-normal leading-tight">
-              Millions invested in oncology discovery. 86% miss recruitment deadlines.
+              Recruitment challenges frequently delay clinical trial timelines.
             </h2>
             <p className="text-sm sm:text-base text-charcoal-600 font-normal leading-relaxed pt-1">
-              Over-complicated study protocols create heavy patient burdens and strict exclusion gates, leading to months of trial delays.
+              Over-complicated study protocols create heavy patient burdens and strict exclusion gates, leading to months of trial delays (Tufts CSDD benchmark).
             </p>
           </div>
 
@@ -436,10 +436,10 @@ export const LandingPage: FC<LandingPageProps> = ({
                   01 • STRICT SCREENING
                 </span>
                 <h3 className="font-serif font-bold text-lg text-charcoal-900 leading-snug">
-                  8.77% Initial Yield
+                  Narrow Exclusion Gates
                 </h3>
                 <p className="text-xs text-charcoal-600 mt-2.5 leading-relaxed">
-                  Strict kidney (eGFR &lt; 60) and organ cutoffs filter out over 91% of otherwise viable oncology candidates.
+                  In typical oncology trials, rigid kidney (eGFR &lt; 60) and liver cutoffs filter out otherwise viable candidates (Illustrative simulation — synthetic data).
                 </p>
                 <div className="mt-3">
                   <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-red-50 text-red-700 border border-red-200">
@@ -448,7 +448,7 @@ export const LandingPage: FC<LandingPageProps> = ({
                 </div>
               </div>
               <div className="mt-6 pt-4 border-t border-linen-200 flex items-center justify-between text-[11px] font-mono text-terracotta-600 font-semibold">
-                <span>91.2% Screen Failure</span>
+                <span>Simulated Screen Failure</span>
                 <ArrowRight className="h-3.5 w-3.5" />
               </div>
             </div>
@@ -462,16 +462,16 @@ export const LandingPage: FC<LandingPageProps> = ({
                   31.6 Miles Round-Trip
                 </h3>
                 <p className="text-xs text-charcoal-600 mt-2.5 leading-relaxed">
-                  Suburban and rural patients face heavy transit hours and caregiver reliance, driving accelerated study dropouts.
+                  Suburban and rural patients face significant travel hours and caregiver reliance, driving accelerated study dropouts (Tufts CSDD benchmark).
                 </p>
                 <div className="mt-3">
                   <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200">
-                    Geographic Distance
+                    Geographic Distance Barrier
                   </span>
                 </div>
               </div>
               <div className="mt-6 pt-4 border-t border-linen-200 flex items-center justify-between text-[11px] font-mono text-terracotta-600 font-semibold">
-                <span>2.4x Higher Remote Dropout</span>
+                <span>Remote Dropout Risk</span>
                 <ArrowRight className="h-3.5 w-3.5" />
               </div>
             </div>
@@ -485,7 +485,7 @@ export const LandingPage: FC<LandingPageProps> = ({
                   6.5 Hours Clinic Dwell
                 </h3>
                 <p className="text-xs text-charcoal-600 mt-2.5 leading-relaxed">
-                  Stacking IV infusions, contrast CTs, and biopsies onto single visits triggers high patient fatigue and dropouts.
+                  Stacking IV infusions, contrast CTs, and biopsies onto single visits creates high patient fatigue and dropouts.
                 </p>
                 <div className="mt-3">
                   <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-terracotta-50 text-terracotta-700 border border-terracotta-200">
@@ -494,7 +494,7 @@ export const LandingPage: FC<LandingPageProps> = ({
                 </div>
               </div>
               <div className="mt-6 pt-4 border-t border-linen-200 flex items-center justify-between text-[11px] font-mono text-terracotta-600 font-semibold">
-                <span>42% Hazard at Week 12</span>
+                <span>Simulated Visit Clustering Risk</span>
                 <ArrowRight className="h-3.5 w-3.5" />
               </div>
             </div>
@@ -517,7 +517,7 @@ export const LandingPage: FC<LandingPageProps> = ({
                 </div>
               </div>
               <div className="mt-6 pt-4 border-t border-linen-200 flex items-center justify-between text-[11px] font-mono text-terracotta-600 font-semibold">
-                <span>Average $2.4M Saved</span>
+                <span>Modeled Savings Potential</span>
                 <ArrowRight className="h-3.5 w-3.5" />
               </div>
             </div>

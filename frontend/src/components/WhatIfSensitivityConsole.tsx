@@ -80,7 +80,7 @@ export const WhatIfSensitivityConsole: FC<WhatIfSensitivityConsoleProps> = ({
         console.error("Simulation failed:", err);
       }
     });
-  }, [minEgfr, maxEcog, minPlatelets, maxBilirubin, allowStableBrainMets, maxPriorLines]);
+  }, [minEgfr, maxEcog, minPlatelets, maxBilirubin, allowStableBrainMets, maxPriorLines, onCalculateRetention, onSimulateFunnel]);
 
   const resetToProtocolBaseline = () => {
     setMinEgfr(60);
