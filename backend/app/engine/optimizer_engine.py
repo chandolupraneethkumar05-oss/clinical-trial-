@@ -12,22 +12,16 @@ from app.models.burden import ProtocolVisit, AssessmentProcedure
 from app.models.patient import CohortFilterCriteria
 from app.engine.burden_scorer import burden_engine, STANDARD_PROCEDURE_CATALOG
 from app.engine.cohort_simulator import cohort_engine
+from app.engine.eligibility import normalize_filter_criteria
 
 # Optional Gemini Integration
 GEMINI_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
 
 
 def _simulate_count(filters: dict) -> int:
-    try:
-        clean_filters = {
-            k: v for k, v in filters.items() 
-            if k in CohortFilterCriteria.model_fields
-        }
-        criteria = CohortFilterCriteria(**clean_filters)
-        res = cohort_engine.simulate_eligibility_funnel(criteria)
-        return res.get("final_eligible_count", 877)
-    except Exception:
-        return 877
+    criteria = normalize_filter_criteria(filters)
+    res = cohort_engine.simulate_eligibility_funnel(criteria)
+    return int(res.get("final_eligible_count", 0))
 
 
 class ProtocolOptimizationAdvisor:
@@ -64,8 +58,8 @@ class ProtocolOptimizationAdvisor:
                 proposed_clause="Adequate renal function defined as eGFR ≥ 50 mL/min/1.73m² (CKD Stage 3a eligible) with mandatory serum creatinine & electrolyte monitoring on C1D1, C2D1, and C3D1.",
                 clinical_evidence_rationale="ASCO / Friends of Cancer Research joint consensus demonstrated that an eGFR cutoff of 60 mL/min excludes over 18% of eligible oncology patients (primarily elderly) without reducing drug-induced nephrotoxicity risk for non-renally cleared biologics.",
                 regulatory_precedent="FDA Guidance for Industry: Cancer Clinical Trial Eligibility Criteria: Renal Function (Dec 2020) explicitly advises setting creatinine clearance cutoffs to ≥ 50 mL/min for non-renal excreted therapeutics.",
-                candidate_yield_lift=lift_count if lift_count > 0 else 133,
-                yield_lift_percentage=lift_pct if lift_pct > 0 else 18.4,
+                candidate_yield_lift=lift_count,
+                yield_lift_percentage=lift_pct,
                 pbi_reduction_points=4.5,
                 estimated_accrual_acceleration_months=3.8,
                 projected_sponsor_cost_savings_usd=2280000.0,
@@ -118,7 +112,7 @@ class ProtocolOptimizationAdvisor:
             ))
 
         # ── 3. Stable Treated Central Nervous System (CNS) Metastases ────────
-        allow_brain_mets = filters.get("allow_stable_brain_mets", False)
+        allow_brain_mets = filters.get("allow_stable_brain_mets", True)
         has_cns_exclusion = any("cns" in crit.lower() or "brain" in crit.lower() for crit in protocol.eligibility.exclusion_criteria)
         
         if not allow_brain_mets or has_cns_exclusion:
@@ -138,18 +132,18 @@ class ProtocolOptimizationAdvisor:
                 proposed_clause="Exclusion: Untreated or symptomatic CNS metastases. Subjects with treated, radiographically stable brain metastases (no progression ≥ 4 weeks post-stereotactic radiosurgery/whole-brain RT, off anticonvulsants, and steroid-free or on ≤ 10 mg prednisone daily for ≥ 14 days) are eligible.",
                 clinical_evidence_rationale="Up to 25-30% of Stage IV non-small cell lung cancer, HER2+ breast cancer, and melanoma patients present with brain metastases at diagnosis. Blanket exclusion is outdated given modern stereotactic radiosurgery (SRS) efficacy.",
                 regulatory_precedent="FDA Guidance: Cancer Clinical Trial Eligibility Criteria: Brain Metastases (Jul 2020) urges sponsors to include patients with treated and neurologically stable brain metastases in investigational cohorts.",
-                candidate_yield_lift=lift_count if lift_count > 0 else 184,
-                yield_lift_percentage=lift_pct if lift_pct > 0 else 24.2,
+                candidate_yield_lift=lift_count,
+                yield_lift_percentage=lift_pct,
                 pbi_reduction_points=3.2,
-                estimated_accrual_acceleration_months=4.5,
-                projected_sponsor_cost_savings_usd=2700000.0,
+                estimated_accrual_acceleration_months=4.5 if lift_count > 0 else 0.0,
+                projected_sponsor_cost_savings_usd=2700000.0 if lift_count > 0 else 0.0,
                 health_equity_diversity_impact="Significantly expands candidate pools across community oncology networks where patients often present with oligometastatic disease.",
                 safety_guardrail_conditions=[
                     "Baseline contrast-enhanced Brain MRI within 28 days prior to Cycle 1 Day 1",
                     "Repeat brain imaging every 12 weeks concurrent with RECIST v1.1 systemic disease assessment",
                     "Maintenance of systemic corticosteroid dose ≤ 10 mg prednisone equivalent daily"
                 ],
-                filter_mutations={"allow_stable_brain_mets": True},
+                filter_mutations={"allow_stable_brain_mets": True, "exclude_active_brain_mets": True},
                 is_recommended=True
             ))
 
@@ -197,7 +191,9 @@ class ProtocolOptimizationAdvisor:
         proposals = self.generate_amendments(protocol)
         target = next((p for p in proposals if p.amendment_id == amendment_id), None)
         if not target:
-            return protocol
+            raise ValueError(
+                f"Amendment '{amendment_id}' is not applicable or does not exist for protocol '{protocol.protocol_id}'."
+            )
 
         updated_protocol = copy.deepcopy(protocol)
 

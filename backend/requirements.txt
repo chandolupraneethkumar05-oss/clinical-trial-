@@ -13,14 +13,19 @@ pandas>=2.2.0
 pymupdf>=1.25.0
 pdfplumber>=0.11.0
 
+# Security, Authentication & Google OAuth
+bcrypt>=4.0.0
+PyJWT>=2.9.0
+google-auth>=2.30.0
+requests>=2.32.0
+
 # Networking & ClinicalTrials.gov API Client
 httpx>=0.28.0
 
 # Testing & Code Quality
 pytest>=8.3.0
 pytest-asyncio>=0.24.0
-httpx>=0.28.0
 
+# Multipart Uploads & Optional Gemini Parsing
 python-multipart>=0.0.9
-
 google-genai>=0.1.1

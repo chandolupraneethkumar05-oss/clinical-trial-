@@ -4,17 +4,26 @@ Provides individualized patient matching, criteria-level evaluation,
 and protocol amendment recommendation for recruitment acceleration.
 """
 import json
+import math
 import uuid
 import logging
 from typing import Optional, Any
 from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException, Depends
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.core.security import get_current_user, AuthenticatedUser, enforce_rate_limit
 from app.api.routes_protocol import SAMPLE_PROTOCOL_MAP
 from app.models.protocol import ClinicalTrialProtocol
 from app.db.duckdb_client import db_client
+from app.engine.eligibility import (
+    PROVENANCE_INVESTIGATOR_VERIFIED,
+    PROVENANCE_PATIENT_REPORTED,
+    PROVENANCE_SYNTHETIC_DEMO,
+    evaluate_patient_against_criteria,
+    normalize_filter_criteria,
+    resolve_patient_provenance,
+)
 
 router = APIRouter(prefix="/patient", tags=["Patient Eligibility & Recruitment"])
 logger = logging.getLogger(__name__)
@@ -26,27 +35,67 @@ INVESTIGATOR_DISCLAIMER = (
     "or formal trial eligibility decision."
 )
 
+SYNTHETIC_DEMO_DISCLAIMER = (
+    "This evaluation used synthetic demonstration profile data. "
+    "It does not represent a real patient clinical record or binding medical eligibility."
+)
+
 
 class PatientScreeningInput(BaseModel):
-    patient_id: Optional[str] = "PT-EVAL-2026"
-    data_provenance: str = Field(default="synthetic_demo", description="'synthetic_demo' | 'verified_clinical'")
-    age: Optional[int] = Field(default=None, ge=18, le=95)
-    gender: Optional[str] = "Female"
-    cancer_stage: Optional[str] = Field(default=None)
-    ecog_score: Optional[int] = Field(default=None, ge=0, le=4)
-    egfr_ml_min: Optional[float] = Field(default=None, ge=10.0, le=150.0, description="eGFR in mL/min/1.73m2")
-    anc: Optional[float] = Field(default=None, ge=100.0, description="Absolute Neutrophil Count cells/uL")
-    platelets: Optional[float] = Field(default=None, ge=10.0, description="Platelets x10^3/uL")
-    hemoglobin: Optional[float] = Field(default=None, ge=5.0, description="Hemoglobin g/dL")
-    total_bilirubin: Optional[float] = Field(default=None, ge=0.1, le=10.0, description="Total Bilirubin mg/dL")
-    alt_u_l: Optional[float] = Field(default=None, ge=5.0, le=500.0, description="ALT U/L")
+    patient_id: Optional[str] = Field(default="PT-EVAL-2026", max_length=120)
+    data_provenance: Optional[str] = Field(
+        default=None,
+        description="Optional client hint ('synthetic_demo' | 'patient_reported' | 'unknown'); server enforces authoritative provenance",
+    )
+    is_demo_profile: bool = Field(
+        default=False,
+        description="Set true only when screening synthetic demonstration profile data",
+    )
+    investigator_verified: bool = Field(
+        default=False,
+        description="Honored exclusively for authenticated doctor or admin callers",
+    )
+    age: int = Field(..., ge=18, le=95, description="Required patient age in years (18-95)")
+    gender: Optional[str] = Field(default=None, max_length=40)
+    cancer_stage: str = Field(..., min_length=1, max_length=100, description="Required cancer stage")
+    ecog_score: int = Field(..., ge=0, le=4, description="Required ECOG performance status (0-4)")
+    egfr_ml_min: float = Field(..., ge=10.0, le=150.0, description="Required eGFR in mL/min/1.73m2")
+    anc: Optional[float] = Field(default=None, ge=100.0, le=100000.0, description="Absolute Neutrophil Count cells/uL")
+    platelets: Optional[float] = Field(default=None, ge=10.0, le=5000.0, description="Platelets x10^3/uL")
+    hemoglobin: Optional[float] = Field(default=None, ge=5.0, le=25.0, description="Hemoglobin g/dL")
+    total_bilirubin: Optional[float] = Field(default=None, ge=0.1, le=20.0, description="Total Bilirubin mg/dL")
+    alt_u_l: Optional[float] = Field(default=None, ge=5.0, le=2000.0, description="ALT U/L")
     prior_lines: Optional[int] = Field(default=None, ge=0, le=10)
     has_active_brain_mets: Optional[bool] = None
     has_stable_brain_mets: Optional[bool] = None
     has_active_autoimmune: Optional[bool] = None
     has_egfr_sensitizing_mutation: Optional[bool] = None
     pdl1_tps_percent: Optional[float] = Field(default=None, ge=0.0, le=100.0)
-    distance_to_center_miles: float = Field(default=28.5, ge=1.0, le=200.0)
+    distance_to_center_miles: Optional[float] = Field(default=None, ge=1.0, le=500.0)
+
+    @field_validator("cancer_stage")
+    @classmethod
+    def validate_cancer_stage(cls, v: str) -> str:
+        cleaned = v.strip()
+        if not cleaned:
+            raise ValueError("cancer_stage must not be blank.")
+        return cleaned
+
+    @field_validator(
+        "egfr_ml_min",
+        "anc",
+        "platelets",
+        "hemoglobin",
+        "total_bilirubin",
+        "alt_u_l",
+        "pdl1_tps_percent",
+        "distance_to_center_miles",
+    )
+    @classmethod
+    def validate_finite_floats(cls, v: Optional[float], info) -> Optional[float]:
+        if v is not None and not math.isfinite(v):
+            raise ValueError(f"{info.field_name} must be a finite numeric value.")
+        return v
 
 
 class CriterionCheck(BaseModel):
@@ -79,7 +128,10 @@ class TrialMatchResult(BaseModel):
 
 class ScreeningResponse(BaseModel):
     patient_id: str
-    data_provenance: str = "synthetic_demo"
+    data_provenance: str
+    provenance_verified: bool = False
+    is_synthetic_data: bool = False
+    data_disclaimer: Optional[str] = None
     evaluation_timestamp: str
     trials_evaluated: int
     matches: list[TrialMatchResult]
@@ -87,355 +139,32 @@ class ScreeningResponse(BaseModel):
     investigator_disclaimer: str = INVESTIGATOR_DISCLAIMER
 
 
-def _stage_matches(patient_stage: str, allowed: str) -> bool:
-    p_norm = patient_stage.strip().lower()
-    a_norm = allowed.strip().lower()
-    if p_norm == a_norm:
-        return True
-    if a_norm.startswith(p_norm + " ") or a_norm.startswith(p_norm + "("):
-        return True
-    if p_norm.startswith(a_norm + " ") or p_norm.startswith(a_norm + "("):
-        return True
-    return False
-
-
 def evaluate_patient_against_protocol(patient: PatientScreeningInput, proto: ClinicalTrialProtocol) -> TrialMatchResult:
     """
     Evaluates individual patient clinical phenotype across comprehensive protocol
     inclusion/exclusion and biomarker criteria using deterministic 4-state logic:
     PASS, FAIL, UNKNOWN, NEEDS_INVESTIGATOR_REVIEW.
+    Uses normalized CohortFilterCriteria identical to CohortSimulationEngine.
     Enforces that numerical match scores NEVER override mandatory exclusions or missing data.
     """
-    filters = proto.eligibility.structured_filters or {}
-    checks: list[CriterionCheck] = []
-    hard_exclusion_failures: list[str] = []
+    criteria = normalize_filter_criteria(proto.eligibility.structured_filters)
+    evaluations, hard_exclusion_failures, borderline_egfr = evaluate_patient_against_criteria(patient, criteria)
 
-    # 1. Age
-    min_age = filters.get("min_age", 18)
-    max_age = filters.get("max_age", 80)
-    if patient.age is None:
-        age_status = "UNKNOWN"
-        age_ok = False
-        age_note = "Age not documented in clinical submission. Requires investigator verification."
-    else:
-        age_ok = min_age <= patient.age <= max_age
-        age_status = "PASS" if age_ok else "FAIL"
-        age_note = "Within approved trial age range." if age_ok else "Outside study age boundary."
-    checks.append(CriterionCheck(
-        criterion="Age Eligibility",
-        category="DEMOGRAPHICS",
-        status=age_status,
-        passed=age_ok,
-        patient_value=f"{patient.age} years" if patient.age is not None else "Not Documented",
-        required_threshold=f"{min_age} - {max_age} years",
-        impact_note=age_note,
-        is_mandatory=True
-    ))
-
-    # 2. Stage
-    allowed_stages = filters.get("allowed_stages", [])
-    if not patient.cancer_stage:
-        stage_status = "UNKNOWN"
-        stage_ok = False
-        stage_note = "Cancer stage unrecorded in profile."
-    else:
-        stage_ok = any(_stage_matches(patient.cancer_stage, s) for s in allowed_stages) if allowed_stages else True
-        stage_status = "PASS" if stage_ok else "FAIL"
-        stage_note = "Matching histological staging." if stage_ok else "Stage mismatch for this specific protocol."
-    checks.append(CriterionCheck(
-        criterion="Cancer Stage",
-        category="CLINICAL_ONCOLOGY",
-        status=stage_status,
-        passed=stage_ok,
-        patient_value=patient.cancer_stage or "Not Documented",
-        required_threshold=", ".join(allowed_stages[:2]) if allowed_stages else "Stage III/IV",
-        impact_note=stage_note,
-        is_mandatory=True
-    ))
-
-    # 3. ECOG Performance Status
-    max_ecog = filters.get("max_ecog", 1)
-    if patient.ecog_score is None:
-        ecog_status = "UNKNOWN"
-        ecog_ok = False
-        ecog_note = "ECOG functional status unrecorded."
-    else:
-        ecog_ok = patient.ecog_score <= max_ecog
-        ecog_status = "PASS" if ecog_ok else "FAIL"
-        ecog_note = "Good functional mobility." if ecog_ok else "Performance fatigue exceeds protocol ceiling."
-    checks.append(CriterionCheck(
-        criterion="ECOG Performance Status",
-        category="PHYSICAL_STAMINA",
-        status=ecog_status,
-        passed=ecog_ok,
-        patient_value=f"ECOG {patient.ecog_score}" if patient.ecog_score is not None else "Not Documented",
-        required_threshold=f"ECOG <= {max_ecog}",
-        impact_note=ecog_note,
-        is_mandatory=True
-    ))
-
-    # 4. Renal Function (eGFR)
-    min_egfr = filters.get("min_egfr", 60.0)
-    borderline_egfr = False
-    if patient.egfr_ml_min is None:
-        egfr_status = "UNKNOWN"
-        egfr_ok = False
-        egfr_note = "Renal clearance (eGFR) unrecorded."
-    else:
-        egfr_ok = patient.egfr_ml_min >= min_egfr
-        borderline_egfr = (not egfr_ok) and (patient.egfr_ml_min >= 50.0)
-        egfr_status = "PASS" if egfr_ok else ("NEEDS_INVESTIGATOR_REVIEW" if borderline_egfr else "FAIL")
-        egfr_note = "Adequate kidney clearance." if egfr_ok else (
-            "Borderline renal clearance (eGFR 50-59 mL/min). Candidate may be eligible under proposed Amendment AMD-01." if borderline_egfr else "Renal cutoff not met."
+    checks = [
+        CriterionCheck(
+            criterion=ev.criterion,
+            category=ev.category,
+            status=ev.status,
+            passed=ev.passed,
+            patient_value=ev.patient_value,
+            required_threshold=ev.required_threshold,
+            impact_note=ev.impact_note,
+            is_hard_rule=ev.is_hard_rule,
+            is_mandatory=ev.is_mandatory,
         )
-    checks.append(CriterionCheck(
-        criterion="Renal Clearance (eGFR)",
-        category="ORGAN_FUNCTION",
-        status=egfr_status,
-        passed=egfr_ok,
-        patient_value=f"{patient.egfr_ml_min:.1f} mL/min" if patient.egfr_ml_min is not None else "Not Documented",
-        required_threshold=f"eGFR >= {min_egfr:.0f} mL/min",
-        impact_note=egfr_note,
-        is_mandatory=True
-    ))
+        for ev in evaluations
+    ]
 
-    # 5. Hematology: ANC
-    min_anc = filters.get("min_anc", 1500.0)
-    if patient.anc is None:
-        anc_status = "UNKNOWN"
-        anc_ok = False
-        anc_note = "Absolute Neutrophil Count unrecorded."
-    else:
-        anc_ok = patient.anc >= min_anc
-        anc_status = "PASS" if anc_ok else "FAIL"
-        anc_note = "Adequate bone marrow reserve." if anc_ok else "Low neutrophil count (neutropenia risk)."
-    checks.append(CriterionCheck(
-        criterion="Absolute Neutrophil Count (ANC)",
-        category="HEMATOLOGY",
-        status=anc_status,
-        passed=anc_ok,
-        patient_value=f"{patient.anc:.0f} /uL" if patient.anc is not None else "Not Documented",
-        required_threshold=f">= {min_anc:.0f} /uL",
-        impact_note=anc_note,
-        is_mandatory=True
-    ))
-
-    # 6. Hematology: Platelets
-    min_plat = filters.get("min_platelets", 100.0)
-    if patient.platelets is None:
-        plat_status = "UNKNOWN"
-        plat_ok = False
-        plat_note = "Platelet count unrecorded."
-    else:
-        plat_ok = patient.platelets >= min_plat
-        plat_status = "PASS" if plat_ok else "FAIL"
-        plat_note = "Adequate platelet count for systemic therapy." if plat_ok else "Thrombocytopenia: Platelet count below protocol cutoff."
-    checks.append(CriterionCheck(
-        criterion="Platelet Count",
-        category="HEMATOLOGY",
-        status=plat_status,
-        passed=plat_ok,
-        patient_value=f"{patient.platelets:.0f} x10^3/uL" if patient.platelets is not None else "Not Documented",
-        required_threshold=f">= {min_plat:.0f} x10^3/uL",
-        impact_note=plat_note,
-        is_mandatory=True
-    ))
-
-    # 7. Hematology: Hemoglobin
-    min_hb = filters.get("min_hemoglobin", 9.0)
-    if patient.hemoglobin is None:
-        hb_status = "UNKNOWN"
-        hb_ok = False
-        hb_note = "Hemoglobin concentration unrecorded."
-    else:
-        hb_ok = patient.hemoglobin >= min_hb
-        hb_status = "PASS" if hb_ok else "FAIL"
-        hb_note = "Hemoglobin adequate for trial intervention." if hb_ok else "Anemia: Hemoglobin below safe protocol threshold."
-    checks.append(CriterionCheck(
-        criterion="Hemoglobin Concentration",
-        category="HEMATOLOGY",
-        status=hb_status,
-        passed=hb_ok,
-        patient_value=f"{patient.hemoglobin:.1f} g/dL" if patient.hemoglobin is not None else "Not Documented",
-        required_threshold=f">= {min_hb:.1f} g/dL",
-        impact_note=hb_note,
-        is_mandatory=True
-    ))
-
-    # 8. Hepatic: Total Bilirubin
-    max_bili = filters.get("max_total_bilirubin", 1.5)
-    if patient.total_bilirubin is None:
-        bili_status = "UNKNOWN"
-        bili_ok = False
-        bili_note = "Total bilirubin unrecorded."
-    else:
-        bili_ok = patient.total_bilirubin <= max_bili
-        bili_status = "PASS" if bili_ok else "FAIL"
-        bili_note = "Bilirubin clearance within safe limits." if bili_ok else "Hyperbilirubinemia: Hepatic clearance impaired."
-    checks.append(CriterionCheck(
-        criterion="Total Bilirubin",
-        category="HEPATIC_FUNCTION",
-        status=bili_status,
-        passed=bili_ok,
-        patient_value=f"{patient.total_bilirubin:.1f} mg/dL" if patient.total_bilirubin is not None else "Not Documented",
-        required_threshold=f"<= {max_bili:.1f} mg/dL",
-        impact_note=bili_note,
-        is_mandatory=True
-    ))
-
-    # 9. Hepatic: ALT Transaminase
-    alt_uln = filters.get("alt_uln_reference", 56.0)
-    if "max_alt_u_l" in filters:
-        max_alt = float(filters["max_alt_u_l"])
-        thresh_desc = f"<= {max_alt:.0f} U/L"
-    else:
-        max_alt_mult = float(filters.get("max_alt_multiplier", 2.5))
-        max_alt = max_alt_mult * alt_uln
-        thresh_desc = f"<= {max_alt:.0f} U/L ({max_alt_mult}x ULN [ref {alt_uln} U/L])"
-
-    if patient.alt_u_l is None:
-        alt_status = "UNKNOWN"
-        alt_ok = False
-        alt_note = "Alanine Aminotransferase (ALT) level unrecorded. Requires lab draw."
-    else:
-        alt_ok = patient.alt_u_l <= max_alt
-        alt_status = "PASS" if alt_ok else "FAIL"
-        alt_note = "Liver enzyme transaminase within acceptable parameters." if alt_ok else "Elevated ALT transaminase exceeds safety threshold."
-    checks.append(CriterionCheck(
-        criterion="Alanine Aminotransferase (ALT)",
-        category="HEPATIC_FUNCTION",
-        status=alt_status,
-        passed=alt_ok,
-        patient_value=f"{patient.alt_u_l:.0f} U/L" if patient.alt_u_l is not None else "Not Documented",
-        required_threshold=thresh_desc,
-        impact_note=alt_note,
-        is_mandatory=True
-    ))
-
-    # 10. Prior Lines of Therapy
-    max_lines = filters.get("max_prior_lines", 2)
-    min_lines = filters.get("min_prior_lines", 0)
-    if patient.prior_lines is None:
-        lines_status = "UNKNOWN"
-        lines_ok = False
-        lines_note = "Prior lines of therapy unrecorded."
-    else:
-        lines_ok = min_lines <= patient.prior_lines <= max_lines
-        lines_status = "PASS" if lines_ok else "FAIL"
-        lines_note = "Eligible treatment line." if lines_ok else "Exceeds max prior therapy line allowance."
-    checks.append(CriterionCheck(
-        criterion="Prior Lines of Systemic Therapy",
-        category="TREATMENT_HISTORY",
-        status=lines_status,
-        passed=lines_ok,
-        patient_value=f"{patient.prior_lines} prior lines" if patient.prior_lines is not None else "Not Documented",
-        required_threshold=f"{min_lines} - {max_lines} prior lines" if min_lines > 0 else f"<= {max_lines} prior lines",
-        impact_note=lines_note,
-        is_mandatory=True
-    ))
-
-    # 11. CNS Metastases (HARD EXCLUSION)
-    allow_stable_cns = filters.get("allow_stable_brain_mets", True)
-    if patient.has_active_brain_mets is None and patient.has_stable_brain_mets is None:
-        cns_status = "NEEDS_INVESTIGATOR_REVIEW"
-        cns_ok = False
-        cns_note = "CNS metastatic status undocumented. Requires brain MRI/CT confirmation."
-    elif patient.has_active_brain_mets:
-        cns_status = "FAIL"
-        cns_ok = False
-        cns_note = "HARD EXCLUSION: Untreated active brain metastases exclude participation. This cannot be overridden by overall score."
-        hard_exclusion_failures.append("Active brain metastases (hard exclusion)")
-    elif patient.has_stable_brain_mets:
-        cns_ok = allow_stable_cns
-        cns_status = "PASS" if cns_ok else "FAIL"
-        cns_note = "Stable treated brain metastases accepted under FDA modernized guidelines." if cns_ok else "Protocol excludes brain metastases; candidate may be eligible under Amendment AMD-03."
-    else:
-        cns_status = "PASS"
-        cns_ok = True
-        cns_note = "No central nervous system involvement."
-    checks.append(CriterionCheck(
-        criterion="Central Nervous System (CNS) Status",
-        category="SAFETY_COMORBIDITY",
-        status=cns_status,
-        passed=cns_ok,
-        patient_value="Stable Treated CNS" if patient.has_stable_brain_mets else ("Active CNS" if patient.has_active_brain_mets else "No CNS Mets"),
-        required_threshold="Stable or No CNS Mets",
-        impact_note=cns_note,
-        is_hard_rule=True,
-        is_mandatory=True
-    ))
-
-    # 12. Autoimmune Disease Status (HARD EXCLUSION)
-    exclude_autoimmune = filters.get("exclude_active_autoimmune", True)
-    if patient.has_active_autoimmune is None:
-        auto_status = "NEEDS_INVESTIGATOR_REVIEW"
-        auto_ok = False
-        auto_note = "Autoimmune history undocumented. Requires medical records review."
-    elif patient.has_active_autoimmune and exclude_autoimmune:
-        auto_status = "FAIL"
-        auto_ok = False
-        hard_exclusion_failures.append("Active autoimmune disease (hard exclusion)")
-        auto_note = "HARD EXCLUSION: Active systemic autoimmune disease requires exclusion under immunotherapy safety guidelines."
-    else:
-        auto_status = "PASS"
-        auto_ok = True
-        auto_note = "No active autoimmune contraindications."
-    checks.append(CriterionCheck(
-        criterion="Autoimmune Disease Status",
-        category="SAFETY_COMORBIDITY",
-        status=auto_status,
-        passed=auto_ok,
-        patient_value="Active Autoimmune" if patient.has_active_autoimmune else "No Active Autoimmune",
-        required_threshold="No Active Autoimmune" if exclude_autoimmune else "Allowed",
-        impact_note=auto_note,
-        is_hard_rule=True,
-        is_mandatory=True
-    ))
-
-    # 13. Molecular Biomarker: EGFR Mutation
-    if filters.get("target_biomarker_egfr_negative"):
-        if patient.has_egfr_sensitizing_mutation is None:
-            egfr_status = "NEEDS_INVESTIGATOR_REVIEW"
-            egfr_mut_ok = False
-            egfr_note = "EGFR molecular pathology status pending."
-        else:
-            egfr_mut_ok = not patient.has_egfr_sensitizing_mutation
-            egfr_status = "PASS" if egfr_mut_ok else "FAIL"
-            egfr_note = "Matches wild-type protocol requirement." if egfr_mut_ok else "EGFR sensitizing mutation excludes participation."
-        checks.append(CriterionCheck(
-            criterion="EGFR Mutation Status",
-            category="MOLECULAR_BIOMARKER",
-            status=egfr_status,
-            passed=egfr_mut_ok,
-            patient_value="EGFR Positive (Mutant)" if patient.has_egfr_sensitizing_mutation else "EGFR Negative (Wild-Type)",
-            required_threshold="EGFR Negative (Wild-Type)",
-            impact_note=egfr_note,
-            is_mandatory=True
-        ))
-
-    # 14. Molecular Biomarker: PD-L1 TPS Expression
-    if filters.get("min_pdl1_tps") is not None:
-        min_pdl1 = float(filters["min_pdl1_tps"])
-        if patient.pdl1_tps_percent is None:
-            pdl1_status = "NEEDS_INVESTIGATOR_REVIEW"
-            pdl1_ok = False
-            pdl1_note = "PD-L1 IHC expression unrecorded."
-        else:
-            pdl1_ok = patient.pdl1_tps_percent >= min_pdl1
-            pdl1_status = "PASS" if pdl1_ok else "FAIL"
-            pdl1_note = "Meets biomarker expression cutoff." if pdl1_ok else f"Below minimum required PD-L1 expression ({min_pdl1:.0f}%)."
-        checks.append(CriterionCheck(
-            criterion="PD-L1 Expression (TPS)",
-            category="MOLECULAR_BIOMARKER",
-            status=pdl1_status,
-            passed=pdl1_ok,
-            patient_value=f"{patient.pdl1_tps_percent:.1f}%" if patient.pdl1_tps_percent is not None else "Not Documented",
-            required_threshold=f">= {min_pdl1:.1f}%",
-            impact_note=pdl1_note,
-            is_mandatory=True
-        ))
-
-    # Compute overall score and deterministic match status
     passed_count = sum(1 for c in checks if c.status == "PASS")
     total_count = len(checks)
     score_pct = round((passed_count / max(1, total_count)) * 100.0, 1)
@@ -449,7 +178,7 @@ def evaluate_patient_against_protocol(patient: PatientScreeningInput, proto: Cli
     if has_hard_exclusion_failure or has_mandatory_fail:
         match_status = "NOT_ELIGIBLE"
     # 2. Missing, unverified, or borderline criteria requiring review: REQUIRES_REVIEW
-    elif has_unknown_or_review or (borderline_egfr and passed_count >= total_count - 1):
+    elif has_unknown_or_review or borderline_egfr:
         match_status = "REQUIRES_REVIEW"
     # 3. All mandatory criteria satisfied with verified clinical data: POTENTIALLY_ELIGIBLE
     elif passed_count == total_count:
@@ -458,21 +187,30 @@ def evaluate_patient_against_protocol(patient: PatientScreeningInput, proto: Cli
         match_status = "NOT_ELIGIBLE"
 
     opportunity = None
-    if match_status == "REQUIRES_REVIEW":
-        if borderline_egfr:
-            opportunity = "Candidate may qualify if trial adopts Amendment AMD-01 (eGFR 60 -> 50 mL/min calibration). Requires investigator review."
-        elif patient.has_stable_brain_mets and not allow_stable_cns:
-            opportunity = "Candidate may qualify if trial adopts Amendment AMD-03 (FDA modernized stable CNS guidance). Requires investigator review."
+    if match_status == "REQUIRES_REVIEW" and borderline_egfr:
+        opportunity = (
+            "Candidate may qualify if trial adopts Amendment AMD-01 (eGFR 60 -> 50 mL/min calibration). "
+            "Requires investigator review."
+        )
+    elif (
+        patient.has_stable_brain_mets is True
+        and patient.has_active_brain_mets is False
+        and not criteria.allow_stable_brain_mets
+    ):
+        opportunity = (
+            "Candidate may qualify if trial adopts Amendment AMD-03 (FDA modernized stable CNS guidance). "
+            "Requires investigator review."
+        )
 
-    # Burden summary for patient
     burden = proto.burden
     burden_summary = {
         "pbi_score": burden.composite_pbi_score if burden else 55.0,
         "attrition_risk_tier": burden.attrition_risk_tier if burden else "Moderate",
         "total_study_visits": len(proto.visits),
+        "study_duration_weeks": proto.study_duration_weeks,
         "total_clinic_hours": burden.total_clinic_hours if burden else 72.0,
         "travel_distance_miles": patient.distance_to_center_miles,
-        "telehealth_eligible_visits": max(1, len(proto.visits) // 4)
+        "telehealth_eligible_visits": max(1, len(proto.visits) // 4),
     }
 
     return TrialMatchResult(
@@ -488,36 +226,42 @@ def evaluate_patient_against_protocol(patient: PatientScreeningInput, proto: Cli
         recruitment_acceleration_opportunity=opportunity,
         patient_burden_summary=burden_summary,
         investigator_confirmation_required=True,
-        investigator_disclaimer=INVESTIGATOR_DISCLAIMER
+        investigator_disclaimer=INVESTIGATOR_DISCLAIMER,
     )
 
 
 @router.post(
     "/screen-eligibility",
     response_model=ScreeningResponse,
-    dependencies=[Depends(enforce_rate_limit(max_requests=10, window_seconds=60, prefix="patient_screen"))]
+    dependencies=[Depends(enforce_rate_limit(max_requests=10, window_seconds=60, prefix="patient_screen"))],
 )
 async def screen_patient_eligibility(
     payload: PatientScreeningInput,
-    current_user: AuthenticatedUser = Depends(get_current_user)
+    current_user: AuthenticatedUser = Depends(get_current_user),
 ):
     """
     Evaluates individual patient clinical phenotype against active protocol portfolio.
     Evaluates against both canonical protocols and uploaded institutional protocols in DuckDB.
-    Enforces RBAC and patient ID anchoring. Results must be reviewed by a qualified clinical investigator.
+    Enforces RBAC, server-derived provenance, and patient ID anchoring.
     """
-    # Enforce strict patient identity derivation:
-    # For patient users, identity is derived exclusively from current_user.id.
-    # Deliberate attempts by a patient to impersonate another user account ID are rejected.
     if current_user.role == "patient":
         if payload.patient_id and payload.patient_id.startswith("usr-") and payload.patient_id != current_user.id:
             raise HTTPException(
                 status_code=403,
-                detail="Security violation: Patient users may only screen eligibility for their own profile."
+                detail="Security violation: Patient users may only screen eligibility for their own profile.",
             )
         verified_patient_id = current_user.id
     else:
-        verified_patient_id = payload.patient_id or "PT-EVAL-2026"
+        verified_patient_id = (payload.patient_id or "").strip() or "PT-EVAL-2026"
+
+    resolved_provenance = resolve_patient_provenance(
+        user_role=current_user.role,
+        requested_provenance=payload.data_provenance,
+        is_demo_profile=payload.is_demo_profile,
+        investigator_verified=payload.investigator_verified,
+    )
+    provenance_verified = resolved_provenance == PROVENANCE_INVESTIGATOR_VERIFIED
+    is_synthetic = resolved_provenance == PROVENANCE_SYNTHETIC_DEMO
 
     matches: list[TrialMatchResult] = []
 
@@ -538,7 +282,6 @@ async def screen_patient_eligibility(
             try:
                 p_data = json.loads(p_json)
                 proto = ClinicalTrialProtocol(**p_data)
-                # Avoid duplicate if protocol_id already evaluated
                 if any(m.protocol_id == proto.protocol_id for m in matches):
                     continue
                 match_res = evaluate_patient_against_protocol(payload, proto)
@@ -559,21 +302,50 @@ async def screen_patient_eligibility(
         "All results require confirmation by a qualified clinical investigator."
     )
 
+    # Record provenance-tagged audit event without storing clinical measurements or PII
+    try:
+        from app.api.routes_audit import record_audit_event
+        record_audit_event(
+            user_id=current_user.id,
+            user_name=current_user.name,
+            user_role=current_user.role,
+            action="PATIENT_ELIGIBILITY_SCREENING",
+            resource_type="PATIENT_SCREENING",
+            resource_id=verified_patient_id,
+            details=(
+                f"Evaluated {len(matches)} protocols for subject {verified_patient_id} "
+                f"(provenance={resolved_provenance}, verified={provenance_verified})."
+            ),
+        )
+    except Exception:
+        logger.exception("Failed to record audit event for patient screening")
+
     return ScreeningResponse(
         patient_id=verified_patient_id,
-        data_provenance=payload.data_provenance,
+        data_provenance=resolved_provenance,
+        provenance_verified=provenance_verified,
+        is_synthetic_data=is_synthetic,
+        data_disclaimer=SYNTHETIC_DEMO_DISCLAIMER if is_synthetic else None,
         evaluation_timestamp=datetime.now(timezone.utc).isoformat(),
         trials_evaluated=len(matches),
         matches=matches,
         recruitment_support_summary=summary,
-        investigator_disclaimer=INVESTIGATOR_DISCLAIMER
+        investigator_disclaimer=INVESTIGATOR_DISCLAIMER,
     )
 
 
 class PatientInterestSubmission(BaseModel):
-    protocol_id: str = Field(..., description="Target clinical trial protocol identifier")
-    patient_id: Optional[str] = Field(None, description="Optional patient ID")
-    notes: Optional[str] = Field(None, description="Optional notes or message for the site coordinator")
+    protocol_id: str = Field(..., min_length=1, max_length=120, description="Target clinical trial protocol identifier")
+    patient_id: Optional[str] = Field(None, max_length=120, description="Optional patient ID")
+    notes: Optional[str] = Field(None, max_length=1000, description="Optional notes or message for the site coordinator")
+
+    @field_validator("protocol_id")
+    @classmethod
+    def validate_protocol_id(cls, v: str) -> str:
+        cleaned = v.strip()
+        if not cleaned:
+            raise ValueError("protocol_id must not be blank.")
+        return cleaned
 
 
 class PatientInterestRecord(BaseModel):
@@ -586,13 +358,24 @@ class PatientInterestRecord(BaseModel):
     submitted_at: str
 
 
+def _protocol_exists(conn, protocol_id: str) -> bool:
+    for factory in SAMPLE_PROTOCOL_MAP.values():
+        if factory().protocol_id == protocol_id:
+            return True
+    row = conn.execute(
+        "SELECT 1 FROM uploaded_protocols WHERE protocol_id = ?",
+        (protocol_id,),
+    ).fetchone()
+    return row is not None
+
+
 @router.post(
     "/interest",
-    dependencies=[Depends(enforce_rate_limit(max_requests=10, window_seconds=60, prefix="patient_interest"))]
+    dependencies=[Depends(enforce_rate_limit(max_requests=10, window_seconds=60, prefix="patient_interest"))],
 )
 async def express_patient_interest(
     payload: PatientInterestSubmission,
-    current_user: AuthenticatedUser = Depends(get_current_user)
+    current_user: AuthenticatedUser = Depends(get_current_user),
 ):
     """
     Records a patient's interest in enrolling in a specific clinical trial protocol.
@@ -603,19 +386,24 @@ async def express_patient_interest(
         if payload.patient_id and payload.patient_id != current_user.id:
             raise HTTPException(
                 status_code=403,
-                detail="Security violation: Patients may only express interest under their own authenticated identity."
+                detail="Security violation: Patients may only express interest under their own authenticated identity.",
             )
         patient_id = current_user.id
     else:
-        patient_id = payload.patient_id or current_user.id
+        patient_id = (payload.patient_id or "").strip() or current_user.id
     interest_id = f"int-{uuid.uuid4().hex[:8]}"
 
     conn = db_client.get_connection()
     try:
-        # Check if already submitted
+        if not _protocol_exists(conn, payload.protocol_id):
+            raise HTTPException(
+                status_code=404,
+                detail=f"Clinical trial protocol '{payload.protocol_id}' was not found.",
+            )
+
         existing = conn.execute(
             "SELECT id, status, CAST(submitted_at AS VARCHAR) FROM patient_interests WHERE patient_id = ? AND protocol_id = ?",
-            (patient_id, payload.protocol_id)
+            (patient_id, payload.protocol_id),
         ).fetchone()
 
         if existing:
@@ -625,7 +413,7 @@ async def express_patient_interest(
                 "protocol_id": payload.protocol_id,
                 "patient_id": patient_id,
                 "status": existing[1],
-                "message": "Interest is already registered with the clinical site coordinator."
+                "message": "Interest is already registered with the clinical site coordinator.",
             }
 
         conn.execute(
@@ -633,24 +421,38 @@ async def express_patient_interest(
             INSERT INTO patient_interests (id, patient_id, protocol_id, patient_name, patient_email, status, submitted_at)
             VALUES (?, ?, ?, ?, ?, 'SUBMITTED', CURRENT_TIMESTAMP)
             """,
-            (interest_id, patient_id, payload.protocol_id, current_user.name, current_user.email)
+            (interest_id, patient_id, payload.protocol_id, current_user.name, current_user.email),
         )
-
-        return {
-            "success": True,
-            "interest_id": interest_id,
-            "protocol_id": payload.protocol_id,
-            "patient_id": patient_id,
-            "status": "SUBMITTED",
-            "message": "Interest registered with site coordinator. Study team will review eligibility."
-        }
     finally:
         conn.close()
+
+    try:
+        from app.api.routes_audit import record_audit_event
+        record_audit_event(
+            user_id=current_user.id,
+            user_name=current_user.name,
+            user_role=current_user.role,
+            action="PATIENT_TRIAL_INTEREST",
+            resource_type="PATIENT_INTEREST",
+            resource_id=interest_id,
+            details=f"Registered interest for protocol {payload.protocol_id} (subject={patient_id}).",
+        )
+    except Exception:
+        logger.exception("Failed to record audit event for patient interest")
+
+    return {
+        "success": True,
+        "interest_id": interest_id,
+        "protocol_id": payload.protocol_id,
+        "patient_id": patient_id,
+        "status": "SUBMITTED",
+        "message": "Interest registered with site coordinator. Study team will review eligibility.",
+    }
 
 
 @router.get("/interests", response_model=list[PatientInterestRecord])
 async def get_patient_interests(
-    current_user: AuthenticatedUser = Depends(get_current_user)
+    current_user: AuthenticatedUser = Depends(get_current_user),
 ):
     """
     Retrieves expressed trial interests.
@@ -667,7 +469,7 @@ async def get_patient_interests(
                 WHERE patient_id = ? OR patient_email = ?
                 ORDER BY submitted_at DESC
                 """,
-                (current_user.id, current_user.email)
+                (current_user.id, current_user.email),
             ).fetchall()
         else:
             rows = conn.execute(
@@ -687,7 +489,7 @@ async def get_patient_interests(
                 patient_name=r[3],
                 patient_email=r[4],
                 status=r[5],
-                submitted_at=str(r[6])
+                submitted_at=str(r[6]),
             ))
         return interests
     finally:
@@ -697,7 +499,7 @@ async def get_patient_interests(
 @router.get("/interests/{interest_id}", response_model=PatientInterestRecord)
 async def get_patient_interest_by_id(
     interest_id: str,
-    current_user: AuthenticatedUser = Depends(get_current_user)
+    current_user: AuthenticatedUser = Depends(get_current_user),
 ):
     """
     Retrieves a single patient trial enrollment interest submission.
@@ -712,22 +514,21 @@ async def get_patient_interest_by_id(
             FROM patient_interests
             WHERE id = ?
             """,
-            (interest_id,)
+            (interest_id,),
         ).fetchone()
 
         if not row:
             raise HTTPException(
                 status_code=404,
-                detail=f"Patient interest record '{interest_id}' was not found."
+                detail=f"Patient interest record '{interest_id}' was not found.",
             )
 
         rec_id, pat_id, proto_id, pat_name, pat_email, stat, sub_at = row
-        # Patient authorization check: must own the record
         if current_user.role == "patient":
             if pat_id != current_user.id and (pat_email or "").lower() != current_user.email.lower():
                 raise HTTPException(
                     status_code=403,
-                    detail="Access denied: You are not authorized to view another patient's trial interest record."
+                    detail="Access denied: You are not authorized to view another patient's trial interest record.",
                 )
 
         return PatientInterestRecord(
@@ -737,7 +538,7 @@ async def get_patient_interest_by_id(
             patient_name=pat_name,
             patient_email=pat_email,
             status=stat,
-            submitted_at=str(sub_at)
+            submitted_at=str(sub_at),
         )
     finally:
         conn.close()
@@ -746,10 +547,10 @@ async def get_patient_interest_by_id(
 @router.get("/records/{patient_id}")
 async def get_patient_clinical_record(
     patient_id: str,
-    current_user: AuthenticatedUser = Depends(get_current_user)
+    current_user: AuthenticatedUser = Depends(get_current_user),
 ):
     """
-    Retrieves clinical record for a patient.
+    Retrieves clinical record metadata for a patient.
     Strictly prevents cross-patient direct object reference (IDOR).
     Patients can only access their own record.
     """
@@ -757,14 +558,19 @@ async def get_patient_clinical_record(
     if current_user.role == "patient" and clean_id != current_user.id:
         raise HTTPException(
             status_code=403,
-            detail=f"Security violation: Access denied to patient record '{clean_id}'."
+            detail=f"Security violation: Access denied to patient record '{clean_id}'.",
         )
 
-    # In current architecture, clinical input is self-contained or synthetic
+    provenance = (
+        PROVENANCE_INVESTIGATOR_VERIFIED
+        if current_user.role in {"doctor", "admin"}
+        else PROVENANCE_PATIENT_REPORTED
+    )
     return {
         "success": True,
         "patient_id": clean_id,
-        "data_provenance": "verified_ehr" if current_user.role != "patient" else "patient_portal_profile",
+        "data_provenance": provenance,
+        "provenance_verified": provenance == PROVENANCE_INVESTIGATOR_VERIFIED,
         "verified_identity": current_user.id,
-        "role": current_user.role
+        "role": current_user.role,
     }

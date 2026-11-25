@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import type { FC } from 'react';
 import type { ClinicalProtocol } from '../types/protocol';
 import type { ProtocolAmendmentProposal } from '../types/amendment';
+import { apiUrl, extractApiErrorMessage, getStoredAuthToken, parseJsonSafe } from '../lib/api';
 import {
   X,
   Sparkles,
@@ -28,6 +29,7 @@ interface AIOptimizerModalProps {
   protocol: ClinicalProtocol;
   onApplyAmendment: (amendmentId: string) => Promise<void>;
   appliedAmendmentIds: string[];
+  onUnauthorized?: () => void;
 }
 
 export const AIOptimizerModal: FC<AIOptimizerModalProps> = ({
@@ -35,11 +37,13 @@ export const AIOptimizerModal: FC<AIOptimizerModalProps> = ({
   onClose,
   protocol,
   onApplyAmendment,
-  appliedAmendmentIds
+  appliedAmendmentIds,
+  onUnauthorized,
 }) => {
   const [proposals, setProposals] = useState<ProtocolAmendmentProposal[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
+  const [applyError, setApplyError] = useState<string | null>(null);
   const [selectedCategory, setSelectedCategory] = useState<string>('ALL');
   const [expandedDetails, setExpandedDetails] = useState<Record<string, boolean>>({
     'AMD-01': true,
@@ -49,44 +53,52 @@ export const AIOptimizerModal: FC<AIOptimizerModalProps> = ({
   const [applyingAll, setApplyingAll] = useState<boolean>(false);
   const [showFormalNoticeModal, setShowFormalNoticeModal] = useState<boolean>(false);
 
-  // Fetch proposals from API
+  // Fetch proposals from API with proper AbortController cancellation
   useEffect(() => {
     if (!isOpen) return;
 
+    const controller = new AbortController();
     let isMounted = true;
     async function fetchProposals() {
       try {
         setLoading(true);
         setError(null);
+        setApplyError(null);
         const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-        try {
-          const stored = localStorage.getItem('protocolshield_user');
-          if (stored) {
-            const token = JSON.parse(stored)?.token;
-            if (token) headers['Authorization'] = `Bearer ${token}`;
-          }
-        } catch {}
+        const token = getStoredAuthToken();
+        if (token) headers['Authorization'] = `Bearer ${token}`;
 
-        const res = await fetch('/api/v1/optimizer/propose-amendments', {
+        const res = await fetch(apiUrl('/api/v1/optimizer/propose-amendments'), {
           method: 'POST',
           headers,
-          body: JSON.stringify(protocol)
+          body: JSON.stringify(protocol),
+          signal: controller.signal,
         });
 
-        if (!res.ok) {
-          throw new Error(`Failed to generate amendment proposals: ${res.statusText}`);
+        if (res.status === 401) {
+          onUnauthorized?.();
+          throw new Error('Your session has expired. Please sign in again.');
         }
 
-        const data: ProtocolAmendmentProposal[] = await res.json();
-        if (isMounted) {
-          setProposals(data);
+        const data = await parseJsonSafe(res);
+        if (!res.ok) {
+          throw new Error(extractApiErrorMessage(data, `Failed to generate amendment proposals (HTTP ${res.status}).`));
         }
-      } catch (err: any) {
+
+        if (!Array.isArray(data)) {
+          throw new Error('Received an unexpected amendment proposal response format.');
+        }
+
         if (isMounted) {
-          setError(err.message || 'Unable to connect to AI Protocol Optimizer service.');
+          setProposals(data as ProtocolAmendmentProposal[]);
+        }
+      } catch (err: unknown) {
+        if (err instanceof Error && err.name === 'AbortError') return;
+        if (isMounted) {
+          setError(err instanceof Error ? err.message : 'Unable to connect to AI Protocol Optimizer service.');
         }
       } finally {
-        if (isMounted) {
+        if (isMounted && !controller.signal.aborted) {
           setLoading(false);
         }
       }
@@ -95,8 +107,9 @@ export const AIOptimizerModal: FC<AIOptimizerModalProps> = ({
     fetchProposals();
     return () => {
       isMounted = false;
+      controller.abort();
     };
-  }, [isOpen, protocol]);
+  }, [isOpen, protocol, onUnauthorized]);
 
   if (!isOpen) return null;
 
@@ -118,8 +131,11 @@ export const AIOptimizerModal: FC<AIOptimizerModalProps> = ({
 
   const handleApplySingle = async (id: string) => {
     setApplyingId(id);
+    setApplyError(null);
     try {
       await onApplyAmendment(id);
+    } catch (err: unknown) {
+      setApplyError(err instanceof Error ? err.message : `Failed to apply amendment ${id}.`);
     } finally {
       setApplyingId(null);
     }
@@ -127,12 +143,15 @@ export const AIOptimizerModal: FC<AIOptimizerModalProps> = ({
 
   const handleApplyAll = async () => {
     setApplyingAll(true);
+    setApplyError(null);
     try {
       for (const p of proposals) {
         if (!appliedAmendmentIds.includes(p.amendment_id)) {
           await onApplyAmendment(p.amendment_id);
         }
       }
+    } catch (err: unknown) {
+      setApplyError(err instanceof Error ? err.message : 'Failed to apply recommended amendments.');
     } finally {
       setApplyingAll(false);
     }
@@ -274,9 +293,14 @@ export const AIOptimizerModal: FC<AIOptimizerModalProps> = ({
 
             <button
               onClick={handleApplyAll}
-              disabled={applyingAll || proposals.every((p) => appliedAmendmentIds.includes(p.amendment_id))}
-              className={`text-xs font-semibold px-4 py-1.5 rounded-full transition-all flex items-center space-x-1.5 shadow-sm ${
+              disabled={
+                loading ||
+                proposals.length === 0 ||
+                applyingAll ||
                 proposals.every((p) => appliedAmendmentIds.includes(p.amendment_id))
+              }
+              className={`text-xs font-semibold px-4 py-1.5 rounded-full transition-all flex items-center space-x-1.5 shadow-sm disabled:opacity-60 ${
+                proposals.length > 0 && proposals.every((p) => appliedAmendmentIds.includes(p.amendment_id))
                   ? 'bg-sage-100 text-sage-800 border border-sage-300 cursor-default'
                   : 'bg-charcoal-900 hover:bg-charcoal-800 text-white'
               }`}
@@ -286,7 +310,7 @@ export const AIOptimizerModal: FC<AIOptimizerModalProps> = ({
                   <Loader2 className="h-3.5 w-3.5 animate-spin text-terracotta-300" />
                   <span>Applying Batch...</span>
                 </>
-              ) : proposals.every((p) => appliedAmendmentIds.includes(p.amendment_id)) ? (
+              ) : proposals.length > 0 && proposals.every((p) => appliedAmendmentIds.includes(p.amendment_id)) ? (
                 <>
                   <CheckCircle2 className="h-3.5 w-3.5 text-sage-600" />
                   <span>All Amendments Applied</span>
@@ -303,6 +327,18 @@ export const AIOptimizerModal: FC<AIOptimizerModalProps> = ({
 
         {/* ── Proposals Body Scroll Area ─────────────────────────────── */}
         <div className="flex-1 overflow-y-auto p-5 sm:p-6 space-y-5 bg-linen-50">
+          {applyError && (
+            <div className="p-3.5 bg-rose-50 border border-rose-200 rounded-2xl flex items-center justify-between text-xs text-rose-800">
+              <span>{applyError}</span>
+              <button
+                type="button"
+                onClick={() => setApplyError(null)}
+                className="text-rose-600 hover:text-rose-900 font-semibold ml-3 cursor-pointer"
+              >
+                Dismiss
+              </button>
+            </div>
+          )}
           
           {loading ? (
             <div className="py-16 text-center space-y-3">
@@ -575,7 +611,7 @@ export const AIOptimizerModal: FC<AIOptimizerModalProps> = ({
               <div className="p-3 bg-linen-100 rounded-xl border border-linen-300 font-mono text-[11px] space-y-1">
                 <div><strong>Protocol ID:</strong> {protocol.protocol_id}</div>
                 <div><strong>Indication:</strong> {protocol.indication}</div>
-                <div><strong>Sponsor:</strong> Novartis Oncology Global Development</div>
+                <div><strong>Sponsor / Protocol Reference:</strong> {protocol.source_filename || protocol.protocol_id}</div>
                 <div><strong>Regulatory Standard:</strong> FDA 21 CFR § 312.30 / FDORA Section 3601</div>
               </div>
 

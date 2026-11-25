@@ -62,8 +62,10 @@ denovate/
 # Run automated tests
 pytest backend/tests
 
-# Start FastAPI development server
-uvicorn backend.app.main:app --reload --port 8000
+# Start FastAPI development server (recommended from repository root)
+python run_backend.py
+# Or explicitly with uvicorn:
+uvicorn app.main:app --app-dir backend --reload --port 8000 --workers 1
 ```
 API Documentation will be accessible at: `http://localhost:8000/docs`
 
@@ -134,12 +136,19 @@ cp .env.example .env
 | Variable | Default | Purpose |
 |---|---|---|
 | `ENVIRONMENT` | `development` | Runtime environment (`development` or `production`) |
-| `JWT_SECRET_KEY` | *(dev default)* | Cryptographic signing secret for JWT tokens |
+| `DB_PATH` | `backend/data/protocolshield_cohort.duckdb` | DuckDB file path (requires single worker `--workers 1`) |
+| `JWT_SECRET_KEY` | *(dev default)* | Cryptographic signing secret for JWT tokens (min 32 high-entropy chars in prod) |
 | `JWT_ALGORITHM` | `HS256` | JWT signing algorithm |
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | `60` | JWT access token lifetime |
-| `FRONTEND_URL` | `http://localhost:5173` | Allowed CORS origin for the Vite frontend |
-| `BACKEND_CORS_ORIGINS` | `["http://localhost:5173", ...]` | Allowed CORS origins list |
+| `FRONTEND_URL` | `http://localhost:5173` | Allowed CORS origin & password-reset link base URL |
+| `BACKEND_CORS_ORIGINS` | `["http://localhost:5173", ...]` | Allowed CORS origins list (wildcard `*` rejected in prod) |
+| `TRUSTED_PROXIES` | `127.0.0.1,::1` | Trusted proxy IPs for `X-Forwarded-For` (`*` rejected in prod) |
+| `ENABLE_DEMO_SEEDING` | `true` (dev) / `false` (prod) | Gate demo user/audit seeding (must be `false` in prod) |
+| `EXPOSE_DEV_RESET_TOKEN` | `true` (dev) / `false` (prod) | Never expose reset tokens in API responses in prod |
 | `GOOGLE_CLIENT_ID` | *(optional)* | Google OAuth 2.0 Web Client ID |
 | `GOOGLE_CLIENT_SECRET` | *(optional)* | Google OAuth 2.0 Client Secret |
-| `EMAIL_PROVIDER` | *(optional)* | Production email provider for password resets |
+| `EMAIL_PROVIDER` | *(optional in dev)* | Email provider (`resend`, `sendgrid`, `mailgun`, `smtp`) for password resets |
+| `EMAIL_API_KEY` | *(provider key)* | API key for `resend`/`sendgrid`/`mailgun` |
+| `EMAIL_FROM` | `noreply@protocolshield.org` | Sender address for transactional password-reset emails |
+| `VITE_API_BASE_URL` | *(empty / Vite proxy)* | Frontend build env var for deployed backend origin |
 

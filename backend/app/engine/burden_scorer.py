@@ -2,6 +2,7 @@
 ProtocolShield Patient Burden & Protocol Friction Scoring Engine
 Calibrated using Tufts CSDD complexity metrics and clinical trial literature.
 """
+import re
 from app.models.burden import (
     ProtocolVisit,
     AssessmentProcedure,
@@ -143,14 +144,15 @@ class BurdenScoringEngine:
             v_weight = v.total_procedure_weight
             v_time_hrs = (v.total_clinic_minutes + estimated_round_trip_minutes) / 60.0
             
-            # Identify specific heavy procedure counts
+            # Identify specific heavy procedure counts using word-boundary patterns
+            # so words like "electrocardiogram" or "product" do not falsely count as CT scans
             for p in v.procedures:
                 p_lower = p.name.lower()
-                if "blood" in p_lower or "pk" in p_lower:
+                if re.search(r"\bblood\b|\bpk\b|phlebotomy|pharmacokinetic", p_lower):
                     blood_draws += 1
-                if "ct" in p_lower or "mri" in p_lower or "scan" in p_lower:
+                if re.search(r"\bct\b|\bmri\b|\bscan\b|computed tomography|magnetic resonance", p_lower):
                     scans += 1
-                if "biopsy" in p_lower or "aspirate" in p_lower:
+                if re.search(r"\bbiopsy\b|\baspirate\b", p_lower):
                     biopsies += 1
             
             if any(p.fasting_required for p in v.procedures):
@@ -160,10 +162,10 @@ class BurdenScoringEngine:
             combined_visit_friction = v_weight + (v_time_hrs * 1.5)
             visit_burdens.append((v.week_number, combined_visit_friction))
 
-        # Peak burden weeks: Top 20% most demanding study weeks
+        # Peak burden weeks: Top 25% most demanding study weeks (deduplicated)
         visit_burdens.sort(key=lambda x: x[1], reverse=True)
         peak_cutoff = max(1, int(len(visit_burdens) * 0.25))
-        peak_weeks = sorted([w for w, _ in visit_burdens[:peak_cutoff]])
+        peak_weeks = sorted({w for w, _ in visit_burdens[:peak_cutoff]})
 
         # Normalized Subscores (0 - 100 benchmarked against Phase III oncology trials)
         # Phase III Oncology Benchmark: 25 visits, 80 total hours, 350 raw invasive points

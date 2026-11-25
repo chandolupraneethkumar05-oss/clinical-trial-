@@ -9,7 +9,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Optional
 from fastapi import APIRouter, HTTPException, Depends
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.core.config import settings
 from app.core.security import require_role, AuthenticatedUser
@@ -32,10 +32,18 @@ class AuditEventModel(BaseModel):
 
 
 class CreateAuditEventRequest(BaseModel):
-    event_type: str = Field(..., description="Machine-readable event category")
-    details: str = Field(..., description="Contextual event payload description")
-    resource_type: Optional[str] = Field("PROTOCOL", description="Target resource type")
-    resource_id: Optional[str] = Field(None, description="Identifier of the modified entity")
+    event_type: str = Field(..., min_length=1, max_length=120, description="Machine-readable event category")
+    details: str = Field(..., min_length=1, max_length=2000, description="Contextual event payload description")
+    resource_type: Optional[str] = Field("PROTOCOL", max_length=120, description="Target resource type")
+    resource_id: Optional[str] = Field(None, max_length=120, description="Identifier of the modified entity")
+
+    @field_validator("event_type", "details")
+    @classmethod
+    def check_non_blank(cls, v: str) -> str:
+        cleaned = v.strip()
+        if not cleaned:
+            raise ValueError("Field must not be blank.")
+        return cleaned
 
 
 class AuditVerificationResult(BaseModel):
@@ -110,13 +118,12 @@ DEFAULT_CANONICAL_AUDIT_LOGS = [
 def _seed_audit_logs_if_empty(conn):
     """
     Populates audit table with initial baseline logs if empty and demo seeding is enabled.
-    Disabled in production to prevent inserting artificial compliance records.
-    Upgrades any legacy unchained mock hashes to valid cryptographic genesis chain.
+    Disabled in production/staging to prevent inserting artificial compliance records.
     """
-    if settings.ENVIRONMENT == "production" or not settings.ENABLE_DEMO_SEEDING:
+    env = settings.ENVIRONMENT.lower().strip()
+    if env not in {"development", "test"} or not settings.ENABLE_DEMO_SEEDING:
         return
 
-    # Check if audit table is empty or contains legacy unchained mock hashes
     try:
         expected_aud_001 = f"SHA256: {compute_audit_hash('aud-001', DEFAULT_CANONICAL_AUDIT_LOGS[0]['timestamp'], 'system-seed', 'system', DEFAULT_CANONICAL_AUDIT_LOGS[0]['event_type'], 'PROTOCOL', None, DEFAULT_CANONICAL_AUDIT_LOGS[0]['details'], GENESIS_HASH)}"
         legacy_count = conn.execute(
@@ -126,18 +133,12 @@ def _seed_audit_logs_if_empty(conn):
     except Exception:
         legacy_count = 0
 
-    try:
-        # Purge stale pre-chaining test records from previous dev sessions
-        conn.execute("DELETE FROM audit_logs WHERE previous_hash = ? AND id != 'aud-001'", (GENESIS_HASH,))
-    except Exception:
-        pass
-
     row = conn.execute("SELECT count(*) FROM audit_logs").fetchone()
     if (row and row[0] == 0) or legacy_count > 0:
         if legacy_count > 0:
             conn.execute("DELETE FROM audit_logs WHERE id LIKE 'aud-%'")
         prev_hash = GENESIS_HASH
-        for entry in DEFAULT_CANONICAL_AUDIT_LOGS:
+        for seq_idx, entry in enumerate(DEFAULT_CANONICAL_AUDIT_LOGS, start=1):
             calc_hash = compute_audit_hash(
                 event_id=entry["id"],
                 timestamp=entry["timestamp"],
@@ -154,9 +155,9 @@ def _seed_audit_logs_if_empty(conn):
                 """
                 INSERT INTO audit_logs (
                     id, timestamp, user_id, user_name, user_role,
-                    action, resource_type, details, previous_hash, verification_hash
+                    action, resource_type, details, previous_hash, verification_hash, chain_seq
                 )
-                VALUES (?, ?, 'system-seed', ?, 'system', ?, 'PROTOCOL', ?, ?, ?)
+                VALUES (?, ?, 'system-seed', ?, 'system', ?, 'PROTOCOL', ?, ?, ?, ?)
                 """,
                 (
                     entry["id"],
@@ -165,10 +166,26 @@ def _seed_audit_logs_if_empty(conn):
                     entry["event_type"],
                     entry["details"],
                     prev_hash,
-                    v_hash
+                    v_hash,
+                    seq_idx
                 )
             )
             prev_hash = v_hash
+    else:
+        # Ensure canonical seed rows have chain_seq assigned if upgraded from an older schema
+        conn.execute(
+            """
+            UPDATE audit_logs SET chain_seq = CASE id
+                WHEN 'aud-001' THEN 1
+                WHEN 'aud-002' THEN 2
+                WHEN 'aud-003' THEN 3
+                WHEN 'aud-004' THEN 4
+                WHEN 'aud-005' THEN 5
+                ELSE chain_seq
+            END
+            WHERE chain_seq IS NULL AND id IN ('aud-001', 'aud-002', 'aud-003', 'aud-004', 'aud-005')
+            """
+        )
 
 
 def record_audit_event(
@@ -182,7 +199,7 @@ def record_audit_event(
 ) -> AuditEventModel:
     """
     Server-side helper for business actions to append an immutable, cryptographically chained audit event.
-    Executes atomically in a DuckDB transaction to ensure sequential chain consistency.
+    Executes atomically in a DuckDB transaction with monotonic chain_seq to ensure sequential chain consistency.
     """
     event_id = f"aud-{uuid.uuid4().hex[:8]}"
     now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
@@ -191,10 +208,19 @@ def record_audit_event(
     with db_client.transaction() as conn:
         _seed_audit_logs_if_empty(conn)
         last_row = conn.execute(
-            "SELECT verification_hash FROM audit_logs ORDER BY timestamp DESC, id DESC LIMIT 1"
+            """
+            SELECT verification_hash, COALESCE(chain_seq, 0)
+            FROM audit_logs
+            ORDER BY COALESCE(chain_seq, 0) DESC, timestamp DESC, id DESC
+            LIMIT 1
+            """
         ).fetchone()
+        max_seq_row = conn.execute("SELECT COALESCE(MAX(chain_seq), 0) FROM audit_logs").fetchone()
+        count_row = conn.execute("SELECT count(*) FROM audit_logs").fetchone()
 
         previous_hash = last_row[0] if last_row and last_row[0] else GENESIS_HASH
+        next_seq = max(int(max_seq_row[0] or 0), int(count_row[0] or 0)) + 1
+
         raw_hash = compute_audit_hash(
             event_id=event_id,
             timestamp=now_str,
@@ -213,9 +239,9 @@ def record_audit_event(
             INSERT INTO audit_logs (
                 id, timestamp, user_id, user_name, user_role,
                 action, resource_type, resource_id, details,
-                previous_hash, verification_hash
+                previous_hash, verification_hash, chain_seq
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 event_id,
@@ -228,7 +254,8 @@ def record_audit_event(
                 resource_id,
                 details,
                 previous_hash,
-                verification_hash
+                verification_hash,
+                next_seq
             )
         )
 
@@ -258,7 +285,7 @@ async def get_audit_logs(
             """
             SELECT id, CAST(timestamp AS VARCHAR), action, user_name, details, previous_hash, verification_hash
             FROM audit_logs
-            ORDER BY timestamp ASC, id ASC
+            ORDER BY COALESCE(chain_seq, 0) ASC, timestamp ASC, id ASC
             """
         ).fetchall()
 
@@ -295,7 +322,7 @@ async def verify_audit_trail_integrity(
             SELECT id, CAST(timestamp AS VARCHAR), user_id, user_role, action,
                    resource_type, resource_id, details, previous_hash, verification_hash
             FROM audit_logs
-            ORDER BY timestamp ASC, id ASC
+            ORDER BY COALESCE(chain_seq, 0) ASC, timestamp ASC, id ASC
             """
         ).fetchall()
 

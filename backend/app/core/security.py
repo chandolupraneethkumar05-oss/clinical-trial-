@@ -4,13 +4,13 @@ Implements Bcrypt adaptive password hashing, JWT bearer token signing,
 session lifecycle verification, and role-based access control (RBAC).
 """
 import os
+import ipaddress
 import secrets
 import hashlib
 import time
 import threading
 import uuid
 import logging
-from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Any
 import bcrypt
@@ -35,38 +35,123 @@ MAX_PASSWORD_BYTES = 72  # Bcrypt algorithmic limit
 
 class SlidingWindowRateLimiter:
     """
-    Thread-safe in-memory sliding window rate limiter.
-    Provides strict brute-force and DDoS mitigation without external dependencies.
+    Thread-safe in-memory sliding window rate limiter with automatic memory cleanup.
+    Prunes expired timestamps, removes inactive keys, and caps maximum tracked entries.
     Documented constraint: Designed for single-process deployments (1 worker).
     """
-    def __init__(self):
+    def __init__(self, max_entries: int = 10000, cleanup_interval_seconds: float = 60.0):
         self._lock = threading.Lock()
-        self._history: dict[str, list[float]] = defaultdict(list)
+        # key -> (list of request timestamps, window_seconds)
+        self._history: dict[str, tuple[list[float], float]] = {}
+        self._max_entries = max(1, max_entries)
+        self._cleanup_interval_seconds = max(0.0, cleanup_interval_seconds)
+        self._last_cleanup = time.time()
+
+    def _prune_unlocked(self, now: float) -> int:
+        removed = 0
+        stale_keys = []
+        for k, (times, win) in self._history.items():
+            cutoff = now - win
+            valid = [t for t in times if t > cutoff]
+            if not valid:
+                stale_keys.append(k)
+            elif len(valid) != len(times):
+                self._history[k] = (valid, win)
+        for k in stale_keys:
+            del self._history[k]
+            removed += 1
+        self._last_cleanup = now
+        return removed
+
+    def prune_expired(self, now: Optional[float] = None) -> int:
+        """Explicitly removes expired timestamps and inactive client entries."""
+        ts = now if now is not None else time.time()
+        with self._lock:
+            return self._prune_unlocked(ts)
 
     def check(self, key: str, max_requests: int, window_seconds: int) -> tuple[bool, int]:
         """
         Evaluates whether key is within rate limits.
         Returns: (is_allowed, retry_after_seconds)
         """
+        if max_requests <= 0:
+            return False, max(1, int(window_seconds))
+
         now = time.time()
-        cutoff = now - window_seconds
+        win = float(max(1, window_seconds))
+        cutoff = now - win
         with self._lock:
-            valid_times = [t for t in self._history[key] if t > cutoff]
+            if (
+                (now - self._last_cleanup) >= self._cleanup_interval_seconds
+                or len(self._history) >= self._max_entries
+            ):
+                self._prune_unlocked(now)
+
+            existing = self._history.get(key)
+            if existing is not None:
+                valid_times = [t for t in existing[0] if t > cutoff]
+            else:
+                valid_times = []
+
             if len(valid_times) >= max_requests:
                 earliest = valid_times[0]
-                retry_after = max(1, int(earliest + window_seconds - now))
-                self._history[key] = valid_times
+                retry_after = max(1, int(earliest + win - now))
+                self._history[key] = (valid_times, win)
                 return False, retry_after
+
+            if key not in self._history and len(self._history) >= self._max_entries:
+                # Evict oldest-activity entry to keep memory strictly bounded
+                oldest_key = min(
+                    self._history.keys(),
+                    key=lambda k: self._history[k][0][-1] if self._history[k][0] else 0.0,
+                )
+                del self._history[oldest_key]
+
             valid_times.append(now)
-            self._history[key] = valid_times
+            self._history[key] = (valid_times, win)
             return True, 0
+
+    def active_key_count(self) -> int:
+        with self._lock:
+            return len(self._history)
 
     def clear(self):
         with self._lock:
             self._history.clear()
+            self._last_cleanup = time.time()
 
 
 rate_limiter = SlidingWindowRateLimiter()
+
+
+def resolve_client_ip(request: Request) -> str:
+    """
+    Resolves client IP safely without trusting spoofable headers from untrusted clients.
+    Only inspects X-Forwarded-For when the direct socket peer is in settings.TRUSTED_PROXIES,
+    walking right-to-left past trusted proxies and validating IP syntax.
+    """
+    if not request.client or not request.client.host:
+        return "unknown"
+
+    direct_ip = request.client.host.strip()
+    trusted = {p.strip() for p in settings.TRUSTED_PROXIES if p and p.strip()}
+    if direct_ip not in trusted:
+        return direct_ip
+
+    forwarded = request.headers.get("x-forwarded-for")
+    if not forwarded:
+        return direct_ip
+
+    hops = [h.strip() for h in forwarded.split(",") if h.strip()]
+    for hop in reversed(hops):
+        try:
+            normalized = str(ipaddress.ip_address(hop))
+        except ValueError:
+            # Malformed hop cannot be trusted; fall back safely
+            return direct_ip
+        if normalized not in trusted:
+            return normalized
+    return direct_ip
 
 
 def enforce_rate_limit(max_requests: int, window_seconds: int, prefix: str = "general"):
@@ -74,19 +159,13 @@ def enforce_rate_limit(max_requests: int, window_seconds: int, prefix: str = "ge
     FastAPI dependency factory enforcing sliding-window rate limiting per client IP.
     Anti-Spoofing: Only trusts X-Forwarded-For if immediate client IP is in settings.TRUSTED_PROXIES.
     Returns HTTP 429 Too Many Requests with Retry-After header.
-    Automatically bypassed in pytest test runners via PYTEST_CURRENT_TEST.
+    Automatically bypassed in pytest test runners via PYTEST_CURRENT_TEST unless RATE_LIMIT_IN_TESTS=1.
     """
     async def limiter_dependency(request: Request):
-        if os.environ.get("PYTEST_CURRENT_TEST") or os.environ.get("TESTING") == "1":
+        if (os.environ.get("PYTEST_CURRENT_TEST") or os.environ.get("TESTING") == "1") and os.environ.get("RATE_LIMIT_IN_TESTS") != "1":
             return
 
-        client_ip = request.client.host if request.client else "127.0.0.1"
-        # Anti-Spoofing: Never blindly trust X-Forwarded-For headers
-        if client_ip in settings.TRUSTED_PROXIES:
-            forwarded = request.headers.get("x-forwarded-for")
-            if forwarded:
-                client_ip = forwarded.split(",")[0].strip()
-
+        client_ip = resolve_client_ip(request)
         key = f"{prefix}:{client_ip}"
         allowed, retry_after = rate_limiter.check(key, max_requests, window_seconds)
         if not allowed:
@@ -333,7 +412,7 @@ async def get_current_user_optional(
 
             user_token_version = row[6] if len(row) > 6 and row[6] is not None else 1
             jwt_token_version = payload.get("token_version", 1)
-            if jwt_token_version < user_token_version:
+            if not isinstance(jwt_token_version, int) or jwt_token_version != user_token_version:
                 return None
 
             return AuthenticatedUser(
@@ -395,7 +474,7 @@ async def get_current_user(
 
         user_token_version = row[6] if len(row) > 6 and row[6] is not None else 1
         jwt_token_version = payload.get("token_version", 1)
-        if jwt_token_version < user_token_version:
+        if not isinstance(jwt_token_version, int) or jwt_token_version != user_token_version:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Session has been revoked due to recent security credentials change. Please log in again.",

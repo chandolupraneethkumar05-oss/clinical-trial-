@@ -16,8 +16,12 @@
 - **Async Concurrency:** FastAPI handles concurrent asynchronous I/O and HTTP requests concurrently within that single event loop process.
 - **Render / Container Command:**
   ```bash
-  uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 1
+  uvicorn app.main:app --app-dir backend --host 0.0.0.0 --port $PORT --workers 1
   ```
+  *(Or set Render **Root Directory** to `backend` and run `uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 1`.)*
+- **Health & Readiness Probes:**
+  - Liveness probe: `GET /health`
+  - Readiness probe: `GET /ready` *(verifies DuckDB connectivity & cohort/schema tables, returns `503` if degraded)*
 
 ---
 
@@ -30,8 +34,9 @@ When `ENVIRONMENT` is set to `production`, `app.core.config.validate_production_
 | `DEBUG` | `False` | `DEBUG=True` in production |
 | `ENABLE_DEMO_SEEDING` | `False` | `ENABLE_DEMO_SEEDING=True` in production |
 | `EXPOSE_DEV_RESET_TOKEN` | `False` | `EXPOSE_DEV_RESET_TOKEN=True` in production |
-| `JWT_SECRET_KEY` | $\ge 32$ random bytes | Missing, $< 32$ chars, or equals dev default |
-| `TRUSTED_PROXIES` | Explicit upstream proxy IP | `["*"]` or invalid wildcard |
+| `JWT_SECRET_KEY` | $\ge 32$ high-entropy chars | Missing, $< 32$ chars, low entropy, or equals dev default |
+| `TRUSTED_PROXIES` | Explicit upstream proxy IP(s) | Empty / invalid or contains `*` |
+| `BACKEND_CORS_ORIGINS` | Explicit HTTPS origin(s) | Contains wildcard `*` in production |
 
 ---
 
@@ -46,23 +51,46 @@ DEBUG=False
 DB_PATH=/var/data/protocolshield_cohort.duckdb
 
 # Security & Cryptography
-# Generate with: openssl rand -hex 32
-JWT_SECRET_KEY=9a4f2c8d1e3b5a7f9e1c3b5a7d9f2e4b6c8a0d2e4f6a8b0c2d4e6f8a0b2c4d6e
+# Generate with: python -c "import secrets; print(secrets.token_urlsafe(48))"
+JWT_SECRET_KEY=<REPLACE_WITH_HIGH_ENTROPY_SECRET>
 JWT_ALGORITHM=HS256
-JWT_EXPIRATION_MINUTES=480
+ACCESS_TOKEN_EXPIRE_MINUTES=60
 JWT_ISSUER=protocolshield-api
 JWT_AUDIENCE=protocolshield-client
 
-# Anti-Spoofing & Trusted Proxies (IPs of Nginx/Cloudflare/Caddy upstream)
-TRUSTED_PROXIES=127.0.0.1,::1,10.0.0.1
+# CORS & Password Reset Deep-Link Origin
+FRONTEND_URL=https://your-frontend.onrender.com
+BACKEND_CORS_ORIGINS=["https://your-frontend.onrender.com"]
+
+# Anti-Spoofing & Trusted Proxies (Reverse Proxy IPs allowed for X-Forwarded-For)
+TRUSTED_PROXIES=127.0.0.1,::1
 
 # Gated Seeding & Reset Settings (Strictly False in Prod)
 ENABLE_DEMO_SEEDING=False
 EXPOSE_DEV_RESET_TOKEN=False
 
+# Transactional Email Delivery (REQUIRED for Forgot-Password in Production)
+# Supported EMAIL_PROVIDER values: resend | sendgrid | mailgun | smtp
+# If left unset in production, /api/v1/auth/forgot-password-request fails closed with HTTP 503.
+EMAIL_PROVIDER=resend
+EMAIL_API_KEY=<REPLACE_WITH_EMAIL_API_KEY>
+EMAIL_FROM=noreply@yourdomain.com
+# EMAIL_MAILGUN_DOMAIN=mg.yourdomain.com
+# SMTP_HOST=smtp.example.com
+# SMTP_PORT=587
+# SMTP_USERNAME=
+# SMTP_PASSWORD=
+# SMTP_USE_TLS=true
+
 # Google OAuth (Optional - Leave blank to disable Google Sign-In)
 GOOGLE_CLIENT_ID=
 GOOGLE_CLIENT_SECRET=
+```
+
+### Frontend Static Site Environment Variable (Render / Vite)
+If the Vite static frontend is hosted on a different origin than the FastAPI backend, set during frontend build:
+```dotenv
+VITE_API_BASE_URL=https://your-backend-service.onrender.com
 ```
 
 ---

@@ -3,6 +3,8 @@ ProtocolShield Enterprise Authentication & Identity API Routes
 Implements Bcrypt adaptive password hashing, JWT Bearer tokens,
 role-based access control (RBAC), and 2-step single-use password resets.
 """
+import re
+import threading
 import uuid
 import secrets
 import hashlib
@@ -10,14 +12,16 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 from fastapi import APIRouter, HTTPException, Depends, status, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.security import HTTPAuthorizationCredentials
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from google.oauth2 import id_token as google_id_token
 from google.auth.transport import requests as google_requests
 
 logger = logging.getLogger(__name__)
 
 from app.core.config import settings
+from app.core.email_service import EmailDeliveryError, is_email_configured, send_password_reset_email
 from app.db.duckdb_client import db_client
 from app.core.security import (
     hash_password,
@@ -42,6 +46,15 @@ VALID_ROLES = {ROLE_PATIENT, ROLE_DOCTOR, ROLE_ADMIN}
 
 
 _demo_seeded = False
+_demo_seed_lock = threading.Lock()
+_EMAIL_REGEX = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+def _validate_email_value(value: str) -> str:
+    cleaned = value.strip().lower()
+    if not _EMAIL_REGEX.match(cleaned):
+        raise ValueError("Please provide a valid email address.")
+    return cleaned
 
 
 def seed_default_users_if_empty():
@@ -52,75 +65,77 @@ def seed_default_users_if_empty():
       2. Requires settings.ENABLE_DEMO_SEEDING to be True.
       3. INSERT-ONLY: never overwrites existing user passwords, roles, or attributes.
       4. Never restores deleted accounts in production.
+      5. Thread-safe against concurrent startup/request initialization.
     """
     global _demo_seeded
-    if _demo_seeded:
-        return
+    with _demo_seed_lock:
+        if _demo_seeded:
+            return
 
-    env = settings.ENVIRONMENT.lower()
-    if env not in {"development", "test"} or not settings.ENABLE_DEMO_SEEDING:
-        # Fails closed in production or when demo seeding is disabled
-        _demo_seeded = True
-        return
-
-    conn = db_client.get_connection()
-    try:
-        existing_count = conn.execute(
-            "SELECT count(*) FROM users WHERE lower(email) IN ('elena.vance@novartis.com', 'marcus.chen@mskcc.org', 'sarah.jenkins@iqvia.com', 'john.miller@patient.org')"
-        ).fetchone()[0]
-        if existing_count == 4:
+        env = settings.ENVIRONMENT.lower().strip()
+        if env not in {"development", "test"} or not settings.ENABLE_DEMO_SEEDING:
+            # Fails closed in production or when demo seeding is disabled
             _demo_seeded = True
             return
 
-        demo_users = [
-            (
-                "usr-demo-001",
-                "Dr. Elena Vance",
-                "elena.vance@novartis.com",
-                hash_password("Novartis2026!"),
-                ROLE_DOCTOR,
-                "Novartis Oncology",
-                "email"
-            ),
-            (
-                "usr-demo-002",
-                "Dr. Marcus Chen",
-                "marcus.chen@mskcc.org",
-                hash_password("MSKCC2026!"),
-                ROLE_DOCTOR,
-                "Memorial Sloan Kettering",
-                "email"
-            ),
-            (
-                "usr-demo-003",
-                "Sarah Jenkins, RAC",
-                "sarah.jenkins@iqvia.com",
-                hash_password("IQVIA2026!"),
-                ROLE_ADMIN,
-                "IQVIA Biotech & Regulatory Governance",
-                "email"
-            ),
-            (
-                "usr-demo-004",
-                "John Miller",
-                "john.miller@patient.org",
-                hash_password("Patient2026!"),
-                ROLE_PATIENT,
-                "Clinical Trial Volunteer Cohort",
-                "email"
-            )
-        ]
-        # Strict INSERT-ONLY operation: do not overwrite existing credentials or roles
-        for user_id, name, email, pw_hash, role, org, provider in demo_users:
-            existing = conn.execute("SELECT id FROM users WHERE lower(email) = ?", [email.lower()]).fetchone()
-            if not existing:
-                conn.execute(
-                    "INSERT INTO users (id, name, email, password_hash, role, organization, provider) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    [user_id, name, email.lower(), pw_hash, role, org, provider]
+        conn = db_client.get_connection()
+        try:
+            existing_count = conn.execute(
+                "SELECT count(*) FROM users WHERE lower(email) IN ('elena.vance@novartis.com', 'marcus.chen@mskcc.org', 'sarah.jenkins@iqvia.com', 'john.miller@patient.org')"
+            ).fetchone()[0]
+            if existing_count == 4:
+                _demo_seeded = True
+                return
+
+            demo_users = [
+                (
+                    "usr-demo-001",
+                    "Dr. Elena Vance",
+                    "elena.vance@novartis.com",
+                    hash_password("Novartis2026!"),
+                    ROLE_DOCTOR,
+                    "Novartis Oncology",
+                    "email"
+                ),
+                (
+                    "usr-demo-002",
+                    "Dr. Marcus Chen",
+                    "marcus.chen@mskcc.org",
+                    hash_password("MSKCC2026!"),
+                    ROLE_DOCTOR,
+                    "Memorial Sloan Kettering",
+                    "email"
+                ),
+                (
+                    "usr-demo-003",
+                    "Sarah Jenkins, RAC",
+                    "sarah.jenkins@iqvia.com",
+                    hash_password("IQVIA2026!"),
+                    ROLE_ADMIN,
+                    "IQVIA Biotech & Regulatory Governance",
+                    "email"
+                ),
+                (
+                    "usr-demo-004",
+                    "John Miller",
+                    "john.miller@patient.org",
+                    hash_password("Patient2026!"),
+                    ROLE_PATIENT,
+                    "Clinical Trial Volunteer Cohort",
+                    "email"
                 )
-        _demo_seeded = True
-    finally:
-        conn.close()
+            ]
+            # Strict INSERT-ONLY operation: do not overwrite existing credentials or roles
+            for user_id, name, email, pw_hash, role, org, provider in demo_users:
+                existing = conn.execute("SELECT id FROM users WHERE lower(email) = ?", [email.lower()]).fetchone()
+                if not existing:
+                    conn.execute(
+                        "INSERT INTO users (id, name, email, password_hash, role, organization, provider) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        [user_id, name, email.lower(), pw_hash, role, org, provider]
+                    )
+            _demo_seeded = True
+        finally:
+            conn.close()
 
 
 # ── Request / Response Schemas ───────────────────────────────────────────────
@@ -139,26 +154,57 @@ class SignUpRequest(BaseModel):
     email: str = Field(..., min_length=5, max_length=150)
     password: str = Field(..., min_length=8, max_length=72, description="Bcrypt max password size 72 bytes")
     role: Optional[str] = Field(default=ROLE_PATIENT, description="Public signup always creates 'patient' accounts")
-    organization: Optional[str] = "Clinical Trial Volunteer Cohort"
+    organization: Optional[str] = Field(default="Clinical Trial Volunteer Cohort", max_length=150)
+
+    @field_validator("email")
+    @classmethod
+    def check_email(cls, v: str) -> str:
+        return _validate_email_value(v)
+
+    @field_validator("name")
+    @classmethod
+    def check_name(cls, v: str) -> str:
+        cleaned = v.strip()
+        if len(cleaned) < 2:
+            raise ValueError("Name must be at least 2 non-whitespace characters.")
+        return cleaned
 
 
 class PromoteUserRequest(BaseModel):
-    user_id: str = Field(..., min_length=3)
+    user_id: str = Field(..., min_length=3, max_length=120)
     target_role: str = Field(..., description="'doctor' | 'admin'")
 
 
 class SignInRequest(BaseModel):
-    email: str = Field(..., min_length=5)
-    password: str = Field(..., min_length=1)
+    email: str = Field(..., min_length=5, max_length=150)
+    password: str = Field(..., min_length=1, max_length=72)
+
+    @field_validator("email")
+    @classmethod
+    def check_email(cls, v: str) -> str:
+        return _validate_email_value(v)
 
 
 class ForgotPasswordInitRequest(BaseModel):
-    email: str = Field(..., min_length=5)
+    email: str = Field(..., min_length=5, max_length=150)
+
+    @field_validator("email")
+    @classmethod
+    def check_email(cls, v: str) -> str:
+        return _validate_email_value(v)
 
 
 class ForgotPasswordResetRequest(BaseModel):
-    token: str = Field(..., min_length=8)
-    new_password: str = Field(..., min_length=8)
+    token: str = Field(..., min_length=8, max_length=256)
+    new_password: str = Field(..., min_length=8, max_length=72)
+
+    @field_validator("token")
+    @classmethod
+    def check_token(cls, v: str) -> str:
+        cleaned = v.strip()
+        if len(cleaned) < 8:
+            raise ValueError("Reset token must be at least 8 characters.")
+        return cleaned
 
 
 class GoogleSignInRequest(BaseModel):
@@ -305,16 +351,30 @@ async def signin(payload: SignInRequest):
 async def forgot_password_request(payload: ForgotPasswordInitRequest):
     """
     Step 1: Secure password reset initiation.
-    Issues a time-limited (15m), single-use cryptographic token.
+    Issues a time-limited (15m), single-use cryptographic token and delivers it via configured email provider.
     Always returns a generic message to prevent email enumeration.
+    Never returns raw reset tokens in production.
     """
     seed_default_users_if_empty()
-    conn = db_client.get_connection()
-    try:
-        clean_email = payload.email.strip().lower()
-        user_row = conn.execute("SELECT id FROM users WHERE lower(email) = ?", (clean_email,)).fetchone()
+    env = settings.ENVIRONMENT.lower().strip()
+    is_prod = env in {"production", "prod", "staging"}
 
-        dev_token_display = None
+    if is_prod and not is_email_configured():
+        # Checked BEFORE user lookup to avoid revealing account existence
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "Password reset email delivery is not configured on this server. "
+                "Please configure EMAIL_PROVIDER, EMAIL_API_KEY, and EMAIL_FROM, or contact an administrator."
+            ),
+        )
+
+    clean_email = payload.email.strip().lower()
+    raw_token: Optional[str] = None
+    reset_id: Optional[str] = None
+
+    with db_client.transaction() as conn:
+        user_row = conn.execute("SELECT id FROM users WHERE lower(email) = ?", (clean_email,)).fetchone()
         if user_row:
             raw_token = secrets.token_urlsafe(32)
             token_hash = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
@@ -328,22 +388,32 @@ async def forgot_password_request(payload: ForgotPasswordInitRequest):
                 (reset_id, clean_email, token_hash, expires_at)
             )
 
-            # Security: Never return raw reset tokens in production responses.
-            # Only expose dev_reset_token if explicitly configured via EXPOSE_DEV_RESET_TOKEN in development/test.
-            if settings.ENVIRONMENT != "production" and settings.EXPOSE_DEV_RESET_TOKEN:
-                dev_token_display = raw_token
+    dev_token_display = None
+    if raw_token and reset_id:
+        if is_email_configured():
+            try:
+                await send_password_reset_email(clean_email, raw_token)
+            except EmailDeliveryError:
+                # Fail safely without leaking token, password, or account existence:
+                # invalidate the undelivered token and return the same generic response.
+                logger.warning("Password reset email delivery failed for reset_id=%s", reset_id)
+                try:
+                    with db_client.transaction() as conn:
+                        conn.execute("UPDATE password_resets SET used = TRUE WHERE id = ?", (reset_id,))
+                except Exception:
+                    logger.error("Failed to invalidate undelivered reset token reset_id=%s", reset_id)
+        elif not is_prod and env in {"development", "test"} and settings.EXPOSE_DEV_RESET_TOKEN:
+            dev_token_display = raw_token
 
-        resp = {
-            "success": True,
-            "message": "If an account with that email address is registered, instructions to reset your password have been issued."
-        }
-        if dev_token_display:
-            resp["dev_reset_token"] = dev_token_display
-            resp["dev_note"] = "Local Development Mode: Token displayed for testing self-service reset."
+    resp = {
+        "success": True,
+        "message": "If an account with that email address is registered, instructions to reset your password have been issued."
+    }
+    if dev_token_display and not is_prod:
+        resp["dev_reset_token"] = dev_token_display
+        resp["dev_note"] = "Local Development Mode: Token displayed for testing self-service reset."
 
-        return resp
-    finally:
-        conn.close()
+    return resp
 
 
 @router.post(
@@ -356,64 +426,53 @@ async def forgot_password_reset(payload: ForgotPasswordResetRequest):
     invalidates outstanding tokens, and revokes prior user sessions by incrementing token_version.
     """
     seed_default_users_if_empty()
-    conn = db_client.get_connection()
-    try:
-        token_hash = hashlib.sha256(payload.token.strip().encode("utf-8")).hexdigest()
-        now = datetime.now(timezone.utc)
+    token_hash = hashlib.sha256(payload.token.strip().encode("utf-8")).hexdigest()
+    now = datetime.now(timezone.utc)
 
-        conn.execute("BEGIN TRANSACTION")
-        try:
-            reset_row = conn.execute(
-                """
-                SELECT id, email, expires_at, used 
-                FROM password_resets 
-                WHERE token_hash = ? AND used = FALSE
-                """,
-                (token_hash,)
-            ).fetchone()
+    with db_client.transaction() as conn:
+        reset_row = conn.execute(
+            """
+            SELECT id, email, expires_at, used 
+            FROM password_resets 
+            WHERE token_hash = ? AND used = FALSE
+            """,
+            (token_hash,)
+        ).fetchone()
 
-            if not reset_row:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="The password reset token is invalid or has already been used."
-                )
-
-            reset_id, email, expires_at, used = reset_row
-
-            # Verify expiration
-            if isinstance(expires_at, str):
-                exp_dt = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
-            else:
-                exp_dt = expires_at.replace(tzinfo=timezone.utc) if expires_at.tzinfo is None else expires_at
-
-            if now > exp_dt:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="The password reset token has expired. Please request a new reset link."
-                )
-
-            # Update password hash with Bcrypt and increment token_version for instant session invalidation
-            new_pwd_hash = hash_password(payload.new_password)
-            conn.execute(
-                "UPDATE users SET password_hash = ?, token_version = COALESCE(token_version, 1) + 1 WHERE lower(email) = ?",
-                (new_pwd_hash, email.lower())
+        if not reset_row:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="The password reset token is invalid or has already been used."
             )
-            # Atomically mark this token and all outstanding reset tokens for this user as consumed
-            conn.execute("UPDATE password_resets SET used = TRUE WHERE lower(email) = ?", (email.lower(),))
-            conn.execute("COMMIT")
-        except Exception:
-            try:
-                conn.execute("ROLLBACK")
-            except Exception:
-                pass
-            raise
 
-        return {
-            "success": True,
-            "message": "Password successfully reset. You may now sign in with your new password."
-        }
-    finally:
-        conn.close()
+        reset_id, email, expires_at, _used = reset_row
+
+        # Verify expiration
+        if isinstance(expires_at, str):
+            exp_dt = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+        else:
+            exp_dt = expires_at.replace(tzinfo=timezone.utc) if expires_at.tzinfo is None else expires_at
+
+        if now > exp_dt:
+            conn.execute("UPDATE password_resets SET used = TRUE WHERE id = ?", (reset_id,))
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="The password reset token has expired. Please request a new reset link."
+            )
+
+        # Update password hash with Bcrypt and increment token_version for instant session invalidation
+        new_pwd_hash = hash_password(payload.new_password)
+        conn.execute(
+            "UPDATE users SET password_hash = ?, token_version = COALESCE(token_version, 1) + 1 WHERE lower(email) = ?",
+            (new_pwd_hash, email.lower())
+        )
+        # Atomically mark this token and all outstanding reset tokens for this user as consumed
+        conn.execute("UPDATE password_resets SET used = TRUE WHERE lower(email) = ?", (email.lower(),))
+
+    return {
+        "success": True,
+        "message": "Password successfully reset. You may now sign in with your new password."
+    }
 
 
 @router.post(
@@ -435,7 +494,8 @@ async def google_auth(payload: GoogleSignInRequest):
         )
 
     try:
-        id_info = google_id_token.verify_oauth2_token(
+        id_info = await run_in_threadpool(
+            google_id_token.verify_oauth2_token,
             payload.id_token,
             google_requests.Request(),
             settings.GOOGLE_CLIENT_ID
@@ -574,8 +634,7 @@ async def promote_user(
             detail=f"Invalid target role '{payload.target_role}'. Promotion target must be 'doctor' or 'admin'."
         )
 
-    conn = db_client.get_connection()
-    try:
+    with db_client.transaction() as conn:
         user_row = conn.execute(
             "SELECT id, email, role FROM users WHERE id = ?",
             (payload.user_id,)
@@ -587,30 +646,32 @@ async def promote_user(
                 detail=f"User with ID '{payload.user_id}' does not exist."
             )
 
-        conn.execute("UPDATE users SET role = ? WHERE id = ?", (target, payload.user_id))
-        logger.info(
-            "Admin %s (%s) promoted user %s (%s) from %s to %s",
-            current_admin.id, current_admin.email, payload.user_id, user_row[1], user_row[2], target
+        conn.execute(
+            "UPDATE users SET role = ?, token_version = COALESCE(token_version, 1) + 1 WHERE id = ?",
+            (target, payload.user_id)
         )
-        try:
-            from app.api.routes_audit import record_audit_event
-            record_audit_event(
-                user_id=current_admin.id,
-                user_name=current_admin.name,
-                user_role=current_admin.role,
-                action="USER_ROLE_PROMOTION",
-                resource_type="USER",
-                resource_id=payload.user_id,
-                details=f"Admin {current_admin.email} promoted user {user_row[1]} ({payload.user_id}) from {user_row[2]} to {target}."
-            )
-        except Exception:
-            logger.exception("Failed to record audit event for user promotion")
-        return {
-            "success": True,
-            "user_id": payload.user_id,
-            "previous_role": user_row[2],
-            "new_role": target,
-            "message": f"User {payload.user_id} successfully promoted to {target}."
-        }
-    finally:
-        conn.close()
+
+    logger.info(
+        "Admin %s (%s) promoted user %s (%s) from %s to %s",
+        current_admin.id, current_admin.email, payload.user_id, user_row[1], user_row[2], target
+    )
+    try:
+        from app.api.routes_audit import record_audit_event
+        record_audit_event(
+            user_id=current_admin.id,
+            user_name=current_admin.name,
+            user_role=current_admin.role,
+            action="USER_ROLE_PROMOTION",
+            resource_type="USER",
+            resource_id=payload.user_id,
+            details=f"Admin {current_admin.email} promoted user {user_row[1]} ({payload.user_id}) from {user_row[2]} to {target}."
+        )
+    except Exception:
+        logger.exception("Failed to record audit event for user promotion")
+    return {
+        "success": True,
+        "user_id": payload.user_id,
+        "previous_role": user_row[2],
+        "new_role": target,
+        "message": f"User {payload.user_id} successfully promoted to {target}."
+    }

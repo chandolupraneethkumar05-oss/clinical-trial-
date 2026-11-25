@@ -45,15 +45,25 @@ export type StudioTab = 'sandbox' | 'soe' | 'overview' | 'benchmarks' | 'audit';
 interface StudioWorkspaceProps {
   protocol: ClinicalProtocol;
   totalCohortSize: number;
-  funnelData: FunnelSimulationResult;
+  funnelData: FunnelSimulationResult | null;
   retentionCurve: RetentionPoint[];
   benchmarks: BenchmarkTrial[];
+  benchmarksError?: string | null;
+  onRetryBenchmarks?: () => void;
+  simulationError?: string | null;
   user: AuthUser | null;
   activeTab?: StudioTab;
   onTabChange?: (tab: StudioTab) => void;
   onBackToLanding: () => void;
-  onSimulateFunnel: (criteria: Record<string, unknown>) => Promise<FunnelSimulationResult>;
-  onCalculateRetention: (enrolled: number, pbi: number) => Promise<RetentionPoint[]>;
+  onSimulateFunnel: (criteria: Record<string, unknown>, signal?: AbortSignal) => Promise<FunnelSimulationResult>;
+  onCalculateRetention: (
+    enrolled: number,
+    pbi: number,
+    durationWeeks?: number,
+    peakWeeks?: number[],
+    signal?: AbortSignal
+  ) => Promise<RetentionPoint[]>;
+  onSimulationUpdated?: (funnel: FunnelSimulationResult, retention: RetentionPoint[]) => void;
   onOpenUpload: () => void;
   onOpenAuth: () => void;
   onSignOut: () => void;
@@ -61,6 +71,7 @@ interface StudioWorkspaceProps {
   onSwitchTemplate: (type: 'nsclc' | 'tnbc' | 'myeloma') => void;
   onUploadFile?: (file: File) => void;
   onApplyAmendment?: (amendmentId: string) => Promise<void>;
+  onUnauthorized?: () => void;
   appliedAmendmentIds?: string[];
   auditEvents?: AuditEvent[];
   auditLoading?: boolean;
@@ -75,12 +86,16 @@ export const StudioWorkspace: FC<StudioWorkspaceProps> = ({
   funnelData,
   retentionCurve,
   benchmarks,
+  benchmarksError = null,
+  onRetryBenchmarks,
+  simulationError = null,
   user,
   activeTab,
   onTabChange,
   onBackToLanding,
   onSimulateFunnel,
   onCalculateRetention,
+  onSimulationUpdated,
   onOpenUpload,
   onOpenAuth,
   onSignOut,
@@ -88,6 +103,7 @@ export const StudioWorkspace: FC<StudioWorkspaceProps> = ({
   onSwitchTemplate,
   onUploadFile,
   onApplyAmendment,
+  onUnauthorized,
   appliedAmendmentIds = [],
   auditEvents = [],
   auditLoading = false,
@@ -131,7 +147,8 @@ export const StudioWorkspace: FC<StudioWorkspaceProps> = ({
     e.preventDefault();
     setIsHeaderDragging(false);
     const file = e.dataTransfer.files[0];
-    if (file && file.type === 'application/pdf' && onUploadFile) {
+    const isPdf = file && (file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf'));
+    if (isPdf && onUploadFile) {
       onUploadFile(file);
     } else {
       onOpenUpload();
@@ -185,7 +202,9 @@ export const StudioWorkspace: FC<StudioWorkspaceProps> = ({
               className="inline-flex items-center space-x-1.5 px-3.5 py-1.5 text-xs font-semibold rounded-full bg-gradient-to-r from-terracotta-600 via-amber-600 to-terracotta-500 hover:brightness-110 text-white shadow-xs transition-all cursor-pointer"
             >
               <Sparkles className="h-3.5 w-3.5 text-white animate-pulse" />
-              <span>AI Optimizer ({Math.max(0, 4 - appliedAmendmentIds.length)} Opps)</span>
+              <span>
+                AI Optimizer{appliedAmendmentIds.length > 0 ? ` (${appliedAmendmentIds.length} Applied)` : ''}
+              </span>
             </button>
 
             {/* Export Feasibility Dossier */}
@@ -303,7 +322,7 @@ export const StudioWorkspace: FC<StudioWorkspaceProps> = ({
                   <span>Sensitivity Sandbox</span>
                 </span>
                 <span className="text-[9px] font-mono px-1.5 py-0.2 rounded-full bg-terracotta-500/20 text-terracotta-400">
-                  {funnelData.final_eligible_count} Eligible
+                  {funnelData ? `${funnelData.final_eligible_count} Eligible` : 'Simulating'}
                 </span>
               </div>
               <p className={`text-xs font-semibold truncate ${currentTab === 'sandbox' ? 'text-white' : 'text-charcoal-900'}`}>
@@ -519,14 +538,14 @@ export const StudioWorkspace: FC<StudioWorkspaceProps> = ({
                       <span>AI Protocol Optimizer</span>
                     </span>
                     <span className="text-[9px] font-mono px-2 py-0.5 rounded-full bg-terracotta-500/20 text-terracotta-300 border border-terracotta-500/40 font-bold">
-                      {appliedAmendmentIds.length}/4 Applied
+                      {appliedAmendmentIds.length} Applied
                     </span>
                   </div>
                   <p className="text-xs font-serif font-bold text-linen-100 group-hover:text-white leading-snug">
-                    4 Calibrated Protocol Redlines
+                    FDA-Aligned Protocol Redline Advisor
                   </p>
                   <p className="text-[11px] text-charcoal-300 font-sans mt-0.5">
-                    Recover +317 patients and reduce Tufts CSDD burden by -28.9 pts.
+                    Evaluate eGFR, CNS, biopsy, and PK burden amendments in real time against the {totalCohortSize.toLocaleString()}-patient cohort.
                   </p>
                   <div className="mt-2 flex items-center space-x-1 text-[11px] text-terracotta-400 font-mono font-bold group-hover:translate-x-0.5 transition-transform">
                     <span>Inspect Redline Diff & 1-Click Apply</span>
@@ -609,10 +628,13 @@ export const StudioWorkspace: FC<StudioWorkspaceProps> = ({
             
             {currentTab === 'sandbox' && (
               <WhatIfSensitivityConsole
+                protocol={protocol}
                 initialFunnel={funnelData}
                 initialRetention={retentionCurve}
+                simulationError={simulationError}
                 onSimulateFunnel={onSimulateFunnel}
                 onCalculateRetention={onCalculateRetention}
+                onSimulationUpdated={onSimulationUpdated}
               />
             )}
 
@@ -634,13 +656,18 @@ export const StudioWorkspace: FC<StudioWorkspaceProps> = ({
             {currentTab === 'overview' && (
               <BurdenOverviewTab
                 protocol={protocol}
-                screenFailureRate={funnelData.screen_failure_rate}
-                finalEligibleCount={funnelData.final_eligible_count}
+                screenFailureRate={funnelData?.screen_failure_rate ?? 0}
+                finalEligibleCount={funnelData?.final_eligible_count ?? 0}
+                totalCohortSize={totalCohortSize}
               />
             )}
 
             {currentTab === 'benchmarks' && (
-              <BenchmarkGrid benchmarks={benchmarks} />
+              <BenchmarkGrid
+                benchmarks={benchmarks}
+                error={benchmarksError}
+                onRetry={onRetryBenchmarks}
+              />
             )}
 
             {currentTab === 'audit' && (
@@ -708,15 +735,19 @@ export const StudioWorkspace: FC<StudioWorkspaceProps> = ({
                 </div>
                 <div className="flex justify-between border-b border-linen-200 pb-1">
                   <span className="text-charcoal-600">Projected Screen Failure:</span>
-                  <strong className="text-terracotta-600">{funnelData.screen_failure_rate}%</strong>
+                  <strong className="text-terracotta-600">
+                    {funnelData ? `${funnelData.screen_failure_rate}%` : 'Pending simulation'}
+                  </strong>
                 </div>
                 <div className="flex justify-between border-b border-linen-200 pb-1">
                   <span className="text-charcoal-600">Eligible Candidate Pool:</span>
-                  <strong className="text-sage-700">{funnelData.final_eligible_count} / {totalCohortSize} patients</strong>
+                  <strong className="text-sage-700">
+                    {funnelData ? `${funnelData.final_eligible_count} / ${totalCohortSize} patients` : 'Pending simulation'}
+                  </strong>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-charcoal-600">Estimated Accrual Delay Penalty:</span>
-                  <strong className="text-charcoal-900">4.2 Months ($2.4M saved if optimized)</strong>
+                  <span className="text-charcoal-600">Burden Risk Tier:</span>
+                  <strong className="text-charcoal-900">{protocol.burden.attrition_risk_tier} Friction</strong>
                 </div>
               </div>
 
@@ -751,6 +782,7 @@ export const StudioWorkspace: FC<StudioWorkspaceProps> = ({
           protocol={protocol}
           onApplyAmendment={onApplyAmendment || (async () => {})}
           appliedAmendmentIds={appliedAmendmentIds}
+          onUnauthorized={onUnauthorized}
         />
       )}
     </div>

@@ -65,19 +65,21 @@ export const ScheduleOfEventsMatrix: FC<ScheduleOfEventsMatrixProps> = ({
 }) => {
   const [highlightPeaksOnly, setHighlightPeaksOnly] = useState(false);
 
-  // Helper to check if a procedure is scheduled for a visit
+  // Helper to check if a procedure is scheduled for a visit (word-boundary safe)
   const hasProcedure = (visit: Visit, procKey: string): Procedure | undefined => {
     return visit.procedures.find(p => {
       const pName = p.name.toLowerCase();
-      if (procKey === "ct") return pName.includes("ct");
-      if (procKey === "mri") return pName.includes("mri");
-      if (procKey === "biopsy") return pName.includes("biopsy") && !pName.includes("bone marrow");
+      if (procKey === "ct") return /\bct\b|computed tomography/.test(pName);
+      if (procKey === "mri") return /\bmri\b|magnetic resonance/.test(pName);
+      if (procKey === "biopsy") return /\bbiopsy\b/.test(pName) && !pName.includes("bone marrow");
       if (procKey === "bone_marrow") return pName.includes("bone marrow");
       if (procKey === "infusion") return pName.includes("infusion");
-      if (procKey === "pk") return pName.includes("pk");
-      if (procKey === "labs") return pName.includes("blood") || pName.includes("labs");
+      if (procKey === "pk") return /\bpk\b|pharmacokinetic/.test(pName);
+      if (procKey === "labs") {
+        return (pName.includes("blood") || pName.includes("labs")) && !/\bpk\b|pharmacokinetic/.test(pName);
+      }
       if (procKey === "vitals") return pName.includes("vital");
-      if (procKey === "ecg") return pName.includes("ecg");
+      if (procKey === "ecg") return /\becg\b|electrocardiogram/.test(pName);
       if (procKey === "pro") return pName.includes("survey") || pName.includes("outcome");
       return false;
     });

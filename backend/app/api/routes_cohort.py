@@ -2,6 +2,7 @@
 ProtocolShield Cohort Simulation API Routes
 """
 import logging
+from typing import Optional
 from fastapi import APIRouter, HTTPException, Query, Depends
 from app.models.patient import CohortFilterCriteria
 from app.engine.synthetic_data import seed_database_if_empty, generate_synthetic_cohort
@@ -75,20 +76,89 @@ async def get_cohort_statistics(
         raise HTTPException(status_code=500, detail="An unexpected error occurred retrieving cohort statistics.")
 
 
+REGENERATION_CONFIRM_TOKEN = "CONFIRM_REGENERATE_SYNTHETIC_COHORT"
+
+
 @router.post("/seed")
 async def seed_cohort(
     total: int = Query(default=10000, ge=100, le=50000),
-    _user: AuthenticatedUser = Depends(require_role(["admin"]))
+    force_regenerate: bool = Query(
+        default=False,
+        description="When False (default), seeds ONLY if cohort has fewer than 'total' records (never deletes existing data).",
+    ),
+    confirm_regenerate: Optional[str] = Query(
+        default=None,
+        description=f"Required confirmation string ('{REGENERATION_CONFIRM_TOKEN}') when force_regenerate=True.",
+    ),
+    _user: AuthenticatedUser = Depends(require_role(["admin"])),
 ):
-    """Forces seeding or re-generation of synthetic cohort. Requires administrator role."""
+    """
+    Seeds synthetic cohort records if the database is empty or below 'total' (seed-if-empty behavior).
+    To protect against accidental data loss, existing records are preserved unless BOTH
+    force_regenerate=True AND confirm_regenerate='CONFIRM_REGENERATE_SYNTHETIC_COHORT' are supplied.
+    Requires administrator role.
+    """
     try:
+        if force_regenerate:
+            if confirm_regenerate != REGENERATION_CONFIRM_TOKEN:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "Regenerating the synthetic cohort deletes and replaces existing cohort records. "
+                        f"Pass confirm_regenerate='{REGENERATION_CONFIRM_TOKEN}' to proceed."
+                    ),
+                )
+            df = generate_synthetic_cohort(total_patients=total)
+            with db_client.transaction() as conn:
+                conn.execute("DELETE FROM patients")
+                conn.register("df_regen", df)
+                conn.execute("INSERT INTO patients SELECT * FROM df_regen")
+                row = conn.execute("SELECT count(*) FROM patients").fetchone()
+                count = int(row[0]) if row else 0
+            try:
+                from app.api.routes_audit import record_audit_event
+                record_audit_event(
+                    user_id=_user.id,
+                    user_name=_user.name,
+                    user_role=_user.role,
+                    action="COHORT_SYNTHETIC_REGENERATE",
+                    resource_type="COHORT",
+                    resource_id="patients",
+                    details=f"Administrator explicitly regenerated synthetic cohort with {count} records.",
+                )
+            except Exception:
+                logger.exception("Failed to record audit event for cohort regeneration")
+
+            return {
+                "status": "success",
+                "mode": "regenerated",
+                "regenerated": True,
+                "existing_records_preserved": False,
+                "total_records": count,
+                "message": f"Synthetic cohort explicitly regenerated with {count} records.",
+                "is_synthetic_data": True,
+                "data_disclaimer": SYNTHETIC_DISCLAIMER,
+            }
+
+        existing_count = db_client.count_patients()
         count = seed_database_if_empty(total_patients=total)
+        seeded_new = count > existing_count
         return {
             "status": "success",
+            "mode": "seeded_if_empty" if seeded_new else "already_populated",
+            "regenerated": False,
+            "existing_records_preserved": True,
             "total_records": count,
+            "message": (
+                f"Seeded synthetic cohort to {count} records."
+                if seeded_new
+                else f"Cohort already contains {count} records; existing data preserved (seed-if-empty mode)."
+            ),
             "is_synthetic_data": True,
-            "data_disclaimer": SYNTHETIC_DISCLAIMER
+            "data_disclaimer": SYNTHETIC_DISCLAIMER,
         }
+    except HTTPException:
+        raise
     except Exception:
         logger.exception("Failed to seed cohort database")
         raise HTTPException(status_code=500, detail="An unexpected error occurred seeding the cohort database.")

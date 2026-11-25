@@ -65,8 +65,8 @@ class ThreadSafeDuckDBCursor:
 class DuckDBClient:
     def __init__(self, db_path: Path = None):
         self.db_path = str(db_path or settings.DB_PATH)
-        # Ensure parent directory exists
-        Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
+        if self.db_path != ":memory:":
+            Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
         self._is_in_memory_fallback = False
         
@@ -74,7 +74,7 @@ class DuckDBClient:
         try:
             self._shared_conn = duckdb.connect(self.db_path)
         except duckdb.IOException as exc:
-            if settings.ENVIRONMENT in {"production", "prod"}:
+            if settings.ENVIRONMENT.lower().strip() in {"production", "prod", "staging"}:
                 raise RuntimeError(
                     f"[STARTUP FAILURE] Production DuckDB database at {self.db_path} is locked by another process or unavailable ({exc}). "
                     "DuckDB file locking requires single-process execution (e.g. uvicorn --workers 1 or single-worker container). "
@@ -195,7 +195,8 @@ class DuckDBClient:
                     resource_id VARCHAR,
                     details VARCHAR,
                     previous_hash VARCHAR NOT NULL,
-                    verification_hash VARCHAR NOT NULL
+                    verification_hash VARCHAR NOT NULL,
+                    chain_seq BIGINT
                 );
 
                 CREATE TABLE IF NOT EXISTS uploaded_protocols (
@@ -228,6 +229,10 @@ class DuckDBClient:
                 pass
             try:
                 conn.execute("ALTER TABLE audit_logs ADD COLUMN verification_hash VARCHAR DEFAULT ''")
+            except Exception:
+                pass
+            try:
+                conn.execute("ALTER TABLE audit_logs ADD COLUMN chain_seq BIGINT")
             except Exception:
                 pass
         finally:
@@ -264,6 +269,35 @@ class DuckDBClient:
         try:
             row = conn.execute("SELECT count(*) as count FROM patients").fetchone()
             return row[0] if row else 0
+        finally:
+            conn.close()
+
+    def check_health(self, verify_tables: bool = True) -> tuple[bool, int]:
+        """
+        Verifies DuckDB connectivity and core schema table availability.
+        Returns (is_healthy, patient_count).
+        """
+        required_tables = (
+            "patients",
+            "users",
+            "password_resets",
+            "token_blacklist",
+            "audit_logs",
+            "uploaded_protocols",
+            "patient_interests",
+        )
+        conn = self.get_connection()
+        try:
+            ping = conn.execute("SELECT 1").fetchone()
+            if not ping or ping[0] != 1:
+                return False, 0
+            if verify_tables:
+                for tbl in required_tables:
+                    conn.execute(f"SELECT 1 FROM {tbl} LIMIT 1").fetchall()
+            row = conn.execute("SELECT count(*) FROM patients").fetchone()
+            return True, int(row[0]) if row else 0
+        except Exception:
+            return False, 0
         finally:
             conn.close()
 

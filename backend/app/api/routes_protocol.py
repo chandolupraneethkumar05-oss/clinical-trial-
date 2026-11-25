@@ -3,7 +3,7 @@ ProtocolShield Protocol Management & Burden Analysis API Routes
 """
 import logging
 import json
-from fastapi import APIRouter, HTTPException, UploadFile, File, Depends
+from fastapi import APIRouter, HTTPException, UploadFile, File, Depends, Query
 from app.models.protocol import ClinicalTrialProtocol, ProtocolEligibilityCriteria
 from app.models.burden import ProtocolVisit, AssessmentProcedure, PatientBurdenBreakdown
 from app.engine.burden_scorer import burden_engine, STANDARD_PROCEDURE_CATALOG
@@ -108,7 +108,9 @@ def get_canonical_nsclc_sample_protocol() -> ClinicalTrialProtocol:
             "min_egfr": 60.0,
             "max_total_bilirubin": 1.5,
             "max_alt_multiplier": 2.5,
+            "min_prior_lines": 0,
             "max_prior_lines": 0,
+            "exclude_active_brain_mets": True,
             "allow_stable_brain_mets": True,
             "exclude_active_autoimmune": True,
             "target_biomarker_egfr_negative": True,
@@ -209,7 +211,10 @@ def get_canonical_tnbc_sample_protocol() -> ClinicalTrialProtocol:
             "min_anc": 1500.0,
             "min_platelets": 100.0,
             "min_hemoglobin": 9.0,
+            "min_prior_lines": 0,
             "max_prior_lines": 0,
+            "exclude_active_brain_mets": True,
+            "allow_stable_brain_mets": True,
             "exclude_active_autoimmune": True,
             "target_biomarker_her2_negative": True,
             "target_biomarker_hormone_receptor_negative": True,
@@ -317,6 +322,8 @@ def get_canonical_myeloma_sample_protocol() -> ClinicalTrialProtocol:
             "min_egfr": 40.0,
             "max_prior_lines": 10,
             "min_prior_lines": 3,
+            "exclude_active_brain_mets": True,
+            "allow_stable_brain_mets": True,
             "exclude_active_autoimmune": False,
             "target_biomarker_bcma_positive": True,
         },
@@ -370,6 +377,9 @@ async def get_sample_protocol_by_type(protocol_type: str):
     return factory()
 
 
+MAX_PDF_UPLOAD_BYTES = 25 * 1024 * 1024  # 25 MB limit
+
+
 @router.post("/upload", response_model=ClinicalTrialProtocol)
 async def upload_protocol_pdf(
     file: UploadFile = File(...),
@@ -392,9 +402,19 @@ async def upload_protocol_pdf(
         )
 
     try:
-        file_bytes = await file.read()
+        file_bytes = await file.read(MAX_PDF_UPLOAD_BYTES + 1)
+        if len(file_bytes) > MAX_PDF_UPLOAD_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail="Uploaded PDF exceeds the maximum allowed size of 25 MB."
+            )
         if len(file_bytes) < 1024:
             raise HTTPException(status_code=400, detail="Uploaded file appears to be empty or corrupt.")
+        if not file_bytes.lstrip().startswith(b"%PDF"):
+            raise HTTPException(
+                status_code=400,
+                detail="Uploaded file is not a valid PDF document (missing %PDF header)."
+            )
 
         parser = ProtocolPDFParser()
         protocol = parser.parse(file_bytes, file.filename)
@@ -458,7 +478,7 @@ async def get_uploaded_protocols(_user: AuthenticatedUser = Depends(require_role
 @router.post("/score-burden", response_model=PatientBurdenBreakdown)
 async def score_protocol_burden(
     visits: list[ProtocolVisit],
-    duration_weeks: int = 52,
+    duration_weeks: int = Query(default=52, ge=4, le=156),
     _user: AuthenticatedUser = Depends(require_role(["doctor", "admin"]))
 ):
     """Calculates composite Patient Burden Index and friction analytics for submitted visits. Requires doctor or admin role."""

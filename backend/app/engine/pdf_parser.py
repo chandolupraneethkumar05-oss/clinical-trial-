@@ -5,6 +5,7 @@ Uses PyMuPDF (fitz) for robust text extraction with keyword-driven SoA detection
 Falls back gracefully to canonical NSCLC defaults when extraction yields sparse data.
 """
 from __future__ import annotations
+import hashlib
 import re
 import uuid
 from typing import Optional
@@ -183,10 +184,10 @@ class ProtocolPDFParser:
         except Exception as e:
             return self._fallback_protocol(filename, reason=f"PDF read error: {e}")
 
-        return self._parse_text(full_text, filename, page_count)
+        return self._parse_text(full_text, filename, page_count, file_bytes=file_bytes)
 
     def _parse_text(
-        self, full_text: str, filename: str, page_count: int
+        self, full_text: str, filename: str, page_count: int, file_bytes: Optional[bytes] = None
     ) -> ClinicalTrialProtocol:
         lines = full_text.splitlines()
 
@@ -209,11 +210,13 @@ class ProtocolPDFParser:
         eligibility_text = " ".join(
             sections.get("inclusion", []) + sections.get("exclusion", [])
         )
-        min_egfr = _extract_egfr(eligibility_text) or 60.0
-        max_ecog = _extract_ecog(eligibility_text)
-        if max_ecog is None:
-            max_ecog = 1
-        min_age, max_age = _extract_age_range(eligibility_text)
+        extracted_egfr = _extract_egfr(eligibility_text)
+        min_egfr = min(150.0, max(10.0, extracted_egfr)) if extracted_egfr is not None else 60.0
+        extracted_ecog = _extract_ecog(eligibility_text)
+        max_ecog = min(4, max(0, extracted_ecog)) if extracted_ecog is not None else 1
+        raw_min_age, raw_max_age = _extract_age_range(eligibility_text)
+        min_age = min(95, max(18, raw_min_age if raw_min_age is not None else 18))
+        max_age = min(120, raw_max_age) if raw_max_age is not None and raw_max_age >= min_age else None
 
         if not inclusion:
             inclusion = [
@@ -230,12 +233,22 @@ class ProtocolPDFParser:
                 "Prior systemic therapy for advanced/metastatic disease (unless protocol-specified)",
             ]
 
+        exclusion_blob = " ".join(exclusion).lower()
+        blanket_cns_exclusion = (
+            ("cns" in exclusion_blob or "brain" in exclusion_blob)
+            and ("regardless of" in exclusion_blob or "any known brain" in exclusion_blob or "known or suspected" in exclusion_blob)
+            and not any(tok in exclusion_blob for tok in ["untreated", "active", "symptomatic", "uncontrolled"])
+        )
+
         structured_filters: dict = {
             "min_age": min_age,
             "max_ecog": max_ecog,
             "min_egfr": min_egfr,
-            "allowed_stages": ["Stage III", "Stage IV (Oligometastatic)", "Stage IV (Polymetastatic)"],
+            "allowed_stages": ["Stage IIIB", "Stage IIIC", "Stage IV (Oligometastatic)", "Stage IV (Polymetastatic)"],
+            "min_prior_lines": 0,
             "max_prior_lines": 1,
+            "exclude_active_brain_mets": True,
+            "allow_stable_brain_mets": not blanket_cns_exclusion,
             "exclude_active_autoimmune": True,
         }
         if max_age:
@@ -250,12 +263,13 @@ class ProtocolPDFParser:
             visits = self._get_fallback_visits()
 
         # ── 5. Compute burden ────────────────────────────────────────────────
-        study_duration = self._estimate_duration(full_text, visits)
+        study_duration = min(156, max(4, self._estimate_duration(full_text, visits)))
         burden = burden_engine.calculate_protocol_burden(visits, study_duration)
 
-        # ── 6. Derive protocol_id ─────────────────────────────────────────────
+        # ── 6. Derive collision-resistant protocol_id ────────────────────────
         slug = re.sub(r"[^A-Z0-9]", "", filename.upper())[:8]
-        protocol_id = f"PS-EXT-{slug or 'PDF'}-{datetime.now().strftime('%Y')}"
+        content_hash = hashlib.sha256(file_bytes or full_text.encode("utf-8")).hexdigest()[:4].upper()
+        protocol_id = f"PS-EXT-{slug or 'PDF'}-{datetime.now().strftime('%Y')}-{content_hash}"
 
         return ClinicalTrialProtocol(
             protocol_id=protocol_id,
@@ -547,10 +561,13 @@ class ProtocolPDFParser:
                     "min_age": 18,
                     "max_ecog": 1,
                     "min_egfr": 60.0,
+                    "min_prior_lines": 0,
                     "max_prior_lines": 1,
                     "allowed_stages": [
-                        "Stage III", "Stage IV (Oligometastatic)", "Stage IV (Polymetastatic)"
+                        "Stage IIIB", "Stage IIIC", "Stage IV (Oligometastatic)", "Stage IV (Polymetastatic)"
                     ],
+                    "exclude_active_brain_mets": True,
+                    "allow_stable_brain_mets": True,
                     "exclude_active_autoimmune": True,
                 },
             ),

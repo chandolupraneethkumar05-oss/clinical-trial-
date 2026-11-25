@@ -16,14 +16,33 @@ interface BurdenOverviewTabProps {
   protocol: ClinicalProtocol;
   screenFailureRate: number;
   finalEligibleCount: number;
+  totalCohortSize?: number;
 }
 
 export const BurdenOverviewTab: FC<BurdenOverviewTabProps> = ({
   protocol,
   screenFailureRate,
-  finalEligibleCount
+  finalEligibleCount,
+  totalCohortSize = 10000
 }) => {
   const { burden } = protocol;
+  const modeledDelayCost =
+    burden.attrition_risk_tier === 'Severe'
+      ? '$2.4M+'
+      : burden.attrition_risk_tier === 'High'
+      ? '$1.8M'
+      : burden.attrition_risk_tier === 'Moderate'
+      ? '$1.2M'
+      : '$0.6M';
+
+  const topFrictionVisits = [...protocol.visits]
+    .map((v) => {
+      const weight = v.procedures.reduce((acc, p) => acc + p.invasiveness_weight, 0);
+      const mins = v.procedures.reduce((acc, p) => acc + p.estimated_duration_minutes, 0);
+      return { visit: v, score: weight + (mins / 60) * 1.5, mins };
+    })
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 3);
 
   const getTierBadge = (tier: string) => {
     switch (tier) {
@@ -56,7 +75,7 @@ export const BurdenOverviewTab: FC<BurdenOverviewTabProps> = ({
           label="Screen Failure Rate"
           value={screenFailureRate}
           unit="%"
-          subtext={`${finalEligibleCount.toLocaleString()} candidates eligible from 10k pool`}
+          subtext={`${finalEligibleCount.toLocaleString()} eligible from ${totalCohortSize.toLocaleString()} pool`}
           icon={Users}
           variant={screenFailureRate > 60 ? 'danger' : 'warning'}
         />
@@ -71,11 +90,11 @@ export const BurdenOverviewTab: FC<BurdenOverviewTabProps> = ({
         />
 
         <StatCard
-          label="Projected Delay Cost Risk"
-          value="$2.4M"
-          subtext="Tufts CSDD Phase III trial delay model ($600k/mo)"
+          label="Modeled Delay Cost Risk"
+          value={modeledDelayCost}
+          subtext="Estimated at $600k/mo delay model (Tufts CSDD)"
           icon={DollarSign}
-          variant="warning"
+          variant={burden.attrition_risk_tier === 'Low' ? 'safe' : 'warning'}
         />
       </div>
 
@@ -201,32 +220,35 @@ export const BurdenOverviewTab: FC<BurdenOverviewTabProps> = ({
             </h3>
             
             <ul className="space-y-3 text-xs">
-              <li className="flex items-start space-x-2.5 text-charcoal-700">
-                <span className="h-2 w-2 rounded-full bg-terracotta-500 mt-1 shrink-0" />
-                <span>
-                  <strong className="text-charcoal-900 font-semibold">Week 0 (Cycle 1 Day 1):</strong> Serial 6-hour pharmacokinetic draws immediately stacked onto first IV drug infusion.
-                </span>
-              </li>
-              <li className="flex items-start space-x-2.5 text-charcoal-700">
-                <span className="h-2 w-2 rounded-full bg-terracotta-500 mt-1 shrink-0" />
-                <span>
-                  <strong className="text-charcoal-900 font-semibold">Week 12 Restaging:</strong> Concurrent contrast CT scan paired with mandatory on-treatment core tumor re-biopsy.
-                </span>
-              </li>
-              <li className="flex items-start space-x-2.5 text-charcoal-700">
-                <span className="h-2 w-2 rounded-full bg-amber-500 mt-1 shrink-0" />
-                <span>
-                  <strong className="text-charcoal-900 font-semibold">Screening Window:</strong> Compresses brain MRI, baseline biopsy, and multi-vial blood labs into a tight 14-day window.
-                </span>
-              </li>
+              {topFrictionVisits.length === 0 ? (
+                <li className="text-charcoal-500 font-mono">No scheduled visits available for hotspot analysis.</li>
+              ) : (
+                topFrictionVisits.map(({ visit, mins }, idx) => (
+                  <li key={`${visit.visit_id}-${idx}`} className="flex items-start space-x-2.5 text-charcoal-700">
+                    <span
+                      className={`h-2 w-2 rounded-full mt-1 shrink-0 ${
+                        idx < 2 ? 'bg-terracotta-500' : 'bg-amber-500'
+                      }`}
+                    />
+                    <span>
+                      <strong className="text-charcoal-900 font-semibold">
+                        Week {visit.week_number} ({visit.visit_name}):
+                      </strong>{' '}
+                      {visit.procedures.length} procedures ({(mins / 60).toFixed(1)}h clinic dwell) —{' '}
+                      {visit.procedures.map((p) => p.name).slice(0, 3).join(', ')}
+                      {visit.procedures.length > 3 ? '…' : ''}.
+                    </span>
+                  </li>
+                ))
+              )}
             </ul>
           </div>
 
           <div className="mt-6 pt-4 border-t border-linen-200 flex items-center justify-between text-xs text-charcoal-500">
             <span className="font-mono text-[11px]">Peak Fatigue Epochs:</span>
-            <div className="flex space-x-1.5">
-              {burden.peak_burden_weeks.map((w) => (
-                <span key={w} className="px-2.5 py-0.5 rounded-full font-mono text-[11px] font-bold bg-terracotta-100 text-terracotta-700 border border-terracotta-200">
+            <div className="flex flex-wrap gap-1.5 justify-end">
+              {Array.from(new Set(burden.peak_burden_weeks)).map((w, idx) => (
+                <span key={`${w}-${idx}`} className="px-2.5 py-0.5 rounded-full font-mono text-[11px] font-bold bg-terracotta-100 text-terracotta-700 border border-terracotta-200">
                   Wk {w}
                 </span>
               ))}

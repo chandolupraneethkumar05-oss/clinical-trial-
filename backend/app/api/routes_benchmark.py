@@ -3,6 +3,7 @@ ProtocolShield Clinical Trial Benchmark API Routes
 Interfaces with ClinicalTrials.gov API v2 and curated empirical benchmarks.
 """
 import logging
+import re
 from fastapi import APIRouter, HTTPException, Query, Depends
 import httpx
 from app.core.config import settings
@@ -90,6 +91,9 @@ async def get_historical_benchmarks(
     }
 
 
+_NCT_ID_PATTERN = re.compile(r"^NCT\d{8}$")
+
+
 @router.get("/clinicaltrials-live/{nct_id}")
 async def fetch_live_clinical_trial(
     nct_id: str,
@@ -99,17 +103,33 @@ async def fetch_live_clinical_trial(
     Fetches real-time protocol summary directly from ClinicalTrials.gov API v2.
     Requires doctor or admin role.
     """
-    url = f"{settings.CLINICAL_TRIALS_API_BASE}/studies/{nct_id}"
+    normalized_nct = nct_id.strip().upper()
+    if not _NCT_ID_PATTERN.match(normalized_nct):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid NCT identifier format. Expected format: NCT followed by 8 digits (e.g. NCT03845296).",
+        )
+
+    url = f"{settings.CLINICAL_TRIALS_API_BASE}/studies/{normalized_nct}"
     async with httpx.AsyncClient(timeout=10.0) as client:
         try:
             resp = await client.get(url)
+            if resp.status_code == 404:
+                raise HTTPException(status_code=404, detail=f"Study '{normalized_nct}' was not found on ClinicalTrials.gov.")
             if resp.status_code != 200:
-                raise HTTPException(status_code=resp.status_code, detail=f"ClinicalTrials.gov returned {resp.status_code}")
-            data = resp.json()
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"ClinicalTrials.gov upstream service returned HTTP {resp.status_code}.",
+                )
+            try:
+                data = resp.json()
+            except ValueError:
+                raise HTTPException(status_code=502, detail="ClinicalTrials.gov returned an invalid JSON payload.")
+
             protocol_section = data.get("protocolSection", {})
             return {
                 "data_source": "ClinicalTrials.gov",
-                "nct_id": nct_id,
+                "nct_id": normalized_nct,
                 "brief_title": protocol_section.get("identificationModule", {}).get("briefTitle"),
                 "status": protocol_section.get("statusModule", {}).get("overallStatus"),
                 "conditions": protocol_section.get("conditionsModule", {}).get("conditions", []),
@@ -118,5 +138,5 @@ async def fetch_live_clinical_trial(
         except HTTPException:
             raise
         except httpx.RequestError:
-            logger.exception("Failed to connect to ClinicalTrials.gov for NCT ID: %s", nct_id)
+            logger.exception("Failed to connect to ClinicalTrials.gov for NCT ID: %s", normalized_nct)
             raise HTTPException(status_code=503, detail="ClinicalTrials.gov API is currently unavailable. Please try again later.")

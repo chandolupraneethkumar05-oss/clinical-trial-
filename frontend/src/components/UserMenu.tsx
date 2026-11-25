@@ -92,7 +92,7 @@ export const UserMenu: FC<UserMenuProps> = ({
                 className="w-full flex items-center space-x-2 px-3 py-2 rounded-xl text-charcoal-700 hover:bg-linen-100 hover:text-charcoal-900 transition-colors text-left"
               >
                 <Sparkles className="h-3.5 w-3.5 text-terracotta-500" />
-                <span>Switch Demo Persona</span>
+                <span>{import.meta.env.DEV ? 'Switch Account / Persona' : 'Switch Account'}</span>
               </button>
             )}
 

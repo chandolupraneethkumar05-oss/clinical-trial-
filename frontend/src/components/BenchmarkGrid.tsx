@@ -5,13 +5,16 @@ import { CheckCircle2, XCircle, Search, ExternalLink, Database } from 'lucide-re
 
 interface BenchmarkGridProps {
   benchmarks: BenchmarkTrial[];
+  error?: string | null;
+  onRetry?: () => void;
 }
 
-export const BenchmarkGrid: FC<BenchmarkGridProps> = ({ benchmarks }) => {
+export const BenchmarkGrid: FC<BenchmarkGridProps> = ({ benchmarks, error = null, onRetry }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<'ALL' | 'COMPLETED' | 'TERMINATED'>('ALL');
 
-  const filtered = benchmarks.filter(t => {
+  const safeBenchmarks = Array.isArray(benchmarks) ? benchmarks : [];
+  const filtered = safeBenchmarks.filter(t => {
     const matchesSearch = t.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
                           t.nct_id.toLowerCase().includes(searchTerm.toLowerCase());
     const matchesStatus = statusFilter === 'ALL' || t.actual_status === statusFilter;
@@ -66,8 +69,37 @@ export const BenchmarkGrid: FC<BenchmarkGridProps> = ({ benchmarks }) => {
         </div>
       </div>
 
+      {/* ── Error Banner ───────────────────────────────────────────────────── */}
+      {error && (
+        <div className="p-4 bg-red-50 border-b border-red-200 text-xs text-red-800 flex items-center justify-between">
+          <span>{error}</span>
+          {onRetry && (
+            <button
+              onClick={onRetry}
+              className="px-3 py-1 rounded-lg bg-red-600 text-white font-semibold hover:bg-red-700 cursor-pointer"
+            >
+              Retry
+            </button>
+          )}
+        </div>
+      )}
+
       {/* ── Table Grid ─────────────────────────────────────────────────────── */}
       <div className="overflow-x-auto">
+        {filtered.length === 0 ? (
+          <div className="p-10 text-center space-y-2 text-xs text-charcoal-500 font-mono">
+            <p className="font-serif font-bold text-sm text-charcoal-800">
+              {safeBenchmarks.length === 0
+                ? 'No Historical Benchmark Trials Loaded'
+                : 'No Benchmark Trials Match Your Filter'}
+            </p>
+            <p>
+              {safeBenchmarks.length === 0
+                ? 'Benchmark data is currently unavailable.'
+                : 'Try clearing your search term or switching the status filter.'}
+            </p>
+          </div>
+        ) : (
         <table className="w-full text-left text-xs border-collapse">
           <thead>
             <tr className="bg-linen-100/70 border-b border-linen-300 text-charcoal-700 text-[10px] uppercase font-mono font-bold tracking-wider">
@@ -165,6 +197,7 @@ export const BenchmarkGrid: FC<BenchmarkGridProps> = ({ benchmarks }) => {
             })}
           </tbody>
         </table>
+        )}
       </div>
     </div>
   );

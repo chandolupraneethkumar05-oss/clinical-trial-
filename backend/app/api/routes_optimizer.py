@@ -66,6 +66,8 @@ async def apply_protocol_amendment(
         except Exception:
             logger.exception("Failed to record audit event for applied amendment")
         return updated_protocol
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
     except Exception:
         logger.exception("Failed to apply protocol amendment")
         raise HTTPException(status_code=500, detail="An unexpected error occurred applying the protocol amendment.")

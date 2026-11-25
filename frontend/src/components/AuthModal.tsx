@@ -1,6 +1,7 @@
 import { useState, useMemo } from 'react';
 import type { FC, FormEvent } from 'react';
 import type { AuthUser, AuthModalView } from '../types/auth';
+import { apiUrl, extractApiErrorMessage, parseJsonSafe } from '../lib/api';
 import {
   X,
   Mail,
@@ -20,6 +21,7 @@ import {
 
 interface AuthModalProps {
   initialView?: AuthModalView;
+  initialResetToken?: string;
   onClose: () => void;
   onLoginSuccess: (user: AuthUser) => void;
 }
@@ -69,10 +71,11 @@ const KNOWN_ENTERPRISE_DOMAINS: Record<string, string> = {
 
 export const AuthModal: FC<AuthModalProps> = ({
   initialView = 'signin',
+  initialResetToken = '',
   onClose,
   onLoginSuccess,
 }) => {
-  const [view, setView] = useState<AuthModalView>(initialView);
+  const [view, setView] = useState<AuthModalView>(initialResetToken ? 'forgot_password' : initialView);
 
   // Form Fields
   const [email, setEmail] = useState('');
@@ -84,8 +87,8 @@ export const AuthModal: FC<AuthModalProps> = ({
   const [agreeTerms, setAgreeTerms] = useState(false);
 
   // Forgot Password Step State
-  const [forgotStep, setForgotStep] = useState<1 | 2 | 3>(1);
-  const [resetCode, setResetCode] = useState('');
+  const [forgotStep, setForgotStep] = useState<1 | 2 | 3>(initialResetToken ? 2 : 1);
+  const [resetCode, setResetCode] = useState(initialResetToken);
   const [newPassword, setNewPassword] = useState('');
   const [confirmNewPassword, setConfirmNewPassword] = useState('');
 
@@ -142,28 +145,33 @@ export const AuthModal: FC<AuthModalProps> = ({
 
     setIsLoading(true);
     try {
-      const res = await fetch('/api/v1/auth/signin', {
+      const res = await fetch(apiUrl('/api/v1/auth/signin'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email: email.trim().toLowerCase(), password }),
       });
 
+      const data = await parseJsonSafe(res);
       if (!res.ok) {
-        const errorData = await res.json().catch(() => ({ detail: 'Authentication failed. Please check credentials.' }));
-        setErrorMessage(errorData.detail || 'Authentication failed. Please verify credentials.');
+        setErrorMessage(extractApiErrorMessage(data, 'Authentication failed. Please verify credentials.'));
         setIsLoading(false);
         return;
       }
 
-      const data = await res.json();
+      const payload = data as { user?: AuthUser; token?: string } | null;
+      if (!payload?.user || !payload?.token) {
+        setErrorMessage('Received an unexpected authentication response from server.');
+        setIsLoading(false);
+        return;
+      }
       setIsLoading(false);
       onLoginSuccess({
-        ...data.user,
-        token: data.token,
+        ...payload.user,
+        token: payload.token,
       });
     } catch {
       setIsLoading(false);
-      setErrorMessage('Network connection error: Unable to reach ProtocolShield backend. Please verify backend is running on port 8000.');
+      setErrorMessage('Network connection error: Unable to reach ProtocolShield server. Please check your connection and try again.');
     }
   };
 
@@ -195,7 +203,7 @@ export const AuthModal: FC<AuthModalProps> = ({
 
     setIsLoading(true);
     try {
-      const res = await fetch('/api/v1/auth/signup', {
+      const res = await fetch(apiUrl('/api/v1/auth/signup'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -209,18 +217,23 @@ export const AuthModal: FC<AuthModalProps> = ({
         }),
       });
 
+      const data = await parseJsonSafe(res);
       if (!res.ok) {
-        const errorData = await res.json().catch(() => ({ detail: 'Registration failed.' }));
-        setErrorMessage(errorData.detail || 'Registration failed. An account may already exist with this email.');
+        setErrorMessage(extractApiErrorMessage(data, 'Registration failed. An account may already exist with this email.'));
         setIsLoading(false);
         return;
       }
 
-      const data = await res.json();
+      const payload = data as { user?: AuthUser; token?: string } | null;
+      if (!payload?.user || !payload?.token) {
+        setErrorMessage('Received an unexpected registration response from server.');
+        setIsLoading(false);
+        return;
+      }
       setIsLoading(false);
       onLoginSuccess({
-        ...data.user,
-        token: data.token,
+        ...payload.user,
+        token: payload.token,
       });
     } catch {
       setIsLoading(false);
@@ -250,24 +263,29 @@ export const AuthModal: FC<AuthModalProps> = ({
           setIsLoading(true);
           setErrorMessage('');
           try {
-            const res = await fetch('/api/v1/auth/google', {
+            const res = await fetch(apiUrl('/api/v1/auth/google'), {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ id_token: response.credential }),
             });
 
+            const data = await parseJsonSafe(res);
             if (!res.ok) {
-              const errData = await res.json().catch(() => ({ detail: 'Google Sign-In failed.' }));
-              setErrorMessage(errData.detail || 'Google ID token verification failed on server.');
+              setErrorMessage(extractApiErrorMessage(data, 'Google ID token verification failed on server.'));
               setIsLoading(false);
               return;
             }
 
-            const data = await res.json();
+            const payload = data as { user?: AuthUser; token?: string } | null;
+            if (!payload?.user || !payload?.token) {
+              setErrorMessage('Unexpected response during Google authentication.');
+              setIsLoading(false);
+              return;
+            }
             setIsLoading(false);
             onLoginSuccess({
-              ...data.user,
-              token: data.token,
+              ...payload.user,
+              token: payload.token,
             });
           } catch {
             setIsLoading(false);
@@ -297,6 +315,7 @@ export const AuthModal: FC<AuthModalProps> = ({
   const handleSendResetCode = async (e: FormEvent) => {
     e.preventDefault();
     setErrorMessage('');
+    setSuccessMessage('');
     if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
       setErrorMessage('Please enter a valid email to receive your password reset token.');
       return;
@@ -304,18 +323,24 @@ export const AuthModal: FC<AuthModalProps> = ({
 
     setIsLoading(true);
     try {
-      const res = await fetch('/api/v1/auth/forgot-password/request', {
+      const res = await fetch(apiUrl('/api/v1/auth/forgot-password/request'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email: email.trim().toLowerCase() }),
       });
 
-      const data = await res.json();
+      const rawData = await parseJsonSafe(res);
       setIsLoading(false);
+      if (!res.ok) {
+        setErrorMessage(extractApiErrorMessage(rawData, `Unable to initiate password recovery (HTTP ${res.status}).`));
+        return;
+      }
+
+      const data = (rawData || {}) as { dev_reset_token?: string; message?: string };
       setForgotStep(2);
       if (data.dev_reset_token) {
         setResetCode(data.dev_reset_token);
-        setSuccessMessage(`Reset token generated. [Local Hackathon Dev Mode]: Token auto-filled below.`);
+        setSuccessMessage('Reset token generated in local development mode and pre-filled below.');
       } else {
         setSuccessMessage(data.message || 'If an account is registered with this email, password reset instructions have been issued.');
       }
@@ -328,12 +353,17 @@ export const AuthModal: FC<AuthModalProps> = ({
   const handleVerifyAndResetPassword = async (e: FormEvent) => {
     e.preventDefault();
     setErrorMessage('');
+    setSuccessMessage('');
     if (!resetCode.trim()) {
       setErrorMessage('Please provide the single-use reset token.');
       return;
     }
     if (passwordScore < 3) {
       setErrorMessage('The new password must satisfy minimum security requirements.');
+      return;
+    }
+    if (newPassword.length > 72) {
+      setErrorMessage('Password must not exceed 72 characters.');
       return;
     }
     if (newPassword !== confirmNewPassword) {
@@ -343,7 +373,7 @@ export const AuthModal: FC<AuthModalProps> = ({
 
     setIsLoading(true);
     try {
-      const res = await fetch('/api/v1/auth/forgot-password/reset', {
+      const res = await fetch(apiUrl('/api/v1/auth/forgot-password/reset'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -352,9 +382,9 @@ export const AuthModal: FC<AuthModalProps> = ({
         }),
       });
 
+      const rawData = await parseJsonSafe(res);
       if (!res.ok) {
-        const err = await res.json().catch(() => ({ detail: 'Failed to reset password.' }));
-        setErrorMessage(err.detail || 'Password reset token is invalid or expired.');
+        setErrorMessage(extractApiErrorMessage(rawData, 'Password reset token is invalid or expired.'));
         setIsLoading(false);
         return;
       }
@@ -404,7 +434,9 @@ export const AuthModal: FC<AuthModalProps> = ({
           </div>
 
           <button
+            type="button"
             onClick={onClose}
+            aria-label="Close authentication modal"
             className="p-1.5 rounded-full text-charcoal-400 hover:text-white hover:bg-charcoal-800 transition-colors"
             title="Close"
           >
@@ -562,6 +594,7 @@ export const AuthModal: FC<AuthModalProps> = ({
                   <button
                     type="button"
                     onClick={() => setShowPassword(!showPassword)}
+                    aria-label={showPassword ? 'Hide password' : 'Show password'}
                     className="absolute right-3 top-2.5 text-charcoal-400 hover:text-charcoal-700"
                   >
                     {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
@@ -823,7 +856,7 @@ export const AuthModal: FC<AuthModalProps> = ({
                       <RefreshCw className="h-4 w-4 animate-spin" />
                     ) : (
                       <>
-                        <span>Send 6-Digit Reset Code</span>
+                        <span>Request Password Reset</span>
                         <ArrowRight className="h-3.5 w-3.5 text-terracotta-300" />
                       </>
                     )}

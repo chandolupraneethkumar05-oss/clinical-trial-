@@ -1,6 +1,7 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import type { FC, DragEvent } from 'react';
 import type { ClinicalProtocol } from '../types/protocol';
+import { apiUrl, extractApiErrorMessage, getStoredAuthToken, parseJsonSafe } from '../lib/api';
 import {
   X,
   Upload,
@@ -15,7 +16,8 @@ import {
 
 interface ProtocolUploadModalProps {
   onClose: () => void;
-  onProtocolLoaded: (protocol: ClinicalProtocol) => void;
+  onProtocolLoaded: (protocol: ClinicalProtocol) => void | Promise<void>;
+  onUnauthorized?: () => void;
 }
 
 type UploadState = 'idle' | 'loading' | 'success' | 'error';
@@ -84,6 +86,7 @@ const colorMap = {
 export const ProtocolUploadModal: FC<ProtocolUploadModalProps> = ({
   onClose,
   onProtocolLoaded,
+  onUnauthorized,
 }) => {
   const [uploadState, setUploadState] = useState<UploadState>('idle');
   const [loadedProtocol, setLoadedProtocol] = useState<ClinicalProtocol | null>(null);
@@ -94,6 +97,16 @@ export const ProtocolUploadModal: FC<ProtocolUploadModalProps> = ({
   const [loadingMsgIdx, setLoadingMsgIdx] = useState(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isMountedRef = useRef(true);
+
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+      if (timeoutRef.current) clearTimeout(timeoutRef.current);
+    };
+  }, []);
 
   // Cycle through loading messages
   useEffect(() => {
@@ -122,7 +135,8 @@ export const ProtocolUploadModal: FC<ProtocolUploadModalProps> = ({
     e.preventDefault();
     setIsDragging(false);
     const file = e.dataTransfer.files[0];
-    if (file && file.type === 'application/pdf') {
+    const isPdf = file && (file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf'));
+    if (isPdf) {
       setSelectedFile(file);
       setSelectedSample(null);
       setErrorMessage('');
@@ -149,14 +163,27 @@ export const ProtocolUploadModal: FC<ProtocolUploadModalProps> = ({
     setErrorMessage('');
 
     try {
-      const res = await fetch(`/api/v1/protocol/sample/${protocolType}`);
-      if (!res.ok) throw new Error(`Server returned ${res.status}`);
-      const protocol = await res.json() as ClinicalProtocol;
+      const res = await fetch(apiUrl(`/api/v1/protocol/sample/${protocolType}`));
+      const data = await parseJsonSafe(res);
+      if (!isMountedRef.current) return;
+      if (!res.ok) {
+        throw new Error(extractApiErrorMessage(data, `Server returned HTTP ${res.status}.`));
+      }
+      const protocol = data as ClinicalProtocol;
+      if (!protocol?.protocol_id) {
+        throw new Error('Server returned an unexpected protocol payload.');
+      }
       setLoadedProtocol(protocol);
       setUploadState('success');
       const delay = protocol.extraction_status === 'heuristic_fallback' ? 1200 : 600;
-      setTimeout(() => onProtocolLoaded(protocol), delay);
+      if (timeoutRef.current) clearTimeout(timeoutRef.current);
+      timeoutRef.current = setTimeout(() => {
+        if (isMountedRef.current) {
+          void onProtocolLoaded(protocol);
+        }
+      }, delay);
     } catch (err) {
+      if (!isMountedRef.current) return;
       setUploadState('error');
       setErrorMessage(err instanceof Error ? err.message : 'Failed to load sample protocol.');
     }
@@ -174,31 +201,42 @@ export const ProtocolUploadModal: FC<ProtocolUploadModalProps> = ({
       form.append('file', selectedFile);
 
       const headers: Record<string, string> = {};
-      try {
-        const stored = localStorage.getItem('protocolshield_user');
-        if (stored) {
-          const token = JSON.parse(stored)?.token;
-          if (token) headers['Authorization'] = `Bearer ${token}`;
-        }
-      } catch {}
+      const token = getStoredAuthToken();
+      if (token) headers['Authorization'] = `Bearer ${token}`;
 
-      const res = await fetch('/api/v1/protocol/upload', {
+      const res = await fetch(apiUrl('/api/v1/protocol/upload'), {
         method: 'POST',
         headers,
         body: form,
       });
 
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({ detail: 'Upload failed' }));
-        throw new Error(err.detail || `Server error ${res.status}`);
+      if (res.status === 401) {
+        onUnauthorized?.();
+        throw new Error('Your session has expired. Please sign in again.');
       }
 
-      const protocol = await res.json() as ClinicalProtocol;
+      const data = await parseJsonSafe(res);
+      if (!isMountedRef.current) return;
+
+      if (!res.ok) {
+        throw new Error(extractApiErrorMessage(data, `Server error ${res.status}`));
+      }
+
+      const protocol = data as ClinicalProtocol;
+      if (!protocol?.protocol_id) {
+        throw new Error('Server returned an unexpected protocol payload.');
+      }
       setLoadedProtocol(protocol);
       setUploadState('success');
       const delay = protocol.extraction_status === 'heuristic_fallback' ? 1200 : 600;
-      setTimeout(() => onProtocolLoaded(protocol), delay);
+      if (timeoutRef.current) clearTimeout(timeoutRef.current);
+      timeoutRef.current = setTimeout(() => {
+        if (isMountedRef.current) {
+          void onProtocolLoaded(protocol);
+        }
+      }, delay);
     } catch (err) {
+      if (!isMountedRef.current) return;
       setUploadState('error');
       setErrorMessage(
         err instanceof Error ? err.message : 'PDF extraction failed. Please try again.'

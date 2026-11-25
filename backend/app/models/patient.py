@@ -2,8 +2,15 @@
 ProtocolShield Synthetic Patient & Clinical Phenotype Models
 Structured according to FHIR R4 clinical observation & oncology profiles.
 """
+import math
 from typing import Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+
+def _require_finite(value: Optional[float], field_name: str) -> Optional[float]:
+    if value is not None and not math.isfinite(value):
+        raise ValueError(f"{field_name} must be a finite numeric value.")
+    return value
 
 
 class PatientCohortRecord(BaseModel):
@@ -35,7 +42,7 @@ class PatientCohortRecord(BaseModel):
     total_bilirubin: float = Field(..., description="Total Bilirubin (mg/dL, normal 0.2-1.2)")
     
     # Clinical History & Comorbidities
-    prior_lines_therapy: int = Field(..., ge=0, le=6, description="Number of prior lines of systemic therapy")
+    prior_lines_therapy: int = Field(..., ge=0, le=10, description="Number of prior lines of systemic therapy")
     prior_checkpoint_inhibitor: bool = Field(default=False, description="Previous exposure to anti-PD1/PD-L1")
     active_brain_metastases: bool = Field(default=False, description="Untreated or active central nervous system metastases")
     stable_treated_brain_mets: bool = Field(default=False, description="Radiologically stable treated CNS lesions")
@@ -43,26 +50,53 @@ class PatientCohortRecord(BaseModel):
     nyha_heart_failure_class: int = Field(default=0, ge=0, le=4, description="NYHA Heart Failure Functional Class")
     
     # Socioeconomic & Travel Friction Factors
-    distance_to_center_miles: float = Field(..., ge=1.0, le=150.0, description="Distance from residence to clinical trial investigative site")
+    distance_to_center_miles: float = Field(..., ge=1.0, le=200.0, description="Distance from residence to clinical trial investigative site")
     caregiver_accompanied: bool = Field(default=True, description="Whether patient has dedicated family/caregiver support for visits")
 
 
 class CohortFilterCriteria(BaseModel):
     """Filter criteria passed to simulate real-time patient eligibility."""
-    min_age: int = 18
-    max_age: int = 80
-    allowed_stages: list[str] = ["Stage IIIB", "Stage IV"]
-    max_ecog: int = 1
-    min_anc: float = 1500.0
-    min_platelets: float = 100.0
-    min_hemoglobin: float = 9.0
-    min_egfr: float = 50.0
-    max_total_bilirubin: float = 1.5
-    max_alt_multiplier: float = 2.5  # Multiple of Upper Limit of Normal (ULN)
-    max_alt_u_l: Optional[float] = None  # Explicit ALT threshold in U/L if specified by protocol
-    alt_uln_reference: float = 56.0  # Documented adult clinical reference standard ULN (U/L)
-    max_prior_lines: int = 2
+    min_age: int = Field(default=18, ge=0, le=120)
+    max_age: int = Field(default=80, ge=0, le=120)
+    allowed_stages: list[str] = Field(default_factory=lambda: ["Stage IIIB", "Stage IV"])
+    max_ecog: int = Field(default=1, ge=0, le=4)
+    min_anc: float = Field(default=1500.0, ge=0.0)
+    min_platelets: float = Field(default=100.0, ge=0.0)
+    min_hemoglobin: float = Field(default=9.0, ge=0.0)
+    min_egfr: float = Field(default=50.0, ge=0.0, le=200.0)
+    max_total_bilirubin: float = Field(default=1.5, ge=0.0)
+    max_alt_multiplier: float = Field(default=2.5, ge=0.0)  # Multiple of Upper Limit of Normal (ULN)
+    max_alt_u_l: Optional[float] = Field(default=None, ge=0.0)  # Explicit ALT threshold in U/L if specified by protocol
+    alt_uln_reference: float = Field(default=56.0, gt=0.0)  # Documented adult clinical reference standard ULN (U/L)
+    min_prior_lines: int = Field(default=0, ge=0, le=10)
+    max_prior_lines: int = Field(default=2, ge=0, le=10)
+    exclude_active_brain_mets: bool = True
     allow_stable_brain_mets: bool = True
     exclude_active_autoimmune: bool = True
     target_biomarker_egfr_negative: bool = False
-    min_pdl1_tps: Optional[float] = None
+    min_pdl1_tps: Optional[float] = Field(default=None, ge=0.0, le=100.0)
+
+    @field_validator(
+        "min_anc",
+        "min_platelets",
+        "min_hemoglobin",
+        "min_egfr",
+        "max_total_bilirubin",
+        "max_alt_multiplier",
+        "max_alt_u_l",
+        "alt_uln_reference",
+        "min_pdl1_tps",
+    )
+    @classmethod
+    def check_finite_floats(cls, v: Optional[float], info) -> Optional[float]:
+        return _require_finite(v, info.field_name)
+
+    @model_validator(mode="after")
+    def validate_bounds(self) -> "CohortFilterCriteria":
+        if self.min_age > self.max_age:
+            raise ValueError(f"min_age ({self.min_age}) cannot exceed max_age ({self.max_age}).")
+        if self.min_prior_lines > self.max_prior_lines:
+            raise ValueError(
+                f"min_prior_lines ({self.min_prior_lines}) cannot exceed max_prior_lines ({self.max_prior_lines})."
+            )
+        return self

@@ -7,6 +7,7 @@ import numpy as np
 from typing import Any
 from app.db.duckdb_client import db_client
 from app.models.patient import CohortFilterCriteria
+from app.engine.eligibility import compute_max_alt_u_l
 
 
 class CohortSimulationEngine:
@@ -16,10 +17,10 @@ class CohortSimulationEngine:
     def _build_filter_query(self, criteria: CohortFilterCriteria, stage_level: int = 4) -> tuple[str, list[Any]]:
         """
         Builds fully parameterized SQL queries for cohort eligibility evaluation.
-        Eliminates SQL injection and provides deterministic filtering.
+        Eliminates SQL injection and applies identical clinical rules to individual screening.
         """
         clauses = []
-        params = []
+        params: list[Any] = []
 
         # Stage 1: Age & Allowed Stage
         clauses.append("age >= ?")
@@ -27,10 +28,21 @@ class CohortSimulationEngine:
         clauses.append("age <= ?")
         params.append(criteria.max_age)
 
-        if criteria.allowed_stages:
-            placeholders = ", ".join(["?"] * len(criteria.allowed_stages))
-            clauses.append(f"cancer_stage IN ({placeholders})")
-            params.extend(criteria.allowed_stages)
+        non_empty_stages = [s.strip().lower() for s in (criteria.allowed_stages or []) if s and s.strip()]
+        if non_empty_stages:
+            stage_subclauses = []
+            for a_norm in non_empty_stages:
+                stage_subclauses.append(
+                    "(cancer_stage IS NOT NULL AND trim(cancer_stage) != '' AND ("
+                    "lower(trim(cancer_stage)) = ? "
+                    "OR starts_with(lower(trim(cancer_stage)), ?) "
+                    "OR starts_with(lower(trim(cancer_stage)), ?) "
+                    "OR starts_with(?, lower(trim(cancer_stage)) || ' ') "
+                    "OR starts_with(?, lower(trim(cancer_stage)) || '(')"
+                    "))"
+                )
+                params.extend([a_norm, a_norm + " ", a_norm + "(", a_norm, a_norm])
+            clauses.append("(" + " OR ".join(stage_subclauses) + ")")
         else:
             clauses.append("1 = 0")
 
@@ -41,11 +53,7 @@ class CohortSimulationEngine:
 
         if stage_level >= 3:
             # Stage 3: Hematologic & Renal/Hepatic Lab Cutoffs
-            if criteria.max_alt_u_l is not None:
-                max_alt = criteria.max_alt_u_l
-            else:
-                alt_uln = getattr(criteria, "alt_uln_reference", 56.0)
-                max_alt = criteria.max_alt_multiplier * alt_uln
+            max_alt, _ = compute_max_alt_u_l(criteria)
             clauses.append("anc >= ?")
             params.append(criteria.min_anc)
             clauses.append("platelets >= ?")
@@ -60,12 +68,16 @@ class CohortSimulationEngine:
             params.append(max_alt)
 
         if stage_level >= 4:
-            # Stage 4: Prior Lines & Comorbidities (Final Eligible)
+            # Stage 4: Prior Lines (min & max) & Comorbidities (Final Eligible)
+            clauses.append("prior_lines_therapy >= ?")
+            params.append(criteria.min_prior_lines)
             clauses.append("prior_lines_therapy <= ?")
             params.append(criteria.max_prior_lines)
 
+            if criteria.exclude_active_brain_mets:
+                clauses.append("active_brain_metastases = FALSE")
             if not criteria.allow_stable_brain_mets:
-                clauses.append("active_brain_metastases = FALSE AND stable_treated_brain_mets = FALSE")
+                clauses.append("stable_treated_brain_mets = FALSE")
             if criteria.exclude_active_autoimmune:
                 clauses.append("active_autoimmune_disease = FALSE")
             if criteria.target_biomarker_egfr_negative:
@@ -115,23 +127,26 @@ class CohortSimulationEngine:
             q_ecog, p_ecog = self._build_filter_query(crit_ecog, stage_level=4)
             ecog_gain = conn.execute(q_ecog, p_ecog).fetchone()[0] - final_eligible
 
-            # 3. Bilirubin relaxed to 2.0
-            crit_bili = criteria.model_copy(update={"max_total_bilirubin": 2.0})
+            # 3. Bilirubin relaxed (2.0 mg/dL, or +0.5 if already >= 2.0)
+            proposed_bili = 2.0 if criteria.max_total_bilirubin < 2.0 else round(criteria.max_total_bilirubin + 0.5, 1)
+            crit_bili = criteria.model_copy(update={"max_total_bilirubin": proposed_bili})
             q_bili, p_bili = self._build_filter_query(crit_bili, stage_level=4)
             bili_gain = conn.execute(q_bili, p_bili).fetchone()[0] - final_eligible
 
             safe_pool = max(1, total_pool)
+            yield_pct = round((final_eligible / safe_pool) * 100.0, 2) if total_pool > 0 else 0.0
+            fail_rate = round(100.0 - yield_pct, 2) if total_pool > 0 else 0.0
             return {
                 "total_population": total_pool,
                 "final_eligible_count": final_eligible,
-                "overall_yield_percentage": round((final_eligible / safe_pool) * 100.0, 2),
-                "screen_failure_rate": round(100.0 - ((final_eligible / safe_pool) * 100.0), 2),
+                "overall_yield_percentage": yield_pct,
+                "screen_failure_rate": fail_rate,
                 "funnel_stages": [
-                    {"stage": "Total Monitored Cohort", "count": total_pool, "pass_rate": 100.0},
-                    {"stage": "Age & Cancer Stage", "count": stage1_passed, "pass_rate": round((stage1_passed / safe_pool) * 100, 1)},
-                    {"stage": "ECOG Performance (<= " + str(criteria.max_ecog) + ")", "count": stage2_passed, "pass_rate": round((stage2_passed / safe_pool) * 100, 1)},
-                    {"stage": "Organ & Lab Functions (eGFR, ANC, ALT)", "count": stage3_passed, "pass_rate": round((stage3_passed / safe_pool) * 100, 1)},
-                    {"stage": "Comorbidity & Final Eligibility", "count": final_eligible, "pass_rate": round((final_eligible / safe_pool) * 100, 1)},
+                    {"stage": "Total Monitored Cohort", "count": total_pool, "pass_rate": 100.0 if total_pool > 0 else 0.0},
+                    {"stage": "Age & Cancer Stage", "count": stage1_passed, "pass_rate": round((stage1_passed / safe_pool) * 100, 1) if total_pool > 0 else 0.0},
+                    {"stage": "ECOG Performance (<= " + str(criteria.max_ecog) + ")", "count": stage2_passed, "pass_rate": round((stage2_passed / safe_pool) * 100, 1) if total_pool > 0 else 0.0},
+                    {"stage": "Organ & Lab Functions (eGFR, ANC, ALT)", "count": stage3_passed, "pass_rate": round((stage3_passed / safe_pool) * 100, 1) if total_pool > 0 else 0.0},
+                    {"stage": "Comorbidity & Final Eligibility", "count": final_eligible, "pass_rate": round((final_eligible / safe_pool) * 100, 1) if total_pool > 0 else 0.0},
                 ],
                 "sensitivity_opportunities": [
                     {
@@ -151,7 +166,7 @@ class CohortSimulationEngine:
                     {
                         "parameter": "Total Bilirubin",
                         "current_rule": f"Bilirubin <= {criteria.max_total_bilirubin} mg/dL",
-                        "proposed_relaxation": "Bilirubin <= 2.0 mg/dL",
+                        "proposed_relaxation": f"Bilirubin <= {proposed_bili} mg/dL",
                         "additional_candidates": bili_gain,
                         "relative_gain_percent": round((bili_gain / max(1, final_eligible)) * 100, 1)
                     }
@@ -202,12 +217,13 @@ class CohortSimulationEngine:
             dropouts_this_week = current_active * weekly_hazard
             current_active = max(0.0, current_active - dropouts_this_week)
             
-            cumulative_dropouts = int(enrolled_cohort_size - current_active)
-            retained_pct = round((current_active / max(1, enrolled_cohort_size)) * 100.0, 1)
+            active_patients = int(np.round(current_active))
+            cumulative_dropouts = max(0, enrolled_cohort_size - active_patients)
+            retained_pct = round((current_active / enrolled_cohort_size) * 100.0, 1) if enrolled_cohort_size > 0 else 0.0
 
             retention_curve.append({
                 "week": week,
-                "active_patients": int(np.round(current_active)),
+                "active_patients": active_patients,
                 "retained_percentage": retained_pct,
                 "cumulative_dropouts": cumulative_dropouts,
                 "weekly_dropout_hazard": round(weekly_hazard * 100, 2),

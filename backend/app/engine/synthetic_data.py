@@ -3,8 +3,11 @@ ProtocolShield Synthetic Oncology Cohort Generator
 Generates clinically calibrated, epidemiology-accurate NSCLC patient records
 modeled after real-world RWD and SEER / Flatiron Health distributions.
 """
+import threading
 import numpy as np
 import pandas as pd
+
+_seed_lock = threading.Lock()
 
 
 def generate_synthetic_cohort(total_patients: int = 10000, seed: int = 42) -> pd.DataFrame:
@@ -147,17 +150,19 @@ def generate_synthetic_cohort(total_patients: int = 10000, seed: int = 42) -> pd
 
 
 def seed_database_if_empty(total_patients: int = 10000) -> int:
-    """Populates DuckDB with synthetic cohort if table is empty."""
+    """
+    Idempotently populates DuckDB with synthetic cohort if table has fewer than target records.
+    Guarded by lock and atomic transaction to prevent concurrent seeding corruption.
+    """
     from app.db.duckdb_client import db_client
-    count = db_client.count_patients()
-    if count >= total_patients:
-        return count
-    
-    df = generate_synthetic_cohort(total_patients=total_patients)
-    conn = db_client.get_connection()
-    try:
-        conn.register("df_temp", df)
-        conn.execute("INSERT OR REPLACE INTO patients SELECT * FROM df_temp")
-        return db_client.count_patients()
-    finally:
-        conn.close()
+    with _seed_lock:
+        count = db_client.count_patients()
+        if count >= total_patients:
+            return count
+
+        df = generate_synthetic_cohort(total_patients=total_patients)
+        with db_client.transaction() as conn:
+            conn.register("df_temp", df)
+            conn.execute("INSERT OR REPLACE INTO patients SELECT * FROM df_temp")
+            row = conn.execute("SELECT count(*) FROM patients").fetchone()
+            return int(row[0]) if row else 0
