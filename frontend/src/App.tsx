@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, lazy, Suspense } from 'react';
 import { LandingPage } from './components/LandingPage';
 import type { StudioTab } from './components/StudioWorkspace';
-import type { AuditEvent, AuditVerificationStatus } from './types/audit';
+import type { AuditEvent, AuditVerificationStatus, PatientScreeningRecord } from './types/audit';
 import type {
   ClinicalProtocol,
   FunnelSimulationResult,
@@ -119,6 +119,9 @@ export default function App() {
   const [auditLoading, setAuditLoading] = useState<boolean>(false);
   const [auditError, setAuditError] = useState<string | null>(null);
   const [auditVerification, setAuditVerification] = useState<AuditVerificationStatus | null>(null);
+  const [patientScreenings, setPatientScreenings] = useState<PatientScreeningRecord[]>([]);
+  const [verifyingScreeningId, setVerifyingScreeningId] = useState<string | null>(null);
+  const [screeningVerifyError, setScreeningVerifyError] = useState<string | null>(null);
 
   // ── 4. Modal Overlays ─────────────────────────────────────────────────────
   const [initialResetToken, setInitialResetToken] = useState<string>(() => initialRoute.resetToken);
@@ -245,13 +248,16 @@ export default function App() {
     setAuditEvents([]);
     setAuditVerification(null);
     setAuditError(null);
+    setPatientScreenings([]);
+    setScreeningVerifyError(null);
+    setVerifyingScreeningId(null);
     setViewMode('landing');
     window.location.hash = '#/';
     setAuthModalView('signin');
     setShowAuthModal(true);
   }, []);
 
-  // Fetch real audit log records and verification status from backend
+  // Fetch real audit log records, verification status, and submitted screenings from backend
   const fetchAuditData = useCallback(
     async (signal?: AbortSignal) => {
       if (!user?.token || user.role === 'patient') return;
@@ -259,14 +265,15 @@ export default function App() {
       setAuditError(null);
       try {
         const headers = getAuthHeaders();
-        const [logsRes, verifyRes] = await Promise.all([
+        const [logsRes, verifyRes, scrRes] = await Promise.all([
           fetch(apiUrl('/api/v1/audit/logs'), { headers, signal }),
           fetch(apiUrl('/api/v1/audit/verify'), { headers, signal }),
+          fetch(apiUrl('/api/v1/patient/screenings'), { headers, signal }),
         ]);
 
         if (signal?.aborted) return;
 
-        if (logsRes.status === 401 || verifyRes.status === 401) {
+        if (logsRes.status === 401 || verifyRes.status === 401 || scrRes.status === 401) {
           handleSessionExpired();
           return;
         }
@@ -283,6 +290,11 @@ export default function App() {
         if (verifyRes.ok) {
           const verifyData = await parseJsonSafe(verifyRes);
           setAuditVerification((verifyData as AuditVerificationStatus | null) ?? null);
+        }
+
+        if (scrRes.ok) {
+          const scrData = await parseJsonSafe(scrRes);
+          setPatientScreenings(Array.isArray(scrData) ? scrData : []);
         }
       } catch (err) {
         if ((err as Error)?.name === 'AbortError') return;
@@ -647,6 +659,30 @@ export default function App() {
     [protocol, getAuthHeaders, handleSessionExpired, handleProtocolLoaded, fetchAuditData]
   );
 
+  const handleVerifyScreening = useCallback(
+    async (screeningId: string) => {
+      setVerifyingScreeningId(screeningId);
+      setScreeningVerifyError(null);
+      try {
+        await apiFetchJson(`/api/v1/patient/screenings/${encodeURIComponent(screeningId)}/verify`, {
+          method: 'POST',
+          headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({}),
+          onUnauthorized: handleSessionExpired,
+        });
+        await fetchAuditData();
+      } catch (err) {
+        if (err instanceof SessionExpiredError) return;
+        setScreeningVerifyError(
+          err instanceof Error ? err.message : `Failed to verify screening ${screeningId}.`
+        );
+      } finally {
+        setVerifyingScreeningId(null);
+      }
+    },
+    [getAuthHeaders, handleSessionExpired, fetchAuditData]
+  );
+
   // ── 8. Strict Authentication Lifecycle Handlers ───────────────────────────
   const handleLoginSuccess = (authUser: AuthUser) => {
     setUser(authUser);
@@ -699,6 +735,9 @@ export default function App() {
     setAuditEvents([]);
     setAuditVerification(null);
     setAuditError(null);
+    setPatientScreenings([]);
+    setScreeningVerifyError(null);
+    setVerifyingScreeningId(null);
     try {
       localStorage.removeItem('protocolshield_user');
     } catch {
@@ -819,6 +858,10 @@ export default function App() {
             auditError={auditError}
             onRetryAudit={() => fetchAuditData()}
             auditVerification={auditVerification}
+            patientScreenings={patientScreenings}
+            verifyingScreeningId={verifyingScreeningId}
+            screeningVerifyError={screeningVerifyError}
+            onVerifyScreening={handleVerifyScreening}
           />
         )}
 

@@ -217,8 +217,9 @@ def test_missing_optional_fields_never_invent_defaults_or_misleading_labels(pati
         # Missing distance_to_center_miles must remain None, never 25.0 or 28.5
         assert match["patient_burden_summary"]["travel_distance_miles"] is None
         assert match["patient_burden_summary"]["study_duration_weeks"] >= 4
-        # Missing CNS / autoimmune / EGFR must trigger review (cannot become POTENTIALLY_ELIGIBLE or ELIGIBLE)
-        assert match["match_status"] != "POTENTIALLY_ELIGIBLE"
+        # Missing CNS / autoimmune / EGFR must trigger review (cannot become PRELIMINARY_MATCH, POTENTIALLY_ELIGIBLE, or verified)
+        assert match["match_status"] not in {"POTENTIALLY_ELIGIBLE", "PRELIMINARY_MATCH", "INVESTIGATOR_VERIFIED_ELIGIBLE"}
+        assert match["is_investigator_verified"] is False
 
         for chk in match["criteria_breakdown"]:
             if chk["criterion"] in {
@@ -484,3 +485,169 @@ def test_optimizer_returns_404_for_unknown_amendment(doctor_headers):
         headers=doctor_headers,
     )
     assert resp.status_code == 404
+
+
+# ── 5. Provenance-Aware Eligibility & Investigator Verification Workflow ──────
+
+COMPLETE_ELIGIBLE_NSCLC_PAYLOAD = {
+    "age": 62,
+    "cancer_stage": "Stage IV (Oligometastatic)",
+    "ecog_score": 1,
+    "egfr_ml_min": 72.0,
+    "anc": 2400.0,
+    "platelets": 200.0,
+    "hemoglobin": 12.5,
+    "total_bilirubin": 0.9,
+    "alt_u_l": 35.0,
+    "prior_lines": 0,
+    "has_active_brain_mets": False,
+    "has_stable_brain_mets": True,
+    "has_active_autoimmune": False,
+    "has_egfr_sensitizing_mutation": False,
+    "distance_to_center_miles": 18.0,
+}
+
+
+def test_patient_complete_criteria_yields_preliminary_match_not_verified(patient_headers):
+    payload = {
+        **COMPLETE_ELIGIBLE_NSCLC_PAYLOAD,
+        "data_provenance": "verified_clinical",
+        "investigator_verified": True,
+    }
+    resp = client.post("/api/v1/patient/screen-eligibility", json=payload, headers=patient_headers)
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+
+    assert data["screening_id"].startswith("scr-")
+    assert data["data_provenance"] == PROVENANCE_PATIENT_REPORTED
+    assert data["provenance_verified"] is False
+    assert data["verified_by"] is None
+    assert data["verified_at"] is None
+
+    nsclc = next(m for m in data["matches"] if m["protocol_id"] == "PS-ONC-2026-001")
+    assert nsclc["match_status"] == "PRELIMINARY_MATCH"
+    assert nsclc["is_investigator_verified"] is False
+    assert nsclc["investigator_confirmation_required"] is True
+    assert "Preliminary Match" in nsclc["match_status_label"]
+    assert "Unverified" in nsclc["match_status_label"]
+
+
+def test_authorized_investigator_verification_upgrades_status_and_records_audit(patient_headers, doctor_headers):
+    import uuid
+
+    # 1. Fresh patient submits complete profile -> stored as unverified preliminary screening
+    pat_email = f"verify.flow.{uuid.uuid4().hex[:6]}@example.org"
+    signup = client.post(
+        "/api/v1/auth/signup",
+        json={"name": "Verify Flow Patient", "email": pat_email, "password": "StrongPassword2026!"},
+    )
+    assert signup.status_code == 200
+    pat_id = signup.json()["user"]["id"]
+    pat_headers = {"Authorization": f"Bearer {signup.json()['token']}"}
+
+    screen_resp = client.post(
+        "/api/v1/patient/screen-eligibility",
+        json=COMPLETE_ELIGIBLE_NSCLC_PAYLOAD,
+        headers=pat_headers,
+    )
+    assert screen_resp.status_code == 200
+    prelim_data = screen_resp.json()
+    screening_id = prelim_data["screening_id"]
+    prelim_nsclc = next(m for m in prelim_data["matches"] if m["protocol_id"] == "PS-ONC-2026-001")
+    assert prelim_nsclc["match_status"] == "PRELIMINARY_MATCH"
+
+    # 2. Unauthorized verification attempt by patient or unauthenticated user must fail
+    unauth_verify = client.post(f"/api/v1/patient/screenings/{screening_id}/verify", json={})
+    assert unauth_verify.status_code == 401
+    pat_verify = client.post(
+        f"/api/v1/patient/screenings/{screening_id}/verify",
+        json={"notes": "Self-approving"},
+        headers=pat_headers,
+    )
+    assert pat_verify.status_code == 403
+
+    # Default patient user cannot see fresh patient's screening record (IDOR prevention)
+    other_list = client.get("/api/v1/patient/screenings", headers=patient_headers)
+    assert other_list.status_code == 200
+    assert all(r["screening_id"] != screening_id for r in other_list.json())
+
+    # 3. Authorized doctor verifies the screening record
+    doc_verify = client.post(
+        f"/api/v1/patient/screenings/{screening_id}/verify",
+        json={"notes": "Chart & pathology labs verified in EHR."},
+        headers=doctor_headers,
+    )
+    assert doc_verify.status_code == 200, doc_verify.text
+    verified_data = doc_verify.json()
+
+    assert verified_data["screening_id"] == screening_id
+    assert verified_data["data_provenance"] == PROVENANCE_INVESTIGATOR_VERIFIED
+    assert verified_data["provenance_verified"] is True
+    assert verified_data["verified_by"] == "Dr. Elena Vance"
+    assert verified_data["verified_by_role"] == "doctor"
+    assert verified_data["verified_at"] is not None
+    assert verified_data["verification_notes"] == "Chart & pathology labs verified in EHR."
+
+    verified_nsclc = next(m for m in verified_data["matches"] if m["protocol_id"] == "PS-ONC-2026-001")
+    assert verified_nsclc["match_status"] == "INVESTIGATOR_VERIFIED_ELIGIBLE"
+    assert verified_nsclc["is_investigator_verified"] is True
+    assert verified_nsclc["investigator_confirmation_required"] is False
+    assert verified_nsclc["match_status"] != prelim_nsclc["match_status"]
+
+    # 4. /records/{patient_id} reflects stored investigator verification
+    rec_resp = client.get(f"/api/v1/patient/records/{pat_id}", headers=pat_headers)
+    assert rec_resp.status_code == 200
+    assert rec_resp.json()["data_provenance"] == PROVENANCE_INVESTIGATOR_VERIFIED
+    assert rec_resp.json()["provenance_verified"] is True
+    assert rec_resp.json()["verified_by"] == "Dr. Elena Vance"
+
+    # 5. Audit ledger contains INVESTIGATOR_CLINICAL_VERIFICATION event & chain remains valid
+    audit_logs = client.get("/api/v1/audit/logs", headers=doctor_headers).json()
+    assert any(
+        evt["event_type"] == "INVESTIGATOR_CLINICAL_VERIFICATION" and screening_id in evt["details"]
+        for evt in audit_logs
+    )
+    audit_verify = client.get("/api/v1/audit/verify", headers=doctor_headers).json()
+    assert audit_verify["valid"] is True
+
+
+def test_synthetic_demo_cannot_be_verified_and_missing_data_never_becomes_verified_eligible(patient_headers, doctor_headers):
+    # Synthetic demo screening stays preliminary and cannot be promoted to investigator_verified
+    demo_resp = client.post(
+        "/api/v1/patient/screen-eligibility",
+        json={**COMPLETE_ELIGIBLE_NSCLC_PAYLOAD, "is_demo_profile": True},
+        headers=patient_headers,
+    )
+    assert demo_resp.status_code == 200
+    demo_data = demo_resp.json()
+    assert demo_data["data_provenance"] == PROVENANCE_SYNTHETIC_DEMO
+    assert demo_data["is_synthetic_data"] is True
+    demo_nsclc = next(m for m in demo_data["matches"] if m["protocol_id"] == "PS-ONC-2026-001")
+    assert demo_nsclc["match_status"] == "PRELIMINARY_MATCH"
+    assert "Synthetic Demo" in demo_nsclc["match_status_label"]
+
+    promote_demo = client.post(
+        f"/api/v1/patient/screenings/{demo_data['screening_id']}/verify",
+        json={},
+        headers=doctor_headers,
+    )
+    assert promote_demo.status_code == 400
+
+    # Doctor submitting verified screening with MISSING labs still evaluates to REQUIRES_REVIEW (never INVESTIGATOR_VERIFIED_ELIGIBLE)
+    missing_verified = client.post(
+        "/api/v1/patient/screen-eligibility",
+        json={
+            "investigator_verified": True,
+            "age": 60,
+            "cancer_stage": "Stage IV (Oligometastatic)",
+            "ecog_score": 1,
+            "egfr_ml_min": 70.0,
+        },
+        headers=doctor_headers,
+    )
+    assert missing_verified.status_code == 200
+    mv_data = missing_verified.json()
+    assert mv_data["data_provenance"] == PROVENANCE_INVESTIGATOR_VERIFIED
+    for m in mv_data["matches"]:
+        assert m["match_status"] != "INVESTIGATOR_VERIFIED_ELIGIBLE"
+        assert m["match_status"] in {"REQUIRES_REVIEW", "NOT_ELIGIBLE"}

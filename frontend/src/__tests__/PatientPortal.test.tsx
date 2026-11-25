@@ -46,6 +46,9 @@ describe('PatientPortal clinical safety, provenance, validation & concurrency', 
       if (url.includes('/api/v1/patient/interests')) {
         return Promise.resolve(new Response(JSON.stringify([]), { status: 200 }));
       }
+      if (url.includes('/api/v1/patient/screenings')) {
+        return Promise.resolve(new Response(JSON.stringify([]), { status: 200 }));
+      }
       return Promise.reject(new Error(`Unexpected call: ${url}`));
     });
     vi.stubGlobal('fetch', fetchMock);
@@ -79,6 +82,9 @@ describe('PatientPortal clinical safety, provenance, validation & concurrency', 
     const capturedPayloads: Array<Record<string, unknown>> = [];
     const fetchMock = vi.fn().mockImplementation((url: string, init?: RequestInit) => {
       if (url.includes('/api/v1/patient/interests')) {
+        return Promise.resolve(new Response(JSON.stringify([]), { status: 200 }));
+      }
+      if (url.includes('/api/v1/patient/screenings')) {
         return Promise.resolve(new Response(JSON.stringify([]), { status: 200 }));
       }
       if (url.includes('/api/v1/patient/screen-eligibility')) {
@@ -199,6 +205,120 @@ describe('PatientPortal clinical safety, provenance, validation & concurrency', 
     expect((screen.getByLabelText(/Age \(Years\)/i) as HTMLInputElement).value).toBe('');
   });
 
+  it('distinguishes preliminary patient-reported matches from investigator-verified eligibility', async () => {
+    const fetchMock = vi.fn().mockImplementation((url: string) => {
+      if (url.includes('/api/v1/patient/interests')) {
+        return Promise.resolve(new Response(JSON.stringify([]), { status: 200 }));
+      }
+      if (url.includes('/api/v1/patient/screenings')) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify([
+              {
+                screening_id: 'scr-verified-001',
+                patient_id: TEST_PATIENT_USER.id,
+                data_provenance: 'investigator_verified',
+                is_synthetic_data: false,
+                investigator_verified: true,
+                verified_by: 'Dr. Elena Vance',
+                verified_by_role: 'doctor',
+                verified_at: '2026-11-25T12:00:00Z',
+                created_at: '2026-11-25T11:30:00Z',
+                matches: [
+                  {
+                    protocol_id: 'PS-ONC-2026-001',
+                    title: 'Phase III NSCLC Study',
+                    indication: 'NSCLC',
+                    phase: 'Phase III',
+                    match_status: 'INVESTIGATOR_VERIFIED_ELIGIBLE',
+                    match_score_pct: 100,
+                    passed_criteria_count: 6,
+                    total_criteria_count: 6,
+                    criteria_breakdown: [],
+                    patient_burden_summary: {
+                      pbi_score: 48,
+                      attrition_risk_tier: 'Moderate',
+                      total_study_visits: 10,
+                      total_clinic_hours: 20,
+                      travel_distance_miles: 15,
+                      telehealth_eligible_visits: 2,
+                    },
+                  },
+                ],
+              },
+            ]),
+            { status: 200 }
+          )
+        );
+      }
+      if (url.includes('/api/v1/patient/screen-eligibility')) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              screening_id: 'scr-prelim-002',
+              patient_id: TEST_PATIENT_USER.id,
+              is_synthetic_data: false,
+              data_provenance: 'patient_reported',
+              provenance_verified: false,
+              evaluated_trials_count: 1,
+              matches: [
+                {
+                  protocol_id: 'PS-ONC-2026-001',
+                  title: 'Phase III NSCLC Study',
+                  indication: 'NSCLC',
+                  phase: 'Phase III',
+                  match_status: 'PRELIMINARY_MATCH',
+                  match_status_label: 'Preliminary Match (Patient-Reported — Unverified)',
+                  is_investigator_verified: false,
+                  match_score_pct: 100,
+                  passed_criteria_count: 6,
+                  total_criteria_count: 6,
+                  criteria_breakdown: [],
+                  patient_burden_summary: {
+                    pbi_score: 48,
+                    attrition_risk_tier: 'Moderate',
+                    total_study_visits: 10,
+                    total_clinic_hours: 20,
+                    travel_distance_miles: null,
+                    telehealth_eligible_visits: 2,
+                  },
+                },
+              ],
+              recruitment_support_summary: '1 Preliminary Match (Unverified)',
+            }),
+            { status: 200 }
+          )
+        );
+      }
+      return Promise.reject(new Error(`Unexpected URL: ${url}`));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(
+      <PatientPortal
+        user={TEST_PATIENT_USER}
+        onSignOut={vi.fn()}
+        onSwitchPersona={vi.fn()}
+        onOpenAuth={vi.fn()}
+      />
+    );
+
+    // Loaded verification history clearly displays verified investigator attribution
+    await waitFor(() => {
+      expect(screen.getByText(/scr-verified-001/i)).toBeTruthy();
+      expect(screen.getByText(/Verified by Dr\. Elena Vance/i)).toBeTruthy();
+    });
+
+    fillRequiredClinicalInputs();
+    fireEvent.click(screen.getByRole('button', { name: /Run Eligibility Screening/i }));
+
+    await waitFor(() => {
+      expect(screen.getAllByText(/Preliminary Match \(Patient-Reported — Unverified\)/i).length).toBeGreaterThan(0);
+    });
+    expect(screen.queryByText(/^✓ Investigator-Verified Eligible$/i)).toBeNull();
+    expect(screen.getByText(/investigator confirmation required before enrollment/i)).toBeTruthy();
+  });
+
   it('displays API error responses safely without crashing or showing fake matches', async () => {
     const fetchMock = vi.fn().mockImplementation((url: string) => {
       if (url.includes('/api/v1/patient/interests')) {
@@ -241,6 +361,9 @@ describe('PatientPortal clinical safety, provenance, validation & concurrency', 
       if (url.includes('/api/v1/patient/interests')) {
         return Promise.resolve(new Response(JSON.stringify([]), { status: 200 }));
       }
+      if (url.includes('/api/v1/patient/screenings')) {
+        return Promise.resolve(new Response(JSON.stringify([]), { status: 200 }));
+      }
       if (url.includes('/api/v1/patient/screen-eligibility')) {
         init?.signal?.addEventListener('abort', () => {
           firstAborted = true;
@@ -280,7 +403,7 @@ describe('PatientPortal clinical safety, provenance, validation & concurrency', 
               title: 'Stale Trial Result',
               indication: 'NSCLC',
               phase: 'Phase III',
-              match_status: 'POTENTIALLY_ELIGIBLE',
+              match_status: 'PRELIMINARY_MATCH',
               match_score_pct: 100,
               passed_criteria_count: 1,
               total_criteria_count: 1,

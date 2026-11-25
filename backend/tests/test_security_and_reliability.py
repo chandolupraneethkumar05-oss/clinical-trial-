@@ -383,20 +383,40 @@ def test_cross_patient_idor_blocked_and_jwt_tampering_rejected():
 
 # ── 4. Health/Readiness, Seed Safety, Audit Ordering, Benchmark & Upload ─────
 
-def test_health_and_ready_reflect_duckdb_status_without_leaking_paths():
+def test_health_and_ready_reflect_duckdb_status_without_leaking_paths(monkeypatch):
     h = client.get("/health")
     r = client.get("/ready")
-    assert h.status_code == 200 and h.json()["status"] == "healthy"
+    assert h.status_code == 200
+    assert h.json()["status"] == "healthy"
+    # Liveness probe must not claim DB readiness or expose database paths
+    assert "database" not in h.json()
     assert r.status_code == 200 and r.json()["status"] == "ready"
-    assert "duckdb" not in str(h.json()).lower() or "protocolshield_cohort.duckdb" not in str(h.json())
+    assert r.json()["checks"]["database"] == "connected"
+    assert "protocolshield_cohort.duckdb" not in str(h.json())
+    assert "protocolshield_cohort.duckdb" not in str(r.json())
 
     with patch("app.main.db_client.check_health", return_value=(False, 0)):
-        h_down = client.get("/health")
+        # Liveness remains healthy; readiness fails closed with 503
+        h_liveness = client.get("/health")
         r_down = client.get("/ready")
-        assert h_down.status_code == 503
-        assert h_down.json()["status"] == "unhealthy"
+        assert h_liveness.status_code == 200
         assert r_down.status_code == 503
-        assert "protocolshield_cohort" not in str(h_down.json())
+        assert r_down.json()["status"] == "not_ready"
+        assert r_down.json()["checks"]["database"] == "unavailable"
+        assert "protocolshield_cohort" not in str(r_down.json())
+
+    # Exception in DB health check degrades /ready safely to 503 without leaking stack traces
+    with patch("app.main.db_client.check_health", side_effect=RuntimeError("secret /var/data/db path error")):
+        r_exc = client.get("/ready")
+        assert r_exc.status_code == 503
+        assert "/var/data" not in str(r_exc.json())
+
+    # Production running in-memory fallback must fail /ready with 503
+    monkeypatch.setattr("app.main.settings.ENVIRONMENT", "production")
+    monkeypatch.setattr("app.main.db_client._is_in_memory_fallback", True)
+    r_mem = client.get("/ready")
+    assert r_mem.status_code == 503
+    assert r_mem.json()["checks"]["persistent_storage"] is False
 
 
 def test_duckdb_production_lock_never_falls_back_to_memory(monkeypatch):

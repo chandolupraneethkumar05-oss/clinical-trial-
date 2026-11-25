@@ -83,6 +83,20 @@ app.add_middleware(
     allow_headers=["Authorization", "Content-Type", "Accept", "X-Requested-With"],
 )
 
+@app.middleware("http")
+async def security_headers_middleware(request: Request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+    if request.url.path.startswith(f"{settings.API_V1_STR}/auth") or request.url.path.startswith(
+        f"{settings.API_V1_STR}/patient"
+    ):
+        response.headers.setdefault("Cache-Control", "no-store")
+    return response
+
+
 # Include Routers
 app.include_router(protocol_router, prefix=settings.API_V1_STR)
 app.include_router(cohort_router, prefix=settings.API_V1_STR)
@@ -106,51 +120,52 @@ async def root():
 @app.get("/health")
 async def health_check():
     """
-    Liveness and core database connectivity check.
-    Returns HTTP 503 if DuckDB or required schema tables are unavailable.
-    Never exposes internal paths, configuration values, or secrets.
+    Lightweight application process liveness probe.
+    Does not claim database readiness; use /ready for dependency & initialization checks.
     """
-    db_ok, _ = db_client.check_health(verify_tables=True)
-    if not db_ok:
-        return JSONResponse(
-            status_code=503,
-            content={
-                "status": "unhealthy",
-                "service": "ProtocolShield Intelligence Backend",
-                "database": "unavailable",
-            },
-        )
     return {
         "status": "healthy",
-        "service": "ProtocolShield Intelligence Backend",
-        "database": "connected",
+        "service": settings.PROJECT_NAME,
+        "version": settings.VERSION,
     }
 
 
 @app.get("/ready")
 async def readiness_check():
     """
-    Readiness probe verifying DuckDB connectivity, core tables, and cohort availability.
-    In production, also ensures the database is not running in an unexpected in-memory fallback.
+    Readiness probe verifying DuckDB connectivity, required schema initialization, and cohort seeding.
+    Returns HTTP 503 if critical dependencies are unavailable.
+    Never exposes internal paths, configuration values, connection strings, or secrets.
     """
-    db_ok, cohort_count = db_client.check_health(verify_tables=True)
+    try:
+        db_ok, cohort_count = db_client.check_health(verify_tables=True)
+    except Exception:
+        db_ok, cohort_count = False, 0
+
     in_mem_prod = settings.is_production() and getattr(db_client, "_is_in_memory_fallback", False)
-    is_ready = db_ok and cohort_count > 0 and not in_mem_prod
+    cohort_loaded = cohort_count > 0
+    is_ready = db_ok and cohort_loaded and not in_mem_prod
 
     if not is_ready:
         return JSONResponse(
             status_code=503,
             content={
                 "status": "not_ready",
-                "service": "ProtocolShield Intelligence Backend",
-                "database": "connected" if db_ok else "unavailable",
-                "cohort_seeded": cohort_count > 0,
+                "service": settings.PROJECT_NAME,
+                "checks": {
+                    "database": "connected" if db_ok else "unavailable",
+                    "cohort_initialized": cohort_loaded,
+                    "persistent_storage": not in_mem_prod,
+                },
             },
         )
 
     return {
         "status": "ready",
-        "service": "ProtocolShield Intelligence Backend",
-        "database": "connected",
-        "cohort_seeded": True,
+        "service": settings.PROJECT_NAME,
+        "checks": {
+            "database": "connected",
+            "cohort_initialized": True,
+            "persistent_storage": True,
+        },
     }

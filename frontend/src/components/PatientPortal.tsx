@@ -52,7 +52,18 @@ export interface TrialMatch {
   title: string;
   indication: string;
   phase: string;
-  match_status: 'POTENTIALLY_ELIGIBLE' | 'REQUIRES_REVIEW' | 'NOT_ELIGIBLE' | 'ELIGIBLE' | 'BORDERLINE' | 'INELIGIBLE';
+  match_status:
+    | 'INVESTIGATOR_VERIFIED_ELIGIBLE'
+    | 'PRELIMINARY_MATCH'
+    | 'REQUIRES_REVIEW'
+    | 'NOT_ELIGIBLE'
+    | 'POTENTIALLY_ELIGIBLE'
+    | 'ELIGIBLE'
+    | 'BORDERLINE'
+    | 'INELIGIBLE';
+  match_status_label?: string;
+  eligibility_classification?: string;
+  is_investigator_verified?: boolean;
   match_score_pct: number;
   passed_criteria_count: number;
   total_criteria_count: number;
@@ -69,6 +80,20 @@ export interface TrialMatch {
   };
   investigator_confirmation_required?: boolean;
   investigator_disclaimer?: string;
+}
+
+export interface StoredScreeningRecord {
+  screening_id: string;
+  patient_id: string;
+  data_provenance: string;
+  is_synthetic_data: boolean;
+  investigator_verified: boolean;
+  verified_by?: string | null;
+  verified_by_role?: string | null;
+  verified_at?: string | null;
+  verification_notes?: string | null;
+  created_at: string;
+  matches: TrialMatch[];
 }
 
 export interface ClinicalProfile {
@@ -204,6 +229,14 @@ export const PatientPortal: FC<PatientPortalProps> = ({
   const [matches, setMatches] = useState<TrialMatch[] | null>(null);
   const [summary, setSummary] = useState<string>('');
   const [responseProvenance, setResponseProvenance] = useState<string | null>(null);
+  const [screeningMeta, setScreeningMeta] = useState<{
+    screening_id?: string;
+    verified_by?: string | null;
+    verified_by_role?: string | null;
+    verified_at?: string | null;
+    verification_notes?: string | null;
+  } | null>(null);
+  const [savedScreenings, setSavedScreenings] = useState<StoredScreeningRecord[]>([]);
   const [isResultStale, setIsResultStale] = useState<boolean>(false);
 
   // Interest registration state
@@ -222,12 +255,12 @@ export const PatientPortal: FC<PatientPortalProps> = ({
     }
   };
 
-  // Fetch persisted interests on mount
+  // Fetch persisted interests and screening verification history on mount
   useEffect(() => {
     isMountedRef.current = true;
     const controller = new AbortController();
 
-    async function loadInterests() {
+    async function loadPatientRecords() {
       if (!user.token) return;
       try {
         const data = await apiFetchJson<Array<{ protocol_id: string }>>('/api/v1/patient/interests', {
@@ -240,10 +273,31 @@ export const PatientPortal: FC<PatientPortalProps> = ({
         }
       } catch (e) {
         if (e instanceof Error && (e.name === 'AbortError' || e instanceof SessionExpiredError)) return;
-        console.warn('Could not load existing interests', e);
+        if (isMountedRef.current) {
+          setInterestError('Unable to load previously registered study interests.');
+        }
+      }
+
+      try {
+        const screeningsRes = await fetch(apiUrl('/api/v1/patient/screenings'), {
+          headers: { Authorization: `Bearer ${user.token}` },
+          signal: controller.signal,
+        });
+        if (screeningsRes.status === 401) {
+          onSessionExpired?.();
+          return;
+        }
+        if (screeningsRes.ok) {
+          const parsed = (await parseJsonSafe(screeningsRes)) as StoredScreeningRecord[] | null;
+          if (isMountedRef.current && Array.isArray(parsed)) {
+            setSavedScreenings(parsed);
+          }
+        }
+      } catch (e) {
+        if (e instanceof Error && e.name === 'AbortError') return;
       }
     }
-    loadInterests();
+    loadPatientRecords();
 
     return () => {
       isMountedRef.current = false;
@@ -297,6 +351,7 @@ export const PatientPortal: FC<PatientPortalProps> = ({
     setMatches(null);
     setSummary('');
     setResponseProvenance(null);
+    setScreeningMeta(null);
     setIsResultStale(false);
     setValidationError(null);
     setScreeningError(null);
@@ -322,6 +377,7 @@ export const PatientPortal: FC<PatientPortalProps> = ({
     setMatches(null);
     setSummary('');
     setResponseProvenance(null);
+    setScreeningMeta(null);
     setIsResultStale(false);
     setValidationError(null);
     setScreeningError(null);
@@ -468,18 +524,51 @@ export const PatientPortal: FC<PatientPortalProps> = ({
       }
 
       const data = rawData as {
+        screening_id?: string;
         matches?: TrialMatch[];
         recruitment_support_summary?: string;
         data_provenance?: string;
+        verified_by?: string | null;
+        verified_by_role?: string | null;
+        verified_at?: string | null;
+        verification_notes?: string | null;
+        is_synthetic_data?: boolean;
+        evaluation_timestamp?: string;
       } | null;
 
       if (!data || !Array.isArray(data.matches)) {
         throw new Error('Received an unexpected response structure from the screening engine.');
       }
 
+      const resolvedProv = data.data_provenance || (isDemoMode ? 'synthetic_demo' : 'patient_reported');
       setMatches(data.matches);
       setSummary(data.recruitment_support_summary || '');
-      setResponseProvenance(data.data_provenance || (isDemoMode ? 'synthetic_demo' : 'patient_reported'));
+      setResponseProvenance(resolvedProv);
+      setScreeningMeta({
+        screening_id: data.screening_id,
+        verified_by: data.verified_by ?? null,
+        verified_by_role: data.verified_by_role ?? null,
+        verified_at: data.verified_at ?? null,
+        verification_notes: data.verification_notes ?? null,
+      });
+      if (data.screening_id) {
+        setSavedScreenings((prev) => [
+          {
+            screening_id: data.screening_id!,
+            patient_id: user.id,
+            data_provenance: resolvedProv,
+            is_synthetic_data: Boolean(data.is_synthetic_data ?? isDemoMode),
+            investigator_verified: resolvedProv === 'investigator_verified',
+            verified_by: data.verified_by ?? null,
+            verified_by_role: data.verified_by_role ?? null,
+            verified_at: data.verified_at ?? null,
+            verification_notes: data.verification_notes ?? null,
+            created_at: data.evaluation_timestamp || new Date().toISOString(),
+            matches: data.matches!,
+          },
+          ...prev.filter((s) => s.screening_id !== data.screening_id).slice(0, 9),
+        ]);
+      }
       setIsResultStale(false);
     } catch (err: unknown) {
       if (err instanceof Error && err.name === 'AbortError') {
@@ -493,6 +582,7 @@ export const PatientPortal: FC<PatientPortalProps> = ({
       }
       setMatches(null);
       setResponseProvenance(null);
+      setScreeningMeta(null);
       setScreeningError(
         err instanceof Error ? err.message : 'Unable to complete protocol screening. Please verify your connection.'
       );
@@ -529,8 +619,14 @@ export const PatientPortal: FC<PatientPortalProps> = ({
                 <span className="font-serif font-bold text-sm tracking-tight text-charcoal-900">
                   ProtocolShield Patient Portal
                 </span>
-                <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-blue-100 text-blue-800">
-                  Patient-Reported (Unverified)
+                <span
+                  className={`px-2 py-0.5 rounded-full text-[10px] font-mono font-bold ${
+                    provenanceInfo
+                      ? provenanceInfo.badgeClass
+                      : 'bg-blue-100 text-blue-800 border border-blue-200'
+                  }`}
+                >
+                  {provenanceInfo ? provenanceInfo.label : 'Patient-Reported (Unverified)'}
                 </span>
                 {isDemoMode && (
                   <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-amber-100 text-amber-800 border border-amber-300">
@@ -1028,7 +1124,20 @@ export const PatientPortal: FC<PatientPortalProps> = ({
               <div className="p-3 rounded-2xl bg-amber-50/70 border border-amber-200 text-[11px] text-amber-900 flex items-start space-x-2">
                 <ShieldAlert className="h-4 w-4 text-amber-600 shrink-0 mt-0.5" />
                 <span>
-                  <strong>Data Provenance Notice ({provenanceInfo.label}):</strong> {provenanceInfo.description}
+                  <strong>Data Provenance Notice ({provenanceInfo.label}):</strong> {provenanceInfo.description}{' '}
+                  Preliminary matches based on self-reported or demonstration inputs do not confirm clinical trial eligibility or enrollment.
+                </span>
+              </div>
+            )}
+
+            {provenanceInfo && !provenanceInfo.isUnverified && screeningMeta?.verified_by && (
+              <div className="p-3 rounded-2xl bg-sage-50 border border-sage-200 text-[11px] text-sage-900 flex items-start space-x-2">
+                <CheckCircle2 className="h-4 w-4 text-sage-600 shrink-0 mt-0.5" />
+                <span>
+                  <strong>Investigator Verification Recorded:</strong> Verified by{' '}
+                  <span className="font-semibold">{screeningMeta.verified_by}</span>
+                  {screeningMeta.verified_by_role ? ` (${screeningMeta.verified_by_role})` : ''}
+                  {screeningMeta.verified_at ? ` at ${screeningMeta.verified_at}` : ''}.
                 </span>
               </div>
             )}
@@ -1111,10 +1220,43 @@ export const PatientPortal: FC<PatientPortalProps> = ({
             {!isLoading && matches !== null && (
               <div className="space-y-5">
                 {matches.map((trial) => {
-                  const isEligible = trial.match_status === 'POTENTIALLY_ELIGIBLE' || trial.match_status === 'ELIGIBLE';
-                  const isBorderline = trial.match_status === 'REQUIRES_REVIEW' || trial.match_status === 'BORDERLINE';
+                  const isVerifiedEligible =
+                    (trial.match_status === 'INVESTIGATOR_VERIFIED_ELIGIBLE' ||
+                      trial.is_investigator_verified === true) &&
+                    responseProvenance === 'investigator_verified' &&
+                    trial.match_status !== 'REQUIRES_REVIEW' &&
+                    trial.match_status !== 'NOT_ELIGIBLE';
+                  const isPreliminaryMatch =
+                    !isVerifiedEligible &&
+                    (trial.match_status === 'PRELIMINARY_MATCH' ||
+                      trial.match_status === 'POTENTIALLY_ELIGIBLE' ||
+                      trial.match_status === 'ELIGIBLE');
+                  const isBorderline =
+                    trial.match_status === 'REQUIRES_REVIEW' || trial.match_status === 'BORDERLINE';
                   const isEnrolled = enrolledTrialIds.has(trial.protocol_id);
                   const isSubmittingThis = submittingInterestId === trial.protocol_id;
+
+                  const badgeStyle = isVerifiedEligible
+                    ? 'bg-sage-100 text-sage-800 border-sage-300'
+                    : isPreliminaryMatch
+                    ? responseProvenance === 'synthetic_demo'
+                      ? 'bg-amber-100 text-amber-900 border-amber-300'
+                      : 'bg-blue-100 text-blue-900 border-blue-300'
+                    : isBorderline
+                    ? 'bg-amber-100 text-amber-800 border-amber-200'
+                    : 'bg-red-50 text-red-700 border-red-200';
+
+                  const badgeText =
+                    trial.match_status_label ||
+                    (isVerifiedEligible
+                      ? '✓ Investigator-Verified Eligible'
+                      : isPreliminaryMatch
+                      ? responseProvenance === 'synthetic_demo'
+                        ? 'Preliminary Match (Synthetic Demo)'
+                        : 'Preliminary Match (Patient-Reported — Unverified)'
+                      : isBorderline
+                      ? '⚡ Requires Investigator Review'
+                      : '✕ Not Eligible');
 
                   return (
                     <div
@@ -1137,16 +1279,8 @@ export const PatientPortal: FC<PatientPortalProps> = ({
                         </div>
 
                         <div className="flex items-center space-x-2 self-start sm:self-auto">
-                          <span
-                            className={`px-3 py-1 rounded-full text-xs font-bold font-mono border ${
-                              isEligible
-                                ? 'bg-sage-100 text-sage-800 border-sage-200'
-                                : isBorderline
-                                ? 'bg-amber-100 text-amber-800 border-amber-200'
-                                : 'bg-red-50 text-red-700 border-red-200'
-                            }`}
-                          >
-                            {isEligible ? '✓ Potentially Eligible' : isBorderline ? '⚡ Needs Investigator Review' : '✕ Not Eligible'}
+                          <span className={`px-3 py-1 rounded-full text-xs font-bold font-mono border ${badgeStyle}`}>
+                            {badgeText}
                           </span>
                         </div>
                       </div>
@@ -1263,8 +1397,10 @@ export const PatientPortal: FC<PatientPortalProps> = ({
                       {/* Action Bar */}
                       <div className="pt-2 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
                         <span className="text-[11px] text-charcoal-500 font-mono">
-                          {isEligible
-                            ? '✓ Preliminary eligibility met — clinical coordinator contact available'
+                          {isVerifiedEligible
+                            ? `✓ Investigator-verified eligibility assessment (${screeningMeta?.verified_by || 'Authorized Investigator'})`
+                            : isPreliminaryMatch
+                            ? 'Preliminary match from unverified inputs — investigator confirmation required before enrollment'
                             : isBorderline
                             ? '⚡ Investigator review required for missing or borderline criteria'
                             : 'Confirmed exclusion criterion applies for this protocol'}
@@ -1280,11 +1416,11 @@ export const PatientPortal: FC<PatientPortalProps> = ({
                             type="button"
                             onClick={() => handleExpressInterest(trial.protocol_id)}
                             className={`inline-flex items-center space-x-1.5 px-4 py-2 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
-                              isEligible || isBorderline
+                              isVerifiedEligible || isPreliminaryMatch || isBorderline
                                 ? 'bg-charcoal-900 hover:bg-charcoal-800 text-white shadow-xs'
                                 : 'bg-linen-200 text-charcoal-400 cursor-not-allowed'
                             }`}
-                            disabled={(!isEligible && !isBorderline) || isSubmittingThis}
+                            disabled={(!isVerifiedEligible && !isPreliminaryMatch && !isBorderline) || isSubmittingThis}
                           >
                             <span>{isSubmittingThis ? 'Submitting…' : 'Express Interest in Study'}</span>
                             <ArrowRight className="h-3.5 w-3.5" />
@@ -1302,6 +1438,67 @@ export const PatientPortal: FC<PatientPortalProps> = ({
                     </div>
                   );
                 })}
+              </div>
+            )}
+
+            {/* Stored Screening & Investigator Verification History */}
+            {savedScreenings.length > 0 && (
+              <div className="bg-white rounded-3xl border border-linen-300 p-5 shadow-xs space-y-3">
+                <div className="flex items-center justify-between border-b border-linen-200 pb-2.5">
+                  <div>
+                    <h3 className="font-serif font-bold text-sm text-charcoal-900">
+                      Screening &amp; Investigator Verification History
+                    </h3>
+                    <p className="text-[11px] text-charcoal-500 font-mono">
+                      Server-recorded provenance and investigator review timestamps
+                    </p>
+                  </div>
+                  <span className="text-[10px] font-mono text-charcoal-500">
+                    {savedScreenings.length} Record(s)
+                  </span>
+                </div>
+
+                <div className="space-y-2">
+                  {savedScreenings.slice(0, 5).map((rec) => {
+                    const topStatuses = rec.matches.map((m) => m.match_status).join(', ');
+                    return (
+                      <div
+                        key={rec.screening_id}
+                        className="p-3 rounded-2xl border border-linen-200 bg-linen-50/70 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs"
+                      >
+                        <div className="space-y-0.5">
+                          <div className="flex items-center space-x-2 font-mono">
+                            <span className="font-bold text-charcoal-800">{rec.screening_id}</span>
+                            <span
+                              className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${
+                                rec.investigator_verified
+                                  ? 'bg-sage-100 text-sage-800 border-sage-300'
+                                  : rec.is_synthetic_data
+                                  ? 'bg-amber-100 text-amber-900 border-amber-300'
+                                  : 'bg-blue-100 text-blue-900 border-blue-300'
+                              }`}
+                            >
+                              {rec.investigator_verified
+                                ? 'Investigator-Verified'
+                                : rec.is_synthetic_data
+                                ? 'Synthetic Demo (Unverified)'
+                                : 'Patient-Reported Preliminary (Unverified)'}
+                            </span>
+                          </div>
+                          <p className="text-[10px] font-mono text-charcoal-500">
+                            Created: {rec.created_at} • Outcomes: {topStatuses || 'Evaluated'}
+                          </p>
+                          {rec.investigator_verified && rec.verified_by && (
+                            <p className="text-[10px] font-mono text-sage-700">
+                              Verified by {rec.verified_by}
+                              {rec.verified_at ? ` at ${rec.verified_at}` : ''}
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
             )}
 

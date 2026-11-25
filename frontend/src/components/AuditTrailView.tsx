@@ -12,7 +12,7 @@ import {
   Lock,
   XCircle
 } from 'lucide-react';
-import type { AuditEvent, AuditVerificationStatus } from '../types/audit';
+import type { AuditEvent, AuditVerificationStatus, PatientScreeningRecord } from '../types/audit';
 
 interface AuditTrailViewProps {
   events?: AuditEvent[];
@@ -22,6 +22,10 @@ interface AuditTrailViewProps {
   verificationStatus?: AuditVerificationStatus | null;
   isDemoMode?: boolean;
   onToggleDemoMode?: () => void;
+  patientScreenings?: PatientScreeningRecord[];
+  verifyingScreeningId?: string | null;
+  screeningVerifyError?: string | null;
+  onVerifyScreening?: (screeningId: string) => Promise<void> | void;
 }
 
 export const AuditTrailView: FC<AuditTrailViewProps> = ({ 
@@ -32,6 +36,10 @@ export const AuditTrailView: FC<AuditTrailViewProps> = ({
   verificationStatus = null,
   isDemoMode = false,
   onToggleDemoMode,
+  patientScreenings = [],
+  verifyingScreeningId = null,
+  screeningVerifyError = null,
+  onVerifyScreening,
 }) => {
   const [copiedHash, setCopiedHash] = useState<string | null>(null);
 
@@ -241,6 +249,81 @@ export const AuditTrailView: FC<AuditTrailViewProps> = ({
               })}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {/* ── Investigator Screening Verification Queue ───────────────────────── */}
+      {!isDemoMode && patientScreenings.length > 0 && (
+        <div className="p-4 border-t border-linen-200 bg-white space-y-3">
+          <div className="flex items-center justify-between">
+            <div>
+              <h3 className="font-serif font-bold text-xs text-charcoal-900">
+                Patient Screening Provenance &amp; Investigator Verification Queue
+              </h3>
+              <p className="text-[11px] text-charcoal-500 font-mono">
+                Patient-submitted screenings remain preliminary until explicitly verified by an investigator or administrator.
+              </p>
+            </div>
+            <span className="text-[10px] font-mono text-charcoal-500">
+              {patientScreenings.filter((s) => !s.investigator_verified && !s.is_synthetic_data).length} Pending Review
+            </span>
+          </div>
+
+          {screeningVerifyError && (
+            <div className="p-2.5 rounded-xl bg-red-50 border border-red-200 text-xs text-red-700 font-mono">
+              {screeningVerifyError}
+            </div>
+          )}
+
+          <div className="space-y-2">
+            {patientScreenings.slice(0, 10).map((scr) => (
+              <div
+                key={scr.screening_id}
+                className="p-3 rounded-xl border border-linen-200 bg-linen-50/70 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs"
+              >
+                <div className="space-y-0.5">
+                  <div className="flex flex-wrap items-center gap-2 font-mono">
+                    <span className="font-bold text-charcoal-900">{scr.screening_id}</span>
+                    <span className="text-charcoal-500">Subject: {scr.patient_id}</span>
+                    <span
+                      className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${
+                        scr.investigator_verified
+                          ? 'bg-sage-100 text-sage-800 border-sage-300'
+                          : scr.is_synthetic_data
+                          ? 'bg-amber-100 text-amber-900 border-amber-300'
+                          : 'bg-blue-100 text-blue-900 border-blue-300'
+                      }`}
+                    >
+                      {scr.investigator_verified
+                        ? 'INVESTIGATOR VERIFIED'
+                        : scr.is_synthetic_data
+                        ? 'SYNTHETIC DEMO (UNVERIFIABLE)'
+                        : 'PATIENT-REPORTED (PRELIMINARY)'}
+                    </span>
+                  </div>
+                  <p className="text-[11px] font-mono text-charcoal-600">
+                    Stage: {scr.clinical_summary?.cancer_stage ?? 'Unknown'} • ECOG: {scr.clinical_summary?.ecog_score ?? 'N/A'} • eGFR: {scr.clinical_summary?.egfr_ml_min ?? 'N/A'} mL/min
+                  </p>
+                  {scr.investigator_verified && scr.verified_by && (
+                    <p className="text-[10px] font-mono text-sage-700">
+                      Verified by {scr.verified_by} ({scr.verified_by_role || 'investigator'}) at {scr.verified_at || scr.created_at}
+                    </p>
+                  )}
+                </div>
+
+                {!scr.investigator_verified && !scr.is_synthetic_data && onVerifyScreening && (
+                  <button
+                    type="button"
+                    disabled={verifyingScreeningId === scr.screening_id}
+                    onClick={() => void onVerifyScreening(scr.screening_id)}
+                    className="px-3.5 py-1.5 rounded-full bg-charcoal-900 hover:bg-charcoal-800 text-white text-xs font-semibold transition-colors disabled:opacity-50 cursor-pointer shrink-0"
+                  >
+                    {verifyingScreeningId === scr.screening_id ? 'Verifying…' : 'Verify Clinical Record'}
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
         </div>
       )}
 

@@ -1,0 +1,244 @@
+name: CI Pipeline
+
+on:
+  pull_request:
+    branches: [master]
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend Lint, Import & Pytest
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.13'
+          cache: 'pip'
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install backend dependencies and linters
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt ruff pyyaml
+
+      - name: Verify dependency compatibility
+        run: pip check
+
+      - name: Compile-check and lint Python code
+        run: |
+          python -m compileall -q backend/app backend/tests
+          ruff check backend/app backend/tests --select E9,F63,F7,F82
+
+      - name: Verify FastAPI app import and startup configuration
+        env:
+          ENVIRONMENT: test
+          DEBUG: 'false'
+          ENABLE_DEMO_SEEDING: 'true'
+          EXPOSE_DEV_RESET_TOKEN: 'true'
+          DB_PATH: ${{ runner.temp }}/protocolshield_startup.duckdb
+        run: |
+          JWT_SECRET_KEY="$(python -c 'import secrets; print(secrets.token_urlsafe(48))')"
+          export JWT_SECRET_KEY
+          python -c "import sys; sys.path.insert(0, 'backend'); from app.main import app; print('FastAPI app loaded:', app.title, len(app.routes), 'routes')"
+
+      - name: Run full backend pytest suite
+        env:
+          ENVIRONMENT: test
+          DEBUG: 'false'
+          ENABLE_DEMO_SEEDING: 'true'
+          EXPOSE_DEV_RESET_TOKEN: 'true'
+          DB_PATH: ${{ runner.temp }}/protocolshield_ci.duckdb
+          PYTHONUNBUFFERED: '1'
+        run: |
+          JWT_SECRET_KEY="$(python -c 'import secrets; print(secrets.token_urlsafe(48))')"
+          export JWT_SECRET_KEY
+          pytest backend/tests --junitxml=backend/pytest-report.xml -v
+
+      - name: Upload backend test report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: backend-pytest-report
+          path: backend/pytest-report.xml
+          if-no-files-found: warn
+
+  frontend:
+    name: Frontend Typecheck, Lint, Tests & Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Node.js 22 LTS
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies cleanly
+        run: npm ci
+
+      - name: Run TypeScript type checking
+        run: npx tsc -b --noEmit
+
+      - name: Run Oxlint static analysis
+        run: npm run lint
+
+      - name: Run Vitest unit & component tests
+        run: npm test -- --reporter=verbose --reporter=junit --outputFile=vitest-report.xml
+
+      - name: Build production Vite bundle
+        run: npm run build
+
+      - name: Upload frontend test report and dist check
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: frontend-vitest-report
+          path: frontend/vitest-report.xml
+          if-no-files-found: warn
+
+  integration:
+    name: Full-Stack HTTP & Workflow Validation
+    runs-on: ubuntu-latest
+    needs: [backend, frontend]
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.13'
+          cache: 'pip'
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install runtime and YAML validation packages
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt pyyaml httpx
+
+      - name: Validate workflow and Render YAML files
+        run: |
+          python -c "
+          import glob, yaml
+          for path in sorted(glob.glob('.github/workflows/*.yml') + ['render.yaml']):
+              with open(path, 'r', encoding='utf-8') as fh:
+                  yaml.safe_load(fh)
+              print('YAML OK:', path)
+          "
+
+      - name: Execute live Uvicorn end-to-end API integration test
+        env:
+          ENVIRONMENT: test
+          DEBUG: 'false'
+          ENABLE_DEMO_SEEDING: 'true'
+          EXPOSE_DEV_RESET_TOKEN: 'true'
+          DB_PATH: ${{ runner.temp }}/protocolshield_e2e.duckdb
+        run: |
+          JWT_SECRET_KEY="$(python -c 'import secrets; print(secrets.token_urlsafe(48))')"
+          export JWT_SECRET_KEY
+          uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8000 --workers 1 &
+          SERVER_PID=$!
+          trap 'kill $SERVER_PID 2>/dev/null || true' EXIT
+
+          python - <<'PY'
+          import time, uuid, httpx
+
+          base = "http://127.0.0.1:8000"
+          for _ in range(30):
+              try:
+                  r = httpx.get(f"{base}/ready", timeout=2.0)
+                  if r.status_code == 200:
+                      break
+              except Exception:
+                  pass
+              time.sleep(1.0)
+          else:
+              raise RuntimeError("Server failed to reach /ready within 30s")
+
+          health = httpx.get(f"{base}/health", timeout=5.0)
+          assert health.status_code == 200 and health.json()["status"] == "healthy"
+
+          # 1. Fresh patient signup + screening (complete profile -> PRELIMINARY_MATCH, never verified)
+          pat_email = f"ci.e2e.{uuid.uuid4().hex[:8]}@example.org"
+          pat_pw = "CiStrongPass2026!"
+          reg = httpx.post(f"{base}/api/v1/auth/signup", json={"name": "CI E2E Patient", "email": pat_email, "password": pat_pw}, timeout=10.0)
+          assert reg.status_code == 200, reg.text
+          pat_hdrs = {"Authorization": f"Bearer {reg.json()['token']}"}
+
+          scr = httpx.post(
+              f"{base}/api/v1/patient/screen-eligibility",
+              json={
+                  "data_provenance": "verified_clinical",
+                  "investigator_verified": True,
+                  "age": 62,
+                  "cancer_stage": "Stage IV (Oligometastatic)",
+                  "ecog_score": 1,
+                  "egfr_ml_min": 72.0,
+                  "anc": 2400.0,
+                  "platelets": 200.0,
+                  "hemoglobin": 12.5,
+                  "total_bilirubin": 0.9,
+                  "alt_u_l": 35.0,
+                  "prior_lines": 0,
+                  "has_active_brain_mets": False,
+                  "has_stable_brain_mets": True,
+                  "has_active_autoimmune": False,
+                  "has_egfr_sensitizing_mutation": False,
+              },
+              headers=pat_hdrs,
+              timeout=10.0,
+          )
+          assert scr.status_code == 200, scr.text
+          scr_data = scr.json()
+          assert scr_data["data_provenance"] == "patient_reported"
+          assert scr_data["provenance_verified"] is False
+          scr_id = scr_data["screening_id"]
+          nsclc = next(m for m in scr_data["matches"] if m["protocol_id"] == "PS-ONC-2026-001")
+          assert nsclc["match_status"] == "PRELIMINARY_MATCH"
+
+          # 2. Patient cannot self-verify
+          assert httpx.post(f"{base}/api/v1/patient/screenings/{scr_id}/verify", headers=pat_hdrs, timeout=10.0).status_code == 403
+
+          # 3. Investigator login, cohort funnel simulation & verify patient screening
+          doc = httpx.post(f"{base}/api/v1/auth/signin", json={"email": "elena.vance@novartis.com", "password": "Novartis2026!"}, timeout=10.0)
+          assert doc.status_code == 200, doc.text
+          doc_hdrs = {"Authorization": f"Bearer {doc.json()['token']}"}
+
+          proto = httpx.get(f"{base}/api/v1/protocol/sample", timeout=10.0).json()
+          funnel = httpx.post(f"{base}/api/v1/cohort/simulate-funnel", json=proto["eligibility"]["structured_filters"], headers=doc_hdrs, timeout=10.0)
+          assert funnel.status_code == 200 and funnel.json()["final_eligible_count"] > 0
+
+          verified = httpx.post(f"{base}/api/v1/patient/screenings/{scr_id}/verify", json={"notes": "CI verified"}, headers=doc_hdrs, timeout=10.0)
+          assert verified.status_code == 200, verified.text
+          v_nsclc = next(m for m in verified.json()["matches"] if m["protocol_id"] == "PS-ONC-2026-001")
+          assert v_nsclc["match_status"] == "INVESTIGATOR_VERIFIED_ELIGIBLE"
+
+          audit_ok = httpx.get(f"{base}/api/v1/audit/verify", headers=doc_hdrs, timeout=10.0)
+          assert audit_ok.status_code == 200 and audit_ok.json()["valid"] is True
+          print("ALL LIVE HTTP E2E INTEGRATION CHECKS PASSED")
+          PY

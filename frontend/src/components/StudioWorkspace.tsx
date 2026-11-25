@@ -14,7 +14,7 @@ import { BurdenOverviewTab } from './BurdenOverviewTab';
 import { WhatIfSensitivityConsole } from './WhatIfSensitivityConsole';
 import { BenchmarkGrid } from './BenchmarkGrid';
 import { AuditTrailView } from './AuditTrailView';
-import type { AuditEvent, AuditVerificationStatus } from '../types/audit';
+import type { AuditEvent, AuditVerificationStatus, PatientScreeningRecord } from '../types/audit';
 import { ProtocolInspectorDrawer } from './ProtocolInspectorDrawer';
 import { AIOptimizerModal } from './AIOptimizerModal';
 import { UserMenu } from './UserMenu';
@@ -78,6 +78,10 @@ interface StudioWorkspaceProps {
   auditError?: string | null;
   onRetryAudit?: () => void;
   auditVerification?: AuditVerificationStatus | null;
+  patientScreenings?: PatientScreeningRecord[];
+  verifyingScreeningId?: string | null;
+  screeningVerifyError?: string | null;
+  onVerifyScreening?: (screeningId: string) => Promise<void>;
 }
 
 export const StudioWorkspace: FC<StudioWorkspaceProps> = ({
@@ -110,6 +114,10 @@ export const StudioWorkspace: FC<StudioWorkspaceProps> = ({
   auditError = null,
   onRetryAudit,
   auditVerification = null,
+  patientScreenings = [],
+  verifyingScreeningId = null,
+  screeningVerifyError = null,
+  onVerifyScreening,
 }) => {
   const [internalTab, setInternalTab] = useState<StudioTab>('sandbox');
   const currentTab = activeTab ?? internalTab;
@@ -677,6 +685,10 @@ export const StudioWorkspace: FC<StudioWorkspaceProps> = ({
                 error={auditError}
                 onRetry={onRetryAudit}
                 verificationStatus={auditVerification}
+                patientScreenings={patientScreenings}
+                verifyingScreeningId={verifyingScreeningId}
+                screeningVerifyError={screeningVerifyError}
+                onVerifyScreening={onVerifyScreening}
               />
             )}
           </div>

@@ -78,13 +78,12 @@ EMAIL_FROM=noreply@yourdomain.com
 # EMAIL_MAILGUN_DOMAIN=mg.yourdomain.com
 # SMTP_HOST=smtp.example.com
 # SMTP_PORT=587
-# SMTP_USERNAME=
+# SMTP_USER=
 # SMTP_PASSWORD=
 # SMTP_USE_TLS=true
 
 # Google OAuth (Optional - Leave blank to disable Google Sign-In)
 GOOGLE_CLIENT_ID=
-GOOGLE_CLIENT_SECRET=
 ```
 
 ### Frontend Static Site Environment Variable (Render / Vite)

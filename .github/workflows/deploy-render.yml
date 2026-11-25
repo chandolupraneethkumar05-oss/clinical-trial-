@@ -1,0 +1,92 @@
+name: Deploy to Render
+
+on:
+  workflow_run:
+    workflows: ["CI Pipeline"]
+    branches: [master]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      confirm_production_deploy:
+        description: 'Type DEPLOY to confirm manual Render production trigger'
+        required: true
+        default: ''
+
+permissions:
+  contents: read
+  deployments: write
+
+concurrency:
+  group: deploy-render-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Trigger Render Production Deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Strict guardrail: deploy ONLY after a passing push CI run on master, or confirmed manual dispatch. Never on PRs.
+    if: >-
+      (github.event_name == 'workflow_run'
+       && github.event.workflow_run.conclusion == 'success'
+       && github.event.workflow_run.event == 'push'
+       && github.event.workflow_run.head_branch == 'master')
+      || (github.event_name == 'workflow_dispatch' && inputs.confirm_production_deploy == 'DEPLOY')
+
+    steps:
+      - name: Validate Render deployment secrets
+        env:
+          RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+        run: |
+          if [ -z "$RENDER_DEPLOY_HOOK_URL" ]; then
+            echo "::error::Missing required GitHub secret RENDER_DEPLOY_HOOK_URL. Configure your Render Deploy Hook URL in repository Settings -> Secrets and variables -> Actions."
+            exit 1
+          fi
+
+      - name: Trigger Render Backend Deploy Hook
+        env:
+          RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+        run: |
+          HTTP_CODE=$(curl --silent --show-error --output /tmp/render_resp.txt --write-out "%{http_code}" -X POST "$RENDER_DEPLOY_HOOK_URL")
+          echo "Render backend deploy hook HTTP status: $HTTP_CODE"
+          if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
+            echo "::error::Render backend deploy hook failed with HTTP $HTTP_CODE."
+            exit 1
+          fi
+
+      - name: Trigger Render Frontend Deploy Hook (if configured)
+        env:
+          RENDER_FRONTEND_DEPLOY_HOOK_URL: ${{ secrets.RENDER_FRONTEND_DEPLOY_HOOK_URL }}
+        run: |
+          if [ -z "$RENDER_FRONTEND_DEPLOY_HOOK_URL" ]; then
+            echo "Optional RENDER_FRONTEND_DEPLOY_HOOK_URL not set; skipping separate frontend hook."
+            exit 0
+          fi
+          HTTP_CODE=$(curl --silent --show-error --output /tmp/render_fe_resp.txt --write-out "%{http_code}" -X POST "$RENDER_FRONTEND_DEPLOY_HOOK_URL")
+          echo "Render frontend deploy hook HTTP status: $HTTP_CODE"
+          if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
+            echo "::error::Render frontend deploy hook failed with HTTP $HTTP_CODE."
+            exit 1
+          fi
+
+      - name: Verify live /health and /ready endpoints (if RENDER_BACKEND_URL is configured)
+        env:
+          RENDER_BACKEND_URL: ${{ vars.RENDER_BACKEND_URL || secrets.RENDER_BACKEND_URL }}
+        run: |
+          if [ -z "$RENDER_BACKEND_URL" ]; then
+            echo "RENDER_BACKEND_URL not set; deployment triggered asynchronously via Render webhook. Verify /health and /ready in Render Dashboard." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          BASE="${RENDER_BACKEND_URL%/}"
+          for attempt in $(seq 1 24); do
+            H_CODE=$(curl --silent --output /dev/null --write-out "%{http_code}" "$BASE/health" || echo "000")
+            R_CODE=$(curl --silent --output /dev/null --write-out "%{http_code}" "$BASE/ready" || echo "000")
+            echo "Attempt $attempt: /health=$H_CODE /ready=$R_CODE"
+            if [ "$H_CODE" = "200" ] && [ "$R_CODE" = "200" ]; then
+              echo "Render production verification passed (/health=200, /ready=200)." >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::Render service did not report /health=200 and /ready=200 within 240 seconds."
+          exit 1

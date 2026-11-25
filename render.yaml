@@ -1,0 +1,69 @@
+# Render Blueprint Specification for ProtocolShield
+# Documentation: https://render.com/docs/blueprint-spec
+# CRITICAL: Backend MUST remain a single instance with --workers 1 because DuckDB uses
+# an exclusive OS file lock on the persistent volume database file.
+
+services:
+  - type: web
+    name: protocolshield-api
+    runtime: python
+    plan: starter
+    autoDeploy: false # Deploy controlled via GitHub Actions deploy-render.yml after CI passes
+    buildCommand: pip install --upgrade pip && pip install -r backend/requirements.txt
+    startCommand: uvicorn app.main:app --app-dir backend --host 0.0.0.0 --port $PORT --workers 1
+    healthCheckPath: /ready
+    disk:
+      name: protocolshield-duckdb-data
+      mountPath: /var/data
+      sizeGB: 5
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.13.3"
+      - key: ENVIRONMENT
+        value: "production"
+      - key: DEBUG
+        value: "false"
+      - key: ENABLE_DEMO_SEEDING
+        value: "false"
+      - key: EXPOSE_DEV_RESET_TOKEN
+        value: "false"
+      - key: DB_PATH
+        value: "/var/data/protocolshield_cohort.duckdb"
+      - key: WEB_CONCURRENCY
+        value: "1"
+      - key: JWT_ALGORITHM
+        value: "HS256"
+      - key: ACCESS_TOKEN_EXPIRE_MINUTES
+        value: "60"
+      - key: JWT_ISSUER
+        value: "protocolshield-api"
+      - key: JWT_AUDIENCE
+        value: "protocolshield-client"
+      - key: JWT_SECRET_KEY
+        sync: false # Generate via: python -c "import secrets; print(secrets.token_urlsafe(48))"
+      - key: FRONTEND_URL
+        sync: false # Set to deployed frontend origin, e.g. https://protocolshield-web.onrender.com
+      - key: BACKEND_CORS_ORIGINS
+        sync: false # Set to explicit origin JSON array or comma-separated list, e.g. ["https://protocolshield-web.onrender.com"]
+      - key: TRUSTED_PROXIES
+        sync: false # Set to Render internal proxy/reverse proxy IP(s); never use '*'
+      - key: EMAIL_PROVIDER
+        sync: false # Required for forgot-password: resend | sendgrid | mailgun | smtp
+      - key: EMAIL_API_KEY
+        sync: false
+      - key: EMAIL_FROM
+        sync: false
+      - key: GOOGLE_CLIENT_ID
+        sync: false # Optional OAuth Client ID
+
+  - type: web
+    name: protocolshield-web
+    runtime: static
+    autoDeploy: false
+    buildCommand: npm --prefix frontend ci && npm --prefix frontend run build
+    staticPublishPath: frontend/dist
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: VITE_API_BASE_URL
+        sync: false # Set to deployed backend origin, e.g. https://protocolshield-api.onrender.com

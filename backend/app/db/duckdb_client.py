@@ -216,6 +216,24 @@ class DuckDBClient:
                     submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     UNIQUE (patient_id, protocol_id)
                 );
+
+                CREATE TABLE IF NOT EXISTS patient_screenings (
+                    screening_id VARCHAR PRIMARY KEY,
+                    patient_id VARCHAR NOT NULL,
+                    submitted_by_user_id VARCHAR NOT NULL,
+                    submitted_by_role VARCHAR NOT NULL,
+                    data_provenance VARCHAR NOT NULL,
+                    is_synthetic BOOLEAN DEFAULT FALSE,
+                    profile_json VARCHAR NOT NULL,
+                    matches_json VARCHAR NOT NULL,
+                    investigator_verified BOOLEAN DEFAULT FALSE,
+                    verified_by_user_id VARCHAR,
+                    verified_by_name VARCHAR,
+                    verified_by_role VARCHAR,
+                    verified_at TIMESTAMP,
+                    verification_notes VARCHAR,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
             """)
 
             # Safe schema upgrades for existing installations
@@ -285,6 +303,7 @@ class DuckDBClient:
             "audit_logs",
             "uploaded_protocols",
             "patient_interests",
+            "patient_screenings",
         )
         conn = self.get_connection()
         try:

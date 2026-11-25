@@ -21,6 +21,33 @@ export interface AuditVerificationStatus {
   details: string;
 }
 
+export interface PatientScreeningRecord {
+  screening_id: string;
+  patient_id: string;
+  submitted_by_user_id: string;
+  submitted_by_role: string;
+  data_provenance: string;
+  is_synthetic_data: boolean;
+  investigator_verified: boolean;
+  verified_by?: string | null;
+  verified_by_role?: string | null;
+  verified_at?: string | null;
+  verification_notes?: string | null;
+  created_at: string;
+  clinical_summary: {
+    age?: number | null;
+    cancer_stage?: string | null;
+    ecog_score?: number | null;
+    egfr_ml_min?: number | null;
+  };
+  matches: Array<{
+    protocol_id: string;
+    match_status: string;
+    match_status_label?: string;
+    is_investigator_verified?: boolean;
+  }>;
+}
+
 /**
  * Clearly labeled synthetic demo fixture for offline presentation.
  * NEVER mixed with live backend audit trails.

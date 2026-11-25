@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel, Field, field_validator
 
-from app.core.security import get_current_user, AuthenticatedUser, enforce_rate_limit
+from app.core.security import get_current_user, require_role, AuthenticatedUser, enforce_rate_limit
 from app.api.routes_protocol import SAMPLE_PROTOCOL_MAP
 from app.models.protocol import ClinicalTrialProtocol
 from app.db.duckdb_client import db_client
@@ -20,6 +20,7 @@ from app.engine.eligibility import (
     PROVENANCE_INVESTIGATOR_VERIFIED,
     PROVENANCE_PATIENT_REPORTED,
     PROVENANCE_SYNTHETIC_DEMO,
+    PROVENANCE_UNKNOWN,
     evaluate_patient_against_criteria,
     normalize_filter_criteria,
     resolve_patient_provenance,
@@ -115,7 +116,10 @@ class TrialMatchResult(BaseModel):
     title: str
     indication: str
     phase: str
-    match_status: str  # 'POTENTIALLY_ELIGIBLE' | 'REQUIRES_REVIEW' | 'NOT_ELIGIBLE'
+    match_status: str  # 'INVESTIGATOR_VERIFIED_ELIGIBLE' | 'PRELIMINARY_MATCH' | 'REQUIRES_REVIEW' | 'NOT_ELIGIBLE'
+    match_status_label: str
+    eligibility_classification: str  # 'INVESTIGATOR_VERIFIED' | 'PRELIMINARY_UNVERIFIED' | 'SYNTHETIC_DEMO_PRELIMINARY' | 'REQUIRES_INVESTIGATOR_REVIEW' | 'NOT_ELIGIBLE'
+    is_investigator_verified: bool = False
     match_score_pct: float
     passed_criteria_count: int
     total_criteria_count: int
@@ -127,9 +131,14 @@ class TrialMatchResult(BaseModel):
 
 
 class ScreeningResponse(BaseModel):
+    screening_id: str
     patient_id: str
     data_provenance: str
     provenance_verified: bool = False
+    verified_by: Optional[str] = None
+    verified_by_role: Optional[str] = None
+    verified_at: Optional[str] = None
+    verification_notes: Optional[str] = None
     is_synthetic_data: bool = False
     data_disclaimer: Optional[str] = None
     evaluation_timestamp: str
@@ -139,13 +148,46 @@ class ScreeningResponse(BaseModel):
     investigator_disclaimer: str = INVESTIGATOR_DISCLAIMER
 
 
-def evaluate_patient_against_protocol(patient: PatientScreeningInput, proto: ClinicalTrialProtocol) -> TrialMatchResult:
+class InvestigatorVerificationRequest(BaseModel):
+    notes: Optional[str] = Field(
+        default=None,
+        max_length=1000,
+        description="Optional investigator verification notes referencing chart/lab confirmation",
+    )
+
+
+class StoredScreeningSummary(BaseModel):
+    screening_id: str
+    patient_id: str
+    submitted_by_user_id: str
+    submitted_by_role: str
+    data_provenance: str
+    is_synthetic_data: bool
+    investigator_verified: bool
+    verified_by: Optional[str] = None
+    verified_by_role: Optional[str] = None
+    verified_at: Optional[str] = None
+    verification_notes: Optional[str] = None
+    created_at: str
+    clinical_summary: dict[str, Any]
+    matches: list[TrialMatchResult]
+
+
+def evaluate_patient_against_protocol(
+    patient: PatientScreeningInput,
+    proto: ClinicalTrialProtocol,
+    provenance: str = PROVENANCE_PATIENT_REPORTED,
+) -> TrialMatchResult:
     """
     Evaluates individual patient clinical phenotype across comprehensive protocol
-    inclusion/exclusion and biomarker criteria using deterministic 4-state logic:
-    PASS, FAIL, UNKNOWN, NEEDS_INVESTIGATOR_REVIEW.
-    Uses normalized CohortFilterCriteria identical to CohortSimulationEngine.
-    Enforces that numerical match scores NEVER override mandatory exclusions or missing data.
+    inclusion/exclusion and biomarker criteria using provenance-aware 4-state logic:
+    - NOT_ELIGIBLE (confirmed failure / hard exclusion)
+    - REQUIRES_REVIEW (missing / unknown / borderline criteria)
+    - PRELIMINARY_MATCH (all criteria pass on unverified patient-reported/demo data)
+    - INVESTIGATOR_VERIFIED_ELIGIBLE (all criteria pass AND verified by authorized investigator)
+
+    Enforces that numerical match scores NEVER override mandatory exclusions or missing data,
+    and unverified patient-reported data is NEVER labeled as verified eligibility.
     """
     criteria = normalize_filter_criteria(proto.eligibility.structured_filters)
     evaluations, hard_exclusion_failures, borderline_egfr = evaluate_patient_against_criteria(patient, criteria)
@@ -172,19 +214,38 @@ def evaluate_patient_against_protocol(patient: PatientScreeningInput, proto: Cli
     has_hard_exclusion_failure = len(hard_exclusion_failures) > 0
     has_mandatory_fail = any(c.status == "FAIL" and c.is_mandatory for c in checks)
     has_unknown_or_review = any(c.status in {"UNKNOWN", "NEEDS_INVESTIGATOR_REVIEW"} for c in checks)
+    is_verified = provenance == PROVENANCE_INVESTIGATOR_VERIFIED
+    is_synthetic = provenance == PROVENANCE_SYNTHETIC_DEMO
 
-    # Deterministic status rules:
+    # Deterministic provenance-aware status rules:
     # 1. Confirmed hard exclusion or mandatory inclusion failure: NOT_ELIGIBLE unconditionally
     if has_hard_exclusion_failure or has_mandatory_fail:
         match_status = "NOT_ELIGIBLE"
+        match_status_label = "Not Eligible (Confirmed Criterion / Exclusion Not Met)"
+        eligibility_classification = "NOT_ELIGIBLE"
     # 2. Missing, unverified, or borderline criteria requiring review: REQUIRES_REVIEW
     elif has_unknown_or_review or borderline_egfr:
         match_status = "REQUIRES_REVIEW"
-    # 3. All mandatory criteria satisfied with verified clinical data: POTENTIALLY_ELIGIBLE
+        match_status_label = "Requires Investigator Review (Missing or Borderline Data)"
+        eligibility_classification = "REQUIRES_INVESTIGATOR_REVIEW"
+    # 3. All mandatory criteria satisfied: classify strictly by provenance
     elif passed_count == total_count:
-        match_status = "POTENTIALLY_ELIGIBLE"
+        if is_verified:
+            match_status = "INVESTIGATOR_VERIFIED_ELIGIBLE"
+            match_status_label = "Investigator-Verified Eligible"
+            eligibility_classification = "INVESTIGATOR_VERIFIED"
+        elif is_synthetic:
+            match_status = "PRELIMINARY_MATCH"
+            match_status_label = "Preliminary Match (Synthetic Demo — Not Real Clinical Data)"
+            eligibility_classification = "SYNTHETIC_DEMO_PRELIMINARY"
+        else:
+            match_status = "PRELIMINARY_MATCH"
+            match_status_label = "Preliminary Match (Patient-Reported — Unverified)"
+            eligibility_classification = "PRELIMINARY_UNVERIFIED"
     else:
         match_status = "NOT_ELIGIBLE"
+        match_status_label = "Not Eligible (Confirmed Criterion / Exclusion Not Met)"
+        eligibility_classification = "NOT_ELIGIBLE"
 
     opportunity = None
     if match_status == "REQUIRES_REVIEW" and borderline_egfr:
@@ -219,14 +280,72 @@ def evaluate_patient_against_protocol(patient: PatientScreeningInput, proto: Cli
         indication=proto.indication,
         phase=proto.phase,
         match_status=match_status,
+        match_status_label=match_status_label,
+        eligibility_classification=eligibility_classification,
+        is_investigator_verified=is_verified,
         match_score_pct=score_pct,
         passed_criteria_count=passed_count,
         total_criteria_count=total_count,
         criteria_breakdown=checks,
         recruitment_acceleration_opportunity=opportunity,
         patient_burden_summary=burden_summary,
-        investigator_confirmation_required=True,
+        investigator_confirmation_required=not is_verified,
         investigator_disclaimer=INVESTIGATOR_DISCLAIMER,
+    )
+
+
+def _evaluate_portfolio(
+    patient: PatientScreeningInput,
+    provenance: str,
+    conn,
+) -> list[TrialMatchResult]:
+    matches: list[TrialMatchResult] = []
+    for proto_type, factory in SAMPLE_PROTOCOL_MAP.items():
+        proto = factory()
+        try:
+            matches.append(evaluate_patient_against_protocol(patient, proto, provenance=provenance))
+        except Exception:
+            logger.exception("Eligibility evaluation failed for sample protocol type: %s", proto_type)
+
+    try:
+        rows = conn.execute("SELECT protocol_id, data_json FROM uploaded_protocols").fetchall()
+        for p_id, p_json in rows:
+            try:
+                p_data = json.loads(p_json)
+                proto = ClinicalTrialProtocol(**p_data)
+                if any(m.protocol_id == proto.protocol_id for m in matches):
+                    continue
+                matches.append(evaluate_patient_against_protocol(patient, proto, provenance=provenance))
+            except Exception:
+                logger.exception("Eligibility evaluation failed for uploaded protocol: %s", p_id)
+    except Exception:
+        logger.exception("Failed to query uploaded_protocols table during patient screening.")
+
+    return matches
+
+
+def _build_screening_summary(matches: list[TrialMatchResult], provenance: str) -> str:
+    verified_count = sum(1 for m in matches if m.match_status == "INVESTIGATOR_VERIFIED_ELIGIBLE")
+    prelim_count = sum(1 for m in matches if m.match_status == "PRELIMINARY_MATCH")
+    review_count = sum(1 for m in matches if m.match_status == "REQUIRES_REVIEW")
+    not_eligible_count = sum(1 for m in matches if m.match_status == "NOT_ELIGIBLE")
+
+    if provenance == PROVENANCE_INVESTIGATOR_VERIFIED:
+        return (
+            f"Evaluated against {len(matches)} trial protocols (Investigator-Verified): "
+            f"{verified_count} Verified Eligible, {review_count} Requiring Further Review, "
+            f"{not_eligible_count} Not Eligible."
+        )
+    if provenance == PROVENANCE_SYNTHETIC_DEMO:
+        return (
+            f"Evaluated synthetic demonstration profile against {len(matches)} protocols: "
+            f"{prelim_count} Preliminary Demo Match(es), {review_count} Requiring Review, "
+            f"{not_eligible_count} Not Eligible. Synthetic demonstration data only."
+        )
+    return (
+        f"Evaluated patient-reported inputs against {len(matches)} trial protocols: "
+        f"{prelim_count} Preliminary Match(es) (Unverified), {review_count} Requiring Investigator Review, "
+        f"{not_eligible_count} Not Eligible. Preliminary matches do not establish trial eligibility until verified by an investigator."
     )
 
 
@@ -242,7 +361,7 @@ async def screen_patient_eligibility(
     """
     Evaluates individual patient clinical phenotype against active protocol portfolio.
     Evaluates against both canonical protocols and uploaded institutional protocols in DuckDB.
-    Enforces RBAC, server-derived provenance, and patient ID anchoring.
+    Enforces RBAC, server-derived provenance, persistent auditable screening records, and patient ID anchoring.
     """
     if current_user.role == "patient":
         if payload.patient_id and payload.patient_id.startswith("usr-") and payload.patient_id != current_user.id:
@@ -262,47 +381,59 @@ async def screen_patient_eligibility(
     )
     provenance_verified = resolved_provenance == PROVENANCE_INVESTIGATOR_VERIFIED
     is_synthetic = resolved_provenance == PROVENANCE_SYNTHETIC_DEMO
+    screening_id = f"scr-{uuid.uuid4().hex[:10]}"
+    now_dt = datetime.now(timezone.utc)
+    now_iso = now_dt.isoformat()
 
-    matches: list[TrialMatchResult] = []
+    verifier_name = current_user.name if provenance_verified else None
+    verifier_role = current_user.role if provenance_verified else None
+    verifier_id = current_user.id if provenance_verified else None
+    verified_at_iso = now_iso if provenance_verified else None
 
-    # 1. Sample Protocol Map
-    for proto_type, factory in SAMPLE_PROTOCOL_MAP.items():
-        proto = factory()
-        try:
-            match_res = evaluate_patient_against_protocol(payload, proto)
-            matches.append(match_res)
-        except Exception:
-            logger.exception("Eligibility evaluation failed for sample protocol type: %s", proto_type)
-
-    # 2. Uploaded Protocols from DuckDB
     conn = db_client.get_connection()
     try:
-        rows = conn.execute("SELECT protocol_id, data_json FROM uploaded_protocols").fetchall()
-        for p_id, p_json in rows:
-            try:
-                p_data = json.loads(p_json)
-                proto = ClinicalTrialProtocol(**p_data)
-                if any(m.protocol_id == proto.protocol_id for m in matches):
-                    continue
-                match_res = evaluate_patient_against_protocol(payload, proto)
-                matches.append(match_res)
-            except Exception:
-                logger.exception("Eligibility evaluation failed for uploaded protocol: %s", p_id)
-    except Exception:
-        logger.exception("Failed to query uploaded_protocols table during patient screening.")
+        matches = _evaluate_portfolio(payload, resolved_provenance, conn)
     finally:
         conn.close()
 
-    eligible_count = sum(1 for m in matches if m.match_status == "POTENTIALLY_ELIGIBLE")
-    review_count = sum(1 for m in matches if m.match_status == "REQUIRES_REVIEW")
+    summary = _build_screening_summary(matches, resolved_provenance)
 
-    summary = (
-        f"Evaluated against {len(matches)} trial protocols: {eligible_count} Potentially Eligible, "
-        f"{review_count} Requiring Investigator Review. "
-        "All results require confirmation by a qualified clinical investigator."
-    )
+    # Persist authoritative server-resolved screening snapshot inside DuckDB transaction
+    sanitized_profile = payload.model_dump()
+    sanitized_profile["patient_id"] = verified_patient_id
+    sanitized_profile["data_provenance"] = resolved_provenance
+    sanitized_profile["investigator_verified"] = provenance_verified
+    matches_payload = [m.model_dump() for m in matches]
 
-    # Record provenance-tagged audit event without storing clinical measurements or PII
+    with db_client.transaction() as tconn:
+        tconn.execute(
+            """
+            INSERT INTO patient_screenings (
+                screening_id, patient_id, submitted_by_user_id, submitted_by_role,
+                data_provenance, is_synthetic, profile_json, matches_json,
+                investigator_verified, verified_by_user_id, verified_by_name,
+                verified_by_role, verified_at, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                screening_id,
+                verified_patient_id,
+                current_user.id,
+                current_user.role,
+                resolved_provenance,
+                is_synthetic,
+                json.dumps(sanitized_profile),
+                json.dumps(matches_payload),
+                provenance_verified,
+                verifier_id,
+                verifier_name,
+                verifier_role,
+                now_dt if provenance_verified else None,
+                now_dt,
+            ),
+        )
+
+    # Record provenance-tagged audit event without storing raw clinical measurements or PII
     try:
         from app.api.routes_audit import record_audit_event
         record_audit_event(
@@ -311,25 +442,235 @@ async def screen_patient_eligibility(
             user_role=current_user.role,
             action="PATIENT_ELIGIBILITY_SCREENING",
             resource_type="PATIENT_SCREENING",
-            resource_id=verified_patient_id,
+            resource_id=screening_id,
             details=(
                 f"Evaluated {len(matches)} protocols for subject {verified_patient_id} "
-                f"(provenance={resolved_provenance}, verified={provenance_verified})."
+                f"(screening_id={screening_id}, provenance={resolved_provenance}, verified={provenance_verified})."
             ),
         )
     except Exception:
         logger.exception("Failed to record audit event for patient screening")
 
     return ScreeningResponse(
+        screening_id=screening_id,
         patient_id=verified_patient_id,
         data_provenance=resolved_provenance,
         provenance_verified=provenance_verified,
+        verified_by=verifier_name,
+        verified_by_role=verifier_role,
+        verified_at=verified_at_iso,
         is_synthetic_data=is_synthetic,
         data_disclaimer=SYNTHETIC_DEMO_DISCLAIMER if is_synthetic else None,
-        evaluation_timestamp=datetime.now(timezone.utc).isoformat(),
+        evaluation_timestamp=now_iso,
         trials_evaluated=len(matches),
         matches=matches,
         recruitment_support_summary=summary,
+        investigator_disclaimer=INVESTIGATOR_DISCLAIMER,
+    )
+
+
+@router.get("/screenings", response_model=list[StoredScreeningSummary])
+async def list_patient_screenings(
+    current_user: AuthenticatedUser = Depends(get_current_user),
+):
+    """
+    Lists stored screening assessments.
+    - Patients see ONLY their own screening records (IDOR protected).
+    - Investigators (doctor) and administrators (admin) can review screening submissions
+      across subjects and inspect verification status.
+    """
+    conn = db_client.get_connection()
+    try:
+        if current_user.role == "patient":
+            rows = conn.execute(
+                """
+                SELECT screening_id, patient_id, submitted_by_user_id, submitted_by_role,
+                       data_provenance, is_synthetic, profile_json, matches_json,
+                       investigator_verified, verified_by_name, verified_by_role,
+                       CAST(verified_at AS VARCHAR), verification_notes, CAST(created_at AS VARCHAR)
+                FROM patient_screenings
+                WHERE patient_id = ? OR submitted_by_user_id = ?
+                ORDER BY created_at DESC
+                LIMIT 50
+                """,
+                (current_user.id, current_user.id),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT screening_id, patient_id, submitted_by_user_id, submitted_by_role,
+                       data_provenance, is_synthetic, profile_json, matches_json,
+                       investigator_verified, verified_by_name, verified_by_role,
+                       CAST(verified_at AS VARCHAR), verification_notes, CAST(created_at AS VARCHAR)
+                FROM patient_screenings
+                ORDER BY created_at DESC
+                LIMIT 100
+                """
+            ).fetchall()
+
+        results: list[StoredScreeningSummary] = []
+        for r in rows:
+            (
+                scr_id,
+                pat_id,
+                sub_uid,
+                sub_role,
+                prov,
+                is_syn,
+                prof_json,
+                m_json,
+                inv_ver,
+                ver_name,
+                ver_role,
+                ver_at,
+                ver_notes,
+                created_at,
+            ) = r
+            try:
+                prof = json.loads(prof_json)
+            except Exception:
+                prof = {}
+            try:
+                parsed_matches = [TrialMatchResult(**m) for m in json.loads(m_json)]
+            except Exception:
+                parsed_matches = []
+
+            results.append(
+                StoredScreeningSummary(
+                    screening_id=scr_id,
+                    patient_id=pat_id,
+                    submitted_by_user_id=sub_uid,
+                    submitted_by_role=sub_role,
+                    data_provenance=prov,
+                    is_synthetic_data=bool(is_syn),
+                    investigator_verified=bool(inv_ver),
+                    verified_by=ver_name,
+                    verified_by_role=ver_role,
+                    verified_at=str(ver_at) if ver_at else None,
+                    verification_notes=ver_notes,
+                    created_at=str(created_at),
+                    clinical_summary={
+                        "age": prof.get("age"),
+                        "cancer_stage": prof.get("cancer_stage"),
+                        "ecog_score": prof.get("ecog_score"),
+                        "egfr_ml_min": prof.get("egfr_ml_min"),
+                    },
+                    matches=parsed_matches,
+                )
+            )
+        return results
+    finally:
+        conn.close()
+
+
+@router.post("/screenings/{screening_id}/verify", response_model=ScreeningResponse)
+async def verify_patient_screening(
+    screening_id: str,
+    payload: Optional[InvestigatorVerificationRequest] = None,
+    current_user: AuthenticatedUser = Depends(require_role(["doctor", "admin"])),
+):
+    """
+    Authorized clinical investigator verification workflow.
+    Strictly limited to doctor and admin roles; patients receive HTTP 403.
+    Re-evaluates protocol eligibility against stored parameters under investigator_verified
+    provenance (preserving all hard exclusions & missing-data review rules), persists
+    verifier identity/timestamp, and records a cryptographic SHA-256 audit log entry.
+    """
+    clean_id = screening_id.strip()
+    notes = payload.notes.strip() if payload and payload.notes else None
+    now_dt = datetime.now(timezone.utc)
+    now_iso = now_dt.isoformat()
+
+    with db_client.transaction() as conn:
+        row = conn.execute(
+            """
+            SELECT patient_id, is_synthetic, profile_json
+            FROM patient_screenings
+            WHERE screening_id = ?
+            """,
+            (clean_id,),
+        ).fetchone()
+
+        if not row:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Screening record '{clean_id}' was not found.",
+            )
+
+        pat_id, is_syn, prof_json = row
+        if is_syn:
+            raise HTTPException(
+                status_code=400,
+                detail="Synthetic demonstration profiles cannot be marked as investigator-verified clinical data.",
+            )
+
+        prof_data = json.loads(prof_json)
+        prof_data["data_provenance"] = PROVENANCE_INVESTIGATOR_VERIFIED
+        prof_data["investigator_verified"] = True
+        patient_input = PatientScreeningInput(**prof_data)
+
+        matches = _evaluate_portfolio(patient_input, PROVENANCE_INVESTIGATOR_VERIFIED, conn)
+        matches_payload = [m.model_dump() for m in matches]
+
+        conn.execute(
+            """
+            UPDATE patient_screenings
+            SET data_provenance = ?,
+                profile_json = ?,
+                matches_json = ?,
+                investigator_verified = TRUE,
+                verified_by_user_id = ?,
+                verified_by_name = ?,
+                verified_by_role = ?,
+                verified_at = ?,
+                verification_notes = ?
+            WHERE screening_id = ?
+            """,
+            (
+                PROVENANCE_INVESTIGATOR_VERIFIED,
+                json.dumps(prof_data),
+                json.dumps(matches_payload),
+                current_user.id,
+                current_user.name,
+                current_user.role,
+                now_dt,
+                notes,
+                clean_id,
+            ),
+        )
+
+    try:
+        from app.api.routes_audit import record_audit_event
+        record_audit_event(
+            user_id=current_user.id,
+            user_name=current_user.name,
+            user_role=current_user.role,
+            action="INVESTIGATOR_CLINICAL_VERIFICATION",
+            resource_type="PATIENT_SCREENING",
+            resource_id=clean_id,
+            details=(
+                f"Investigator {current_user.name} ({current_user.role}) verified screening {clean_id} "
+                f"for subject {pat_id} at {now_iso}."
+            ),
+        )
+    except Exception:
+        logger.exception("Failed to record audit event for investigator verification")
+
+    return ScreeningResponse(
+        screening_id=clean_id,
+        patient_id=pat_id,
+        data_provenance=PROVENANCE_INVESTIGATOR_VERIFIED,
+        provenance_verified=True,
+        verified_by=current_user.name,
+        verified_by_role=current_user.role,
+        verified_at=now_iso,
+        verification_notes=notes,
+        is_synthetic_data=False,
+        data_disclaimer=None,
+        evaluation_timestamp=now_iso,
+        trials_evaluated=len(matches),
+        matches=matches,
+        recruitment_support_summary=_build_screening_summary(matches, PROVENANCE_INVESTIGATOR_VERIFIED),
         investigator_disclaimer=INVESTIGATOR_DISCLAIMER,
     )
 
@@ -550,9 +891,9 @@ async def get_patient_clinical_record(
     current_user: AuthenticatedUser = Depends(get_current_user),
 ):
     """
-    Retrieves clinical record metadata for a patient.
+    Retrieves stored clinical provenance metadata for a patient from persisted screenings.
     Strictly prevents cross-patient direct object reference (IDOR).
-    Patients can only access their own record.
+    Patients can only access their own record, and doctor access alone does not mark unverified data verified.
     """
     clean_id = patient_id.strip()
     if current_user.role == "patient" and clean_id != current_user.id:
@@ -561,16 +902,46 @@ async def get_patient_clinical_record(
             detail=f"Security violation: Access denied to patient record '{clean_id}'.",
         )
 
-    provenance = (
-        PROVENANCE_INVESTIGATOR_VERIFIED
-        if current_user.role in {"doctor", "admin"}
-        else PROVENANCE_PATIENT_REPORTED
-    )
+    conn = db_client.get_connection()
+    try:
+        row = conn.execute(
+            """
+            SELECT screening_id, data_provenance, investigator_verified,
+                   verified_by_name, verified_by_role, CAST(verified_at AS VARCHAR)
+            FROM patient_screenings
+            WHERE patient_id = ?
+            ORDER BY investigator_verified DESC, created_at DESC
+            LIMIT 1
+            """,
+            (clean_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    if row:
+        scr_id, prov, inv_ver, ver_by, ver_role, ver_at = row
+        return {
+            "success": True,
+            "patient_id": clean_id,
+            "latest_screening_id": scr_id,
+            "data_provenance": prov,
+            "provenance_verified": bool(inv_ver),
+            "verified_by": ver_by,
+            "verified_by_role": ver_role,
+            "verified_at": str(ver_at) if ver_at else None,
+            "accessed_by_identity": current_user.id,
+            "role": current_user.role,
+        }
+
     return {
         "success": True,
         "patient_id": clean_id,
-        "data_provenance": provenance,
-        "provenance_verified": provenance == PROVENANCE_INVESTIGATOR_VERIFIED,
-        "verified_identity": current_user.id,
+        "latest_screening_id": None,
+        "data_provenance": PROVENANCE_UNKNOWN,
+        "provenance_verified": False,
+        "verified_by": None,
+        "verified_by_role": None,
+        "verified_at": None,
+        "accessed_by_identity": current_user.id,
         "role": current_user.role,
     }

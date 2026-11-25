@@ -104,10 +104,12 @@ def test_patient_eligibility_screening_endpoint():
     assert "investigator_disclaimer" in data
     assert len(data["matches"]) >= 1
 
-    # Inspect first match (NSCLC)
+    # Inspect first match (NSCLC) — unverified patient-reported inputs yield PRELIMINARY_MATCH, never verified/eligible
     nsclc_match = next((m for m in data["matches"] if "NSCLC" in m["protocol_id"]), data["matches"][0])
     assert nsclc_match["protocol_id"] is not None
-    assert nsclc_match["match_status"] in ["POTENTIALLY_ELIGIBLE", "REQUIRES_REVIEW", "NOT_ELIGIBLE"]
+    assert nsclc_match["match_status"] in ["PRELIMINARY_MATCH", "REQUIRES_REVIEW", "NOT_ELIGIBLE"]
+    assert nsclc_match["match_status"] != "POTENTIALLY_ELIGIBLE"
+    assert nsclc_match.get("is_investigator_verified") is False
     assert "criteria_breakdown" in nsclc_match
     assert len(nsclc_match["criteria_breakdown"]) >= 5
     assert nsclc_match.get("investigator_confirmation_required") is True
