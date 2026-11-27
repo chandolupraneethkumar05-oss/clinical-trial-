@@ -52,12 +52,16 @@ class PatientCohortRecord(BaseModel):
     # Socioeconomic & Travel Friction Factors
     distance_to_center_miles: float = Field(..., ge=1.0, le=200.0, description="Distance from residence to clinical trial investigative site")
     caregiver_accompanied: bool = Field(default=True, description="Whether patient has dedicated family/caregiver support for visits")
+    her2_positive: Optional[bool] = Field(default=None, description="HER2 overexpression/amplification status (Breast Cancer)")
+    hormone_receptor_positive: Optional[bool] = Field(default=None, description="ER/PR hormone receptor positive status (Breast Cancer)")
+    bcma_positive: Optional[bool] = Field(default=None, description="BCMA surface expression confirmed positive (Multiple Myeloma)")
 
 
 class CohortFilterCriteria(BaseModel):
     """Filter criteria passed to simulate real-time patient eligibility."""
     min_age: int = Field(default=18, ge=0, le=120)
     max_age: int = Field(default=80, ge=0, le=120)
+    target_cancer_types: Optional[list[str]] = Field(default=None, description="Optional target cancer type substrings/labels")
     allowed_stages: list[str] = Field(default_factory=lambda: ["Stage IIIB", "Stage IV"])
     max_ecog: int = Field(default=1, ge=0, le=4)
     min_anc: float = Field(default=1500.0, ge=0.0)
@@ -74,6 +78,9 @@ class CohortFilterCriteria(BaseModel):
     allow_stable_brain_mets: bool = True
     exclude_active_autoimmune: bool = True
     target_biomarker_egfr_negative: bool = False
+    target_biomarker_her2_negative: bool = False
+    target_biomarker_hormone_receptor_negative: bool = False
+    target_biomarker_bcma_positive: bool = False
     min_pdl1_tps: Optional[float] = Field(default=None, ge=0.0, le=100.0)
 
     @field_validator(

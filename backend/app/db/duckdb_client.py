@@ -153,7 +153,10 @@ class DuckDBClient:
                     active_autoimmune_disease BOOLEAN,
                     nyha_heart_failure_class INTEGER,
                     distance_to_center_miles DOUBLE,
-                    caregiver_accompanied BOOLEAN
+                    caregiver_accompanied BOOLEAN,
+                    her2_positive BOOLEAN,
+                    hormone_receptor_positive BOOLEAN,
+                    bcma_positive BOOLEAN
                 );
 
                 CREATE TABLE IF NOT EXISTS users (
@@ -237,6 +240,15 @@ class DuckDBClient:
             """)
 
             # Safe schema upgrades for existing installations
+            for col_ddl in (
+                "ALTER TABLE patients ADD COLUMN her2_positive BOOLEAN",
+                "ALTER TABLE patients ADD COLUMN hormone_receptor_positive BOOLEAN",
+                "ALTER TABLE patients ADD COLUMN bcma_positive BOOLEAN",
+            ):
+                try:
+                    conn.execute(col_ddl)
+                except Exception:
+                    pass
             try:
                 conn.execute("ALTER TABLE users ADD COLUMN token_version INTEGER DEFAULT 1")
             except Exception:

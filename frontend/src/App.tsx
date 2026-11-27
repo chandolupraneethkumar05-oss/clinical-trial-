@@ -1,13 +1,38 @@
 import { useState, useEffect, useCallback, lazy, Suspense } from 'react';
 import { LandingPage } from './components/LandingPage';
 import type { StudioTab } from './components/StudioWorkspace';
-import type { AuditEvent, AuditVerificationStatus, PatientScreeningRecord } from './types/audit';
+import type {
+  AuditEvent,
+  AuditVerificationStatus,
+  ManagedUserAccount,
+  PatientInterestSummary,
+  PatientScreeningRecord,
+} from './types/audit';
 import type {
   ClinicalProtocol,
   FunnelSimulationResult,
   RetentionPoint,
   BenchmarkTrial,
+  HistoricalBenchmarksResponse,
 } from './types/protocol';
+
+type HistoricalBenchmarksPayload = BenchmarkTrial[] | HistoricalBenchmarksResponse;
+
+function extractBenchmarksPayload(payload: HistoricalBenchmarksPayload): {
+  trials: BenchmarkTrial[];
+  disclaimer: string | null;
+} {
+  if (Array.isArray(payload)) {
+    return { trials: payload, disclaimer: null };
+  }
+  if (payload && Array.isArray(payload.trials)) {
+    return {
+      trials: payload.trials,
+      disclaimer: typeof payload.data_disclaimer === 'string' ? payload.data_disclaimer : null,
+    };
+  }
+  return { trials: [], disclaimer: null };
+}
 import type { AuthUser, AuthModalView } from './types/auth';
 import {
   apiFetchJson,
@@ -109,6 +134,7 @@ export default function App() {
   const [simulationError, setSimulationError] = useState<string | null>(null);
 
   const [benchmarks, setBenchmarks] = useState<BenchmarkTrial[]>([]);
+  const [benchmarksDisclaimer, setBenchmarksDisclaimer] = useState<string | null>(null);
   const [benchmarksError, setBenchmarksError] = useState<string | null>(null);
   const [benchmarksReloadNonce, setBenchmarksReloadNonce] = useState<number>(0);
 
@@ -122,6 +148,10 @@ export default function App() {
   const [patientScreenings, setPatientScreenings] = useState<PatientScreeningRecord[]>([]);
   const [verifyingScreeningId, setVerifyingScreeningId] = useState<string | null>(null);
   const [screeningVerifyError, setScreeningVerifyError] = useState<string | null>(null);
+  const [patientInterests, setPatientInterests] = useState<PatientInterestSummary[]>([]);
+  const [adminUsers, setAdminUsers] = useState<ManagedUserAccount[]>([]);
+  const [promotingUserId, setPromotingUserId] = useState<string | null>(null);
+  const [userPromoteError, setUserPromoteError] = useState<string | null>(null);
 
   // ── 4. Modal Overlays ─────────────────────────────────────────────────────
   const [initialResetToken, setInitialResetToken] = useState<string>(() => initialRoute.resetToken);
@@ -242,6 +272,7 @@ export default function App() {
     setFunnelData(null);
     setRetentionCurve([]);
     setBenchmarks([]);
+    setBenchmarksDisclaimer(null);
     setBenchmarksError(null);
     setSimulationError(null);
     setStudioError(null);
@@ -251,6 +282,10 @@ export default function App() {
     setPatientScreenings([]);
     setScreeningVerifyError(null);
     setVerifyingScreeningId(null);
+    setPatientInterests([]);
+    setAdminUsers([]);
+    setPromotingUserId(null);
+    setUserPromoteError(null);
     setViewMode('landing');
     window.location.hash = '#/';
     setAuthModalView('signin');
@@ -265,15 +300,27 @@ export default function App() {
       setAuditError(null);
       try {
         const headers = getAuthHeaders();
-        const [logsRes, verifyRes, scrRes] = await Promise.all([
+        const requests: Promise<Response>[] = [
           fetch(apiUrl('/api/v1/audit/logs'), { headers, signal }),
           fetch(apiUrl('/api/v1/audit/verify'), { headers, signal }),
           fetch(apiUrl('/api/v1/patient/screenings'), { headers, signal }),
-        ]);
+          fetch(apiUrl('/api/v1/patient/interests'), { headers, signal }),
+        ];
+        if (user.role === 'admin') {
+          requests.push(fetch(apiUrl('/api/v1/auth/users'), { headers, signal }));
+        }
+
+        const [logsRes, verifyRes, scrRes, intRes, usersRes] = await Promise.all(requests);
 
         if (signal?.aborted) return;
 
-        if (logsRes.status === 401 || verifyRes.status === 401 || scrRes.status === 401) {
+        if (
+          logsRes.status === 401 ||
+          verifyRes.status === 401 ||
+          scrRes.status === 401 ||
+          intRes.status === 401 ||
+          usersRes?.status === 401
+        ) {
           handleSessionExpired();
           return;
         }
@@ -295,6 +342,18 @@ export default function App() {
         if (scrRes.ok) {
           const scrData = await parseJsonSafe(scrRes);
           setPatientScreenings(Array.isArray(scrData) ? scrData : []);
+        }
+
+        if (intRes.ok) {
+          const intData = await parseJsonSafe(intRes);
+          setPatientInterests(Array.isArray(intData) ? intData : []);
+        }
+
+        if (usersRes?.ok) {
+          const usersData = await parseJsonSafe(usersRes);
+          setAdminUsers(Array.isArray(usersData) ? usersData : []);
+        } else if (user.role !== 'admin') {
+          setAdminUsers([]);
         }
       } catch (err) {
         if ((err as Error)?.name === 'AbortError') return;
@@ -384,12 +443,13 @@ export default function App() {
 
         // 3. Fetch Retention Curve
         if (protoJson.burden) {
-          const durationWeeks = protoJson.study_duration_weeks ?? 52;
+          const durationWeeks = Math.max(4, Math.min(156, protoJson.study_duration_weeks ?? 52));
+          const safeEnrolled = Math.max(0, Math.min(10000, Math.round(fJson.final_eligible_count)));
           const peakWeeks = protoJson.burden.peak_burden_weeks ?? [];
           const retParams = new URLSearchParams({
-            enrolled_size: String(fJson.final_eligible_count),
+            enrolled_size: String(safeEnrolled),
             composite_pbi: String(protoJson.burden.composite_pbi_score),
-            study_duration_weeks: String(durationWeeks),
+            duration_weeks: String(durationWeeks),
           });
           for (const wk of peakWeeks) {
             retParams.append('peak_weeks', String(wk));
@@ -409,19 +469,22 @@ export default function App() {
         // 4. Fetch Benchmarks separately so a benchmark issue doesn't block the Studio
         try {
           setBenchmarksError(null);
-          const bJson = await apiFetchJson<BenchmarkTrial[]>('/api/v1/benchmark/historical-trials', {
+          const bJson = await apiFetchJson<HistoricalBenchmarksPayload>('/api/v1/benchmark/historical-trials', {
             headers: getAuthHeaders(),
             signal: controller.signal,
             onUnauthorized: handleSessionExpired,
           });
           if (!controller.signal.aborted) {
-            setBenchmarks(Array.isArray(bJson) ? bJson : []);
+            const parsedBench = extractBenchmarksPayload(bJson);
+            setBenchmarks(parsedBench.trials);
+            setBenchmarksDisclaimer(parsedBench.disclaimer);
           }
         } catch (benchErr) {
           if ((benchErr as Error)?.name === 'AbortError' || benchErr instanceof SessionExpiredError) {
             return;
           }
           setBenchmarks([]);
+          setBenchmarksDisclaimer(null);
           setBenchmarksError(
             benchErr instanceof Error ? benchErr.message : 'Unable to load historical benchmark trials.'
           );
@@ -457,13 +520,15 @@ export default function App() {
     async function reloadBenchmarks() {
       try {
         setBenchmarksError(null);
-        const bJson = await apiFetchJson<BenchmarkTrial[]>('/api/v1/benchmark/historical-trials', {
+        const bJson = await apiFetchJson<HistoricalBenchmarksPayload>('/api/v1/benchmark/historical-trials', {
           headers: getAuthHeaders(),
           signal: controller.signal,
           onUnauthorized: handleSessionExpired,
         });
         if (!controller.signal.aborted) {
-          setBenchmarks(Array.isArray(bJson) ? bJson : []);
+          const parsedBench = extractBenchmarksPayload(bJson);
+          setBenchmarks(parsedBench.trials);
+          setBenchmarksDisclaimer(parsedBench.disclaimer);
         }
       } catch (err) {
         if ((err as Error)?.name === 'AbortError' || err instanceof SessionExpiredError) {
@@ -510,10 +575,12 @@ export default function App() {
       peakWeeks: number[] = [],
       signal?: AbortSignal
     ): Promise<RetentionPoint[]> => {
+      const safeEnrolled = Math.max(0, Math.min(10000, Math.round(enrolled)));
+      const safeDuration = Math.max(4, Math.min(156, Math.round(durationWeeks)));
       const params = new URLSearchParams({
-        enrolled_size: String(enrolled),
+        enrolled_size: String(safeEnrolled),
         composite_pbi: String(pbi),
-        study_duration_weeks: String(durationWeeks),
+        duration_weeks: String(safeDuration),
       });
       for (const wk of peakWeeks) {
         params.append('peak_weeks', String(wk));
@@ -683,6 +750,30 @@ export default function App() {
     [getAuthHeaders, handleSessionExpired, fetchAuditData]
   );
 
+  const handlePromoteUser = useCallback(
+    async (userId: string, targetRole: 'doctor' | 'admin') => {
+      setPromotingUserId(userId);
+      setUserPromoteError(null);
+      try {
+        await apiFetchJson('/api/v1/auth/promote-user', {
+          method: 'POST',
+          headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({ user_id: userId, target_role: targetRole }),
+          onUnauthorized: handleSessionExpired,
+        });
+        await fetchAuditData();
+      } catch (err) {
+        if (err instanceof SessionExpiredError) return;
+        setUserPromoteError(
+          err instanceof Error ? err.message : `Failed to promote user ${userId}.`
+        );
+      } finally {
+        setPromotingUserId(null);
+      }
+    },
+    [getAuthHeaders, handleSessionExpired, fetchAuditData]
+  );
+
   // ── 8. Strict Authentication Lifecycle Handlers ───────────────────────────
   const handleLoginSuccess = (authUser: AuthUser) => {
     setUser(authUser);
@@ -729,6 +820,7 @@ export default function App() {
     setFunnelData(null);
     setRetentionCurve([]);
     setBenchmarks([]);
+    setBenchmarksDisclaimer(null);
     setBenchmarksError(null);
     setSimulationError(null);
     setStudioError(null);
@@ -738,6 +830,10 @@ export default function App() {
     setPatientScreenings([]);
     setScreeningVerifyError(null);
     setVerifyingScreeningId(null);
+    setPatientInterests([]);
+    setAdminUsers([]);
+    setPromotingUserId(null);
+    setUserPromoteError(null);
     try {
       localStorage.removeItem('protocolshield_user');
     } catch {
@@ -834,6 +930,7 @@ export default function App() {
             funnelData={funnelData}
             retentionCurve={retentionCurve}
             benchmarks={benchmarks}
+            benchmarksDisclaimer={benchmarksDisclaimer}
             benchmarksError={benchmarksError}
             onRetryBenchmarks={() => setBenchmarksReloadNonce((n) => n + 1)}
             simulationError={simulationError}
@@ -862,6 +959,11 @@ export default function App() {
             verifyingScreeningId={verifyingScreeningId}
             screeningVerifyError={screeningVerifyError}
             onVerifyScreening={handleVerifyScreening}
+            patientInterests={patientInterests}
+            adminUsers={adminUsers}
+            promotingUserId={promotingUserId}
+            userPromoteError={userPromoteError}
+            onPromoteUser={handlePromoteUser}
           />
         )}
 

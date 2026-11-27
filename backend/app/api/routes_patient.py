@@ -58,6 +58,7 @@ class PatientScreeningInput(BaseModel):
     )
     age: int = Field(..., ge=18, le=95, description="Required patient age in years (18-95)")
     gender: Optional[str] = Field(default=None, max_length=40)
+    primary_cancer_type: Optional[str] = Field(default=None, max_length=120)
     cancer_stage: str = Field(..., min_length=1, max_length=100, description="Required cancer stage")
     ecog_score: int = Field(..., ge=0, le=4, description="Required ECOG performance status (0-4)")
     egfr_ml_min: float = Field(..., ge=10.0, le=150.0, description="Required eGFR in mL/min/1.73m2")
@@ -71,6 +72,9 @@ class PatientScreeningInput(BaseModel):
     has_stable_brain_mets: Optional[bool] = None
     has_active_autoimmune: Optional[bool] = None
     has_egfr_sensitizing_mutation: Optional[bool] = None
+    has_her2_positive: Optional[bool] = None
+    has_hormone_receptor_positive: Optional[bool] = None
+    has_bcma_positive: Optional[bool] = None
     pdl1_tps_percent: Optional[float] = Field(default=None, ge=0.0, le=100.0)
     distance_to_center_miles: Optional[float] = Field(default=None, ge=1.0, le=500.0)
 

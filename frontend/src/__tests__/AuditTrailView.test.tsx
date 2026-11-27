@@ -53,12 +53,34 @@ describe('AuditTrailView investigator verification queue', () => {
 
   it('distinguishes preliminary, synthetic demo, and verified screenings and triggers verification only on non-synthetic pending records', () => {
     const onVerifyScreening = vi.fn();
+    const onPromoteUser = vi.fn();
 
     render(
       <AuditTrailView
         events={[]}
         patientScreenings={SAMPLE_SCREENINGS}
         onVerifyScreening={onVerifyScreening}
+        patientInterests={[
+          {
+            id: 'int-001',
+            patient_id: 'usr-pat-1',
+            protocol_id: 'PS-ONC-2026-001',
+            patient_name: 'Alex Test',
+            patient_email: 'alex@example.org',
+            status: 'SUBMITTED',
+            submitted_at: '2026-11-26T09:00:00Z',
+          },
+        ]}
+        userRole="admin"
+        adminUsers={[
+          {
+            id: 'usr-pat-1',
+            name: 'Alex Test',
+            email: 'alex@example.org',
+            role: 'patient',
+          },
+        ]}
+        onPromoteUser={onPromoteUser}
       />
     );
 
@@ -66,11 +88,15 @@ describe('AuditTrailView investigator verification queue', () => {
     expect(screen.getByText(/SYNTHETIC DEMO \(UNVERIFIABLE\)/i)).toBeTruthy();
     expect(screen.getByText(/INVESTIGATOR VERIFIED/i)).toBeTruthy();
     expect(screen.getByText(/Verified by Dr\. Elena Vance/i)).toBeTruthy();
+    expect(screen.getByText(/PS-ONC-2026-001 • Alex Test/i)).toBeTruthy();
 
     const verifyButtons = screen.getAllByRole('button', { name: /Verify Clinical Record/i });
     expect(verifyButtons).toHaveLength(1);
 
     fireEvent.click(verifyButtons[0]);
     expect(onVerifyScreening).toHaveBeenCalledWith('scr-patient-001');
+
+    fireEvent.click(screen.getByRole('button', { name: /Promote to Doctor/i }));
+    expect(onPromoteUser).toHaveBeenCalledWith('usr-pat-1', 'doctor');
   });
 });

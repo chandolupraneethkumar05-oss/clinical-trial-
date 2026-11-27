@@ -12,7 +12,13 @@ import {
   Lock,
   XCircle
 } from 'lucide-react';
-import type { AuditEvent, AuditVerificationStatus, PatientScreeningRecord } from '../types/audit';
+import type {
+  AuditEvent,
+  AuditVerificationStatus,
+  ManagedUserAccount,
+  PatientInterestSummary,
+  PatientScreeningRecord,
+} from '../types/audit';
 
 interface AuditTrailViewProps {
   events?: AuditEvent[];
@@ -26,6 +32,12 @@ interface AuditTrailViewProps {
   verifyingScreeningId?: string | null;
   screeningVerifyError?: string | null;
   onVerifyScreening?: (screeningId: string) => Promise<void> | void;
+  patientInterests?: PatientInterestSummary[];
+  userRole?: string;
+  adminUsers?: ManagedUserAccount[];
+  promotingUserId?: string | null;
+  userPromoteError?: string | null;
+  onPromoteUser?: (userId: string, targetRole: 'doctor' | 'admin') => Promise<void> | void;
 }
 
 export const AuditTrailView: FC<AuditTrailViewProps> = ({ 
@@ -40,6 +52,12 @@ export const AuditTrailView: FC<AuditTrailViewProps> = ({
   verifyingScreeningId = null,
   screeningVerifyError = null,
   onVerifyScreening,
+  patientInterests = [],
+  userRole,
+  adminUsers = [],
+  promotingUserId = null,
+  userPromoteError = null,
+  onPromoteUser,
 }) => {
   const [copiedHash, setCopiedHash] = useState<string | null>(null);
 
@@ -319,6 +337,103 @@ export const AuditTrailView: FC<AuditTrailViewProps> = ({
                     className="px-3.5 py-1.5 rounded-full bg-charcoal-900 hover:bg-charcoal-800 text-white text-xs font-semibold transition-colors disabled:opacity-50 cursor-pointer shrink-0"
                   >
                     {verifyingScreeningId === scr.screening_id ? 'Verifying…' : 'Verify Clinical Record'}
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ── Patient Expressions of Trial Interest (Coordinator Queue) ─────────── */}
+      {!isDemoMode && patientInterests.length > 0 && (
+        <div className="p-4 border-t border-linen-200 bg-linen-50/40 space-y-3">
+          <div className="flex items-center justify-between">
+            <div>
+              <h3 className="font-serif font-bold text-xs text-charcoal-900">
+                Patient Trial Interest Submissions
+              </h3>
+              <p className="text-[11px] text-charcoal-500 font-mono">
+                Patients requesting site coordinator follow-up after preliminary screening.
+              </p>
+            </div>
+            <span className="text-[10px] font-mono text-charcoal-600 font-semibold">
+              {patientInterests.length} Submitted
+            </span>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+            {patientInterests.slice(0, 10).map((item) => (
+              <div
+                key={item.id}
+                className="p-3 rounded-xl border border-linen-200 bg-white flex items-center justify-between gap-2 text-xs"
+              >
+                <div className="min-w-0">
+                  <div className="font-mono font-bold text-charcoal-900 truncate">
+                    {item.protocol_id} • {item.patient_name || item.patient_id}
+                  </div>
+                  <div className="text-[10px] font-mono text-charcoal-500 truncate">
+                    {item.patient_email || item.patient_id} • {item.submitted_at}
+                  </div>
+                </div>
+                <span className="px-2 py-0.5 rounded-full bg-sage-100 text-sage-800 border border-sage-200 font-mono text-[10px] font-bold shrink-0">
+                  {item.status}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ── Administrator Role Governance Console ───────────────────────────── */}
+      {!isDemoMode && userRole === 'admin' && adminUsers.length > 0 && onPromoteUser && (
+        <div className="p-4 border-t border-linen-200 bg-white space-y-3">
+          <div className="flex items-center justify-between">
+            <div>
+              <h3 className="font-serif font-bold text-xs text-charcoal-900">
+                Administrator Role Governance
+              </h3>
+              <p className="text-[11px] text-charcoal-500 font-mono">
+                Promote verified clinical investigators or administrators. Existing sessions are revoked automatically.
+              </p>
+            </div>
+            <span className="text-[10px] font-mono text-charcoal-500">
+              {adminUsers.length} Accounts
+            </span>
+          </div>
+
+          {userPromoteError && (
+            <div className="p-2.5 rounded-xl bg-red-50 border border-red-200 text-xs text-red-700 font-mono">
+              {userPromoteError}
+            </div>
+          )}
+
+          <div className="space-y-2">
+            {adminUsers.slice(0, 12).map((acct) => (
+              <div
+                key={acct.id}
+                className="p-3 rounded-xl border border-linen-200 bg-linen-50/70 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs"
+              >
+                <div>
+                  <div className="flex items-center gap-2 font-mono">
+                    <span className="font-bold text-charcoal-900">{acct.name}</span>
+                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-white border border-linen-300 uppercase font-bold text-charcoal-700">
+                      {acct.role}
+                    </span>
+                  </div>
+                  <p className="text-[11px] font-mono text-charcoal-500">
+                    {acct.email} ({acct.id})
+                  </p>
+                </div>
+
+                {acct.role === 'patient' && (
+                  <button
+                    type="button"
+                    disabled={promotingUserId === acct.id}
+                    onClick={() => void onPromoteUser(acct.id, 'doctor')}
+                    className="px-3.5 py-1.5 rounded-full bg-charcoal-900 hover:bg-charcoal-800 text-white text-xs font-semibold transition-colors disabled:opacity-50 cursor-pointer shrink-0"
+                  >
+                    {promotingUserId === acct.id ? 'Promoting…' : 'Promote to Doctor'}
                   </button>
                 )}
               </div>

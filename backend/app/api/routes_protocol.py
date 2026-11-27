@@ -100,6 +100,7 @@ def get_canonical_nsclc_sample_protocol() -> ClinicalTrialProtocol:
         structured_filters={
             "min_age": 18,
             "max_age": 75,
+            "target_cancer_types": ["NSCLC"],
             "allowed_stages": ["Stage IV (Oligometastatic)", "Stage IV (Polymetastatic)"],
             "max_ecog": 1,
             "min_anc": 1500.0,
@@ -205,6 +206,7 @@ def get_canonical_tnbc_sample_protocol() -> ClinicalTrialProtocol:
         ],
         structured_filters={
             "min_age": 18,
+            "target_cancer_types": ["Breast Cancer", "TNBC", "Triple Negative", "Triple-Negative"],
             "allowed_stages": ["Stage IV (Oligometastatic)", "Stage IV (Polymetastatic)"],
             "max_ecog": 1,
             "min_egfr": 50.0,
@@ -314,6 +316,7 @@ def get_canonical_myeloma_sample_protocol() -> ClinicalTrialProtocol:
         ],
         structured_filters={
             "min_age": 18,
+            "target_cancer_types": ["Multiple Myeloma"],
             "allowed_stages": [
                 "Stage I (ISS)", "Stage II (ISS)", "Stage III (ISS)",
                 "Stage IV (Oligometastatic)", "Stage IV (Polymetastatic)"

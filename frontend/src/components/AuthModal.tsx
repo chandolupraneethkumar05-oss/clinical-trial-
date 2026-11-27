@@ -400,14 +400,12 @@ export const AuthModal: FC<AuthModalProps> = ({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 overflow-y-auto">
-      {/* ── Background: Scientific Laboratory Image with Vignette ───────────── */}
+      {/* ── Background: Clinical Grid Atmospheric Backdrop (Self-Contained) ─── */}
       <div
         className="fixed inset-0 transition-opacity"
         style={{
           backgroundImage:
-            'radial-gradient(circle at 50% 50%, rgba(15, 23, 42, 0.78) 0%, rgba(2, 6, 23, 0.94) 100%), url("https://images.unsplash.com/photo-1579684385127-1ef15d508118?auto=format&fit=crop&w=2000&q=85")',
-          backgroundSize: 'cover',
-          backgroundPosition: 'center',
+            'radial-gradient(circle at 25% 25%, rgba(224, 90, 71, 0.16) 0%, transparent 45%), radial-gradient(circle at 75% 75%, rgba(56, 189, 248, 0.14) 0%, transparent 50%), radial-gradient(circle at 50% 50%, rgba(15, 23, 42, 0.88) 0%, rgba(2, 6, 23, 0.96) 100%)',
         }}
         onClick={onClose}
       />

@@ -44,6 +44,14 @@ export interface ClinicalProtocol {
     inclusion_criteria: string[];
     exclusion_criteria: string[];
     structured_filters: Record<string, any>;
+    criteria?: Array<{
+      criterion_id: string;
+      description: string;
+      criterion_type: string;
+      clinical_parameter: string;
+      extraction_confidence: number;
+      validation_status: string;
+    }>;
   };
   burden: BurdenBreakdown;
   source_filename?: string;
@@ -96,4 +104,20 @@ export interface BenchmarkTrial {
   predicted_pbi: number;
   termination_risk_predicted: string;
   protocol_complexity_flags: string[];
+}
+
+export interface HistoricalBenchmarksResponse {
+  data_source?: string;
+  data_disclaimer?: string;
+  benchmark_count?: number;
+  trials: BenchmarkTrial[];
+}
+
+export interface LiveClinicalTrialSummary {
+  data_source?: string;
+  nct_id: string;
+  brief_title?: string | null;
+  status?: string | null;
+  conditions?: string[];
+  eligibility_criteria_text?: string | null;
 }

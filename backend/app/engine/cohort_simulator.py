@@ -22,11 +22,27 @@ class CohortSimulationEngine:
         clauses = []
         params: list[Any] = []
 
-        # Stage 1: Age & Allowed Stage
+        # Stage 1: Age, Optional Cancer Diagnosis & Allowed Stage
         clauses.append("age >= ?")
         params.append(criteria.min_age)
         clauses.append("age <= ?")
         params.append(criteria.max_age)
+
+        if criteria.target_cancer_types is not None:
+            non_empty_types = [t.strip().lower() for t in criteria.target_cancer_types if t and t.strip()]
+            if non_empty_types:
+                type_subclauses = []
+                for t_norm in non_empty_types:
+                    type_subclauses.append(
+                        "(primary_cancer_type IS NOT NULL AND trim(primary_cancer_type) != '' AND ("
+                        "contains(lower(trim(primary_cancer_type)), ?) "
+                        "OR contains(?, lower(trim(primary_cancer_type)))"
+                        "))"
+                    )
+                    params.extend([t_norm, t_norm])
+                clauses.append("(" + " OR ".join(type_subclauses) + ")")
+            else:
+                clauses.append("1 = 0")
 
         non_empty_stages = [s.strip().lower() for s in (criteria.allowed_stages or []) if s and s.strip()]
         if non_empty_stages:
@@ -82,6 +98,12 @@ class CohortSimulationEngine:
                 clauses.append("active_autoimmune_disease = FALSE")
             if criteria.target_biomarker_egfr_negative:
                 clauses.append("egfr_mutation = FALSE")
+            if criteria.target_biomarker_her2_negative:
+                clauses.append("her2_positive = FALSE")
+            if criteria.target_biomarker_hormone_receptor_negative:
+                clauses.append("hormone_receptor_positive = FALSE")
+            if criteria.target_biomarker_bcma_positive:
+                clauses.append("bcma_positive = TRUE")
             if criteria.min_pdl1_tps is not None:
                 clauses.append("pdl1_tps_percent >= ?")
                 params.append(criteria.min_pdl1_tps)
@@ -202,7 +224,7 @@ class CohortSimulationEngine:
                 retention_curve.append({
                     "week": 0,
                     "active_patients": int(current_active),
-                    "retained_percentage": 100.0,
+                    "retained_percentage": 100.0 if enrolled_cohort_size > 0 else 0.0,
                     "cumulative_dropouts": 0,
                     "weekly_dropout_hazard": 0.0,
                     "is_peak_burden_week": False

@@ -98,6 +98,7 @@ export interface StoredScreeningRecord {
 
 export interface ClinicalProfile {
   age: number | null;
+  primary_cancer_type: string | null;
   cancer_stage: string | null;
   ecog_score: number | null;
   egfr_ml_min: number | null;
@@ -106,6 +107,9 @@ export interface ClinicalProfile {
   has_stable_brain_mets: boolean | null;
   has_active_autoimmune: boolean | null;
   has_egfr_sensitizing_mutation: boolean | null;
+  has_her2_positive: boolean | null;
+  has_hormone_receptor_positive: boolean | null;
+  has_bcma_positive: boolean | null;
   anc: number | null;
   platelets: number | null;
   hemoglobin: number | null;
@@ -117,6 +121,7 @@ export interface ClinicalProfile {
 
 const EMPTY_CLINICAL_PROFILE: ClinicalProfile = {
   age: null,
+  primary_cancer_type: null,
   cancer_stage: null,
   ecog_score: null,
   egfr_ml_min: null,
@@ -125,6 +130,9 @@ const EMPTY_CLINICAL_PROFILE: ClinicalProfile = {
   has_stable_brain_mets: null,
   has_active_autoimmune: null,
   has_egfr_sensitizing_mutation: null,
+  has_her2_positive: null,
+  has_hormone_receptor_positive: null,
+  has_bcma_positive: null,
   anc: null,
   platelets: null,
   hemoglobin: null,
@@ -136,6 +144,7 @@ const EMPTY_CLINICAL_PROFILE: ClinicalProfile = {
 
 const SYNTHETIC_DEMO_PROFILE: ClinicalProfile = {
   age: 62,
+  primary_cancer_type: 'NSCLC - Adenocarcinoma',
   cancer_stage: 'Stage IV (Oligometastatic)',
   ecog_score: 1,
   egfr_ml_min: 52.0,
@@ -144,6 +153,9 @@ const SYNTHETIC_DEMO_PROFILE: ClinicalProfile = {
   has_stable_brain_mets: true,
   has_active_autoimmune: false,
   has_egfr_sensitizing_mutation: false,
+  has_her2_positive: false,
+  has_hormone_receptor_positive: false,
+  has_bcma_positive: false,
   anc: 1850.0,
   platelets: 165.0,
   hemoglobin: 11.4,
@@ -483,6 +495,7 @@ export const PatientPortal: FC<PatientPortalProps> = ({
         egfr_ml_min: profile.egfr_ml_min,
       };
 
+      if (profile.primary_cancer_type !== null) payload.primary_cancer_type = profile.primary_cancer_type;
       if (profile.distance_to_center_miles !== null) payload.distance_to_center_miles = profile.distance_to_center_miles;
       if (profile.has_active_brain_mets !== null) payload.has_active_brain_mets = profile.has_active_brain_mets;
       if (profile.has_stable_brain_mets !== null) payload.has_stable_brain_mets = profile.has_stable_brain_mets;
@@ -490,6 +503,11 @@ export const PatientPortal: FC<PatientPortalProps> = ({
       if (profile.has_egfr_sensitizing_mutation !== null) {
         payload.has_egfr_sensitizing_mutation = profile.has_egfr_sensitizing_mutation;
       }
+      if (profile.has_her2_positive !== null) payload.has_her2_positive = profile.has_her2_positive;
+      if (profile.has_hormone_receptor_positive !== null) {
+        payload.has_hormone_receptor_positive = profile.has_hormone_receptor_positive;
+      }
+      if (profile.has_bcma_positive !== null) payload.has_bcma_positive = profile.has_bcma_positive;
       if (profile.anc !== null) payload.anc = profile.anc;
       if (profile.platelets !== null) payload.platelets = profile.platelets;
       if (profile.hemoglobin !== null) payload.hemoglobin = profile.hemoglobin;
@@ -776,6 +794,29 @@ export const PatientPortal: FC<PatientPortalProps> = ({
                 />
               </div>
 
+              {/* Primary Diagnosis (Optional) */}
+              <div className="space-y-1">
+                <label htmlFor="patient-diagnosis" className="text-xs font-medium text-charcoal-700 block">
+                  Primary Diagnosis (Optional)
+                </label>
+                <select
+                  id="patient-diagnosis"
+                  value={profile.primary_cancer_type ?? ''}
+                  onChange={(e) => {
+                    const val = e.target.value === '' ? null : e.target.value;
+                    updateProfile((p) => ({ ...p, primary_cancer_type: val }));
+                  }}
+                  className="w-full p-2 text-xs bg-linen-50 border border-linen-300 rounded-xl focus:outline-none focus:border-blue-500 font-mono"
+                >
+                  <option value="">Not Specified (Screen Across Portfolio)</option>
+                  <option value="NSCLC - Adenocarcinoma">NSCLC — Adenocarcinoma</option>
+                  <option value="NSCLC - Squamous Cell">NSCLC — Squamous Cell</option>
+                  <option value="Breast Cancer - Triple Negative (TNBC)">Triple-Negative Breast Cancer (TNBC)</option>
+                  <option value="Breast Cancer - HR+/HER2-">Breast Cancer (HR+ / HER2-)</option>
+                  <option value="Multiple Myeloma - IgG">Multiple Myeloma</option>
+                </select>
+              </div>
+
               {/* Cancer Stage */}
               <div className="space-y-1">
                 <label htmlFor="patient-stage" className="text-xs font-medium text-charcoal-700 block">
@@ -796,6 +837,9 @@ export const PatientPortal: FC<PatientPortalProps> = ({
                   <option value="Stage IIIB">Stage IIIB (Locally Advanced)</option>
                   <option value="Stage IIIC">Stage IIIC (Locally Advanced)</option>
                   <option value="Stage II">Stage II (Early / Resectable)</option>
+                  <option value="Stage I (ISS)">Stage I (ISS — Myeloma)</option>
+                  <option value="Stage II (ISS)">Stage II (ISS — Myeloma)</option>
+                  <option value="Stage III (ISS)">Stage III (ISS — Myeloma)</option>
                 </select>
               </div>
 
@@ -1066,6 +1110,62 @@ export const PatientPortal: FC<PatientPortalProps> = ({
                           onChange={(e) => updateProfile((p) => ({ ...p, pdl1_tps_percent: parseNullableNumber(e.target.value) }))}
                           className="w-full p-1.5 text-xs bg-linen-50 border border-linen-300 rounded-lg font-mono"
                         />
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-3 gap-2">
+                      <div>
+                        <label htmlFor="her2-status-select" className="text-[10px] text-charcoal-500 block">
+                          HER2 Status
+                        </label>
+                        <select
+                          id="her2-status-select"
+                          value={triStateToSelectValue(profile.has_her2_positive)}
+                          onChange={(e) =>
+                            updateProfile((p) => ({ ...p, has_her2_positive: selectValueToTriState(e.target.value) }))
+                          }
+                          className="w-full p-1.5 text-[11px] bg-linen-50 border border-linen-300 rounded-lg font-mono"
+                        >
+                          <option value="">Unknown</option>
+                          <option value="false">Negative (-)</option>
+                          <option value="true">Positive (+)</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label htmlFor="hr-status-select" className="text-[10px] text-charcoal-500 block">
+                          ER/PR Receptor
+                        </label>
+                        <select
+                          id="hr-status-select"
+                          value={triStateToSelectValue(profile.has_hormone_receptor_positive)}
+                          onChange={(e) =>
+                            updateProfile((p) => ({
+                              ...p,
+                              has_hormone_receptor_positive: selectValueToTriState(e.target.value),
+                            }))
+                          }
+                          className="w-full p-1.5 text-[11px] bg-linen-50 border border-linen-300 rounded-lg font-mono"
+                        >
+                          <option value="">Unknown</option>
+                          <option value="false">Negative (-)</option>
+                          <option value="true">Positive (+)</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label htmlFor="bcma-status-select" className="text-[10px] text-charcoal-500 block">
+                          BCMA Marker
+                        </label>
+                        <select
+                          id="bcma-status-select"
+                          value={triStateToSelectValue(profile.has_bcma_positive)}
+                          onChange={(e) =>
+                            updateProfile((p) => ({ ...p, has_bcma_positive: selectValueToTriState(e.target.value) }))
+                          }
+                          className="w-full p-1.5 text-[11px] bg-linen-50 border border-linen-300 rounded-lg font-mono"
+                        >
+                          <option value="">Unknown</option>
+                          <option value="true">Positive (+)</option>
+                          <option value="false">Negative (-)</option>
+                        </select>
                       </div>
                     </div>
                   </div>

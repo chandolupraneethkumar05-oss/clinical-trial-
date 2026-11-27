@@ -12,52 +12,111 @@ _seed_lock = threading.Lock()
 
 def generate_synthetic_cohort(total_patients: int = 10000, seed: int = 42) -> pd.DataFrame:
     """
-    Generates a deterministic cohort of N synthetic oncology patients
-    with realistic clinical correlations (e.g. liver mets -> higher ALT/Bilirubin,
-    elderly -> lower eGFR, rurality -> higher travel distance).
+    Generates a deterministic multi-indication cohort of N synthetic oncology patients
+    (NSCLC, Breast Cancer/TNBC, and Multiple Myeloma) with realistic clinical correlations
+    and disease-specific biomarker distributions (EGFR, ALK, KRAS, PD-L1, HER2, ER/PR, BCMA).
     """
     rng = np.random.default_rng(seed)
 
-    # 1. Demographics
-    ages = rng.normal(loc=65.5, scale=9.2, size=total_patients).astype(int)
+    # 1. Demographics & Disease Phenotype Cohort Split (~60% NSCLC, ~22% Breast Cancer, ~18% Multiple Myeloma)
+    cohort_group = rng.choice(
+        ["NSCLC", "BREAST", "MYELOMA"],
+        size=total_patients,
+        p=[0.60, 0.22, 0.18],
+    )
+
+    ages = rng.normal(loc=64.0, scale=10.2, size=total_patients).astype(int)
     ages = np.clip(ages, 28, 91)
-    
-    genders = rng.choice(["Male", "Female"], size=total_patients, p=[0.53, 0.47])
-    
+
+    genders = np.where(
+        cohort_group == "BREAST",
+        rng.choice(["Female", "Male"], size=total_patients, p=[0.99, 0.01]),
+        rng.choice(["Male", "Female"], size=total_patients, p=[0.54, 0.46]),
+    )
+
     races = rng.choice(
         ["White", "Black or African American", "Asian", "Hispanic or Latino", "Other/Multiracial"],
         size=total_patients,
-        p=[0.70, 0.14, 0.08, 0.06, 0.02]
+        p=[0.68, 0.16, 0.08, 0.06, 0.02],
     )
-    
+
     rurality = rng.choice(["Urban", "Suburban", "Rural"], size=total_patients, p=[0.45, 0.38, 0.17])
 
-    # 2. Oncology Profile
-    cancer_types = rng.choice(
+    # 2. Oncology Profile (Cancer Subtype & Staging calibrated by disease group)
+    nsclc_types = rng.choice(
         ["NSCLC - Adenocarcinoma", "NSCLC - Squamous Cell", "NSCLC - Large Cell / Other"],
         size=total_patients,
-        p=[0.68, 0.26, 0.06]
+        p=[0.68, 0.26, 0.06],
     )
-    
-    cancer_stages = rng.choice(
+    breast_types = rng.choice(
+        [
+            "Breast Cancer - Triple Negative (TNBC)",
+            "Breast Cancer - HR+/HER2-",
+            "Breast Cancer - HER2+",
+        ],
+        size=total_patients,
+        p=[0.42, 0.41, 0.17],
+    )
+    myeloma_types = rng.choice(
+        ["Multiple Myeloma - IgG", "Multiple Myeloma - Light Chain"],
+        size=total_patients,
+        p=[0.70, 0.30],
+    )
+    cancer_types = np.where(
+        cohort_group == "NSCLC",
+        nsclc_types,
+        np.where(cohort_group == "BREAST", breast_types, myeloma_types),
+    )
+
+    nsclc_breast_stages = rng.choice(
         ["Stage IIIB", "Stage IIIC", "Stage IV (Oligometastatic)", "Stage IV (Polymetastatic)"],
         size=total_patients,
-        p=[0.12, 0.10, 0.33, 0.45]
+        p=[0.12, 0.10, 0.33, 0.45],
     )
-    
+    myeloma_stages = rng.choice(
+        ["Stage I (ISS)", "Stage II (ISS)", "Stage III (ISS)"],
+        size=total_patients,
+        p=[0.28, 0.42, 0.30],
+    )
+    cancer_stages = np.where(cohort_group == "MYELOMA", myeloma_stages, nsclc_breast_stages)
+
     # ECOG Performance: 0 (32%), 1 (48%), 2 (15%), 3 (4%), 4 (1%)
     ecog_scores = rng.choice([0, 1, 2, 3, 4], size=total_patients, p=[0.32, 0.48, 0.15, 0.04, 0.01])
 
-    # 3. Biomarkers
-    # EGFR mutations more prevalent in adenocarcinoma and females
-    egfr_probs = np.where((cancer_types == "NSCLC - Adenocarcinoma") & (genders == "Female"), 0.28, 0.10)
+    # 3. Disease-Specific Biomarkers
+    egfr_probs = np.where(
+        (cancer_types == "NSCLC - Adenocarcinoma") & (genders == "Female"),
+        0.28,
+        np.where(cohort_group == "NSCLC", 0.10, 0.0),
+    )
     egfr_mutation = rng.random(total_patients) < egfr_probs
-    
-    alk_rearrangement = (~egfr_mutation) & (rng.random(total_patients) < 0.045)
-    kras_g12c = (~egfr_mutation) & (~alk_rearrangement) & (rng.random(total_patients) < 0.13)
-    
+
+    alk_rearrangement = (cohort_group == "NSCLC") & (~egfr_mutation) & (rng.random(total_patients) < 0.045)
+    kras_g12c = (
+        (cohort_group == "NSCLC")
+        & (~egfr_mutation)
+        & (~alk_rearrangement)
+        & (rng.random(total_patients) < 0.13)
+    )
+
+    # Breast Cancer hormone/HER2 receptors; Myeloma BCMA expression
+    her2_positive = np.where(
+        cohort_group == "BREAST",
+        cancer_types == "Breast Cancer - HER2+",
+        False,
+    )
+    hormone_receptor_positive = np.where(
+        cohort_group == "BREAST",
+        (cancer_types == "Breast Cancer - HR+/HER2-") | ((cancer_types == "Breast Cancer - HER2+") & (rng.random(total_patients) < 0.55)),
+        False,
+    )
+    bcma_positive = np.where(
+        cohort_group == "MYELOMA",
+        rng.random(total_patients) < 0.78,
+        False,
+    )
+
     # PD-L1 Tumor Proportion Score (TPS %)
-    # ~35% < 1%, ~35% 1-49%, ~30% >= 50%
     pdl1_bracket = rng.choice(["negative", "low", "high"], size=total_patients, p=[0.35, 0.35, 0.30])
     pdl1_tps = np.zeros(total_patients)
     pdl1_tps[pdl1_bracket == "negative"] = 0.0
@@ -66,15 +125,18 @@ def generate_synthetic_cohort(total_patients: int = 10000, seed: int = 42) -> pd
     pdl1_tps = np.round(pdl1_tps, 1)
 
     # 4. Clinical History & Metastatic Patterns
-    has_brain_mets = rng.random(total_patients) < 0.24
+    cns_base_prob = np.where(cohort_group == "NSCLC", 0.24, np.where(cohort_group == "BREAST", 0.18, 0.06))
+    has_brain_mets = rng.random(total_patients) < cns_base_prob
     active_brain_mets = has_brain_mets & (rng.random(total_patients) < 0.42)
     stable_treated_brain_mets = has_brain_mets & (~active_brain_mets)
-    
+
     active_autoimmune = rng.random(total_patients) < 0.075
     nyha_class = rng.choice([0, 1, 2, 3], size=total_patients, p=[0.82, 0.12, 0.05, 0.01])
-    
-    prior_lines = rng.choice([0, 1, 2, 3, 4], size=total_patients, p=[0.30, 0.44, 0.18, 0.06, 0.02])
-    prior_io = (prior_lines > 0) & (rng.random(total_patients) < 0.72)
+
+    solid_prior_lines = rng.choice([0, 1, 2, 3, 4], size=total_patients, p=[0.34, 0.42, 0.16, 0.06, 0.02])
+    myeloma_prior_lines = rng.choice([0, 1, 2, 3, 4, 5], size=total_patients, p=[0.12, 0.20, 0.22, 0.24, 0.14, 0.08])
+    prior_lines = np.where(cohort_group == "MYELOMA", myeloma_prior_lines, solid_prior_lines)
+    prior_io = (cohort_group != "MYELOMA") & (prior_lines > 0) & (rng.random(total_patients) < 0.72)
 
     # 5. Laboratory Values with Clinical Correlations
     # Age correlation with renal function
@@ -143,7 +205,10 @@ def generate_synthetic_cohort(total_patients: int = 10000, seed: int = 42) -> pd
         "active_autoimmune_disease": active_autoimmune,
         "nyha_heart_failure_class": nyha_class,
         "distance_to_center_miles": distance_miles,
-        "caregiver_accompanied": caregiver
+        "caregiver_accompanied": caregiver,
+        "her2_positive": her2_positive,
+        "hormone_receptor_positive": hormone_receptor_positive,
+        "bcma_positive": bcma_positive,
     })
     
     return df

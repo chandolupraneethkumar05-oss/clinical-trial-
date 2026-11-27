@@ -48,6 +48,26 @@ export interface PatientScreeningRecord {
   }>;
 }
 
+export interface PatientInterestSummary {
+  id: string;
+  patient_id: string;
+  protocol_id: string;
+  patient_name?: string | null;
+  patient_email?: string | null;
+  status: string;
+  submitted_at: string;
+}
+
+export interface ManagedUserAccount {
+  id: string;
+  name: string;
+  email: string;
+  role: 'patient' | 'doctor' | 'admin' | string;
+  organization?: string | null;
+  provider?: string;
+  created_at?: string | null;
+}
+
 /**
  * Clearly labeled synthetic demo fixture for offline presentation.
  * NEVER mixed with live backend audit trails.

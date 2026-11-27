@@ -651,3 +651,135 @@ def test_synthetic_demo_cannot_be_verified_and_missing_data_never_becomes_verifi
     for m in mv_data["matches"]:
         assert m["match_status"] != "INVESTIGATOR_VERIFIED_ELIGIBLE"
         assert m["match_status"] in {"REQUIRES_REVIEW", "NOT_ELIGIBLE"}
+
+
+# ── 6. Multi-Indication Biomarker Parity & Diagnosis Matching ────────────────
+
+MULTI_INDICATION_PARITY_COHORT = [
+    # id, age, type, stage, ecog, anc, plt, hb, egfr, bili, alt, prior, active_cns, stable_cns, autoimm, egfr_mut, pdl1, her2, hr, bcma
+    ("M01", 55, "Breast Cancer - Triple Negative (TNBC)", "Stage IV (Oligometastatic)", 1, 2200.0, 180.0, 11.5, 65.0, 1.0, 35.0, 0, False, False, False, False, 15.0, False, False, False),
+    ("M02", 55, "Breast Cancer - HR+/HER2-", "Stage IV (Oligometastatic)", 1, 2200.0, 180.0, 11.5, 65.0, 1.0, 35.0, 0, False, False, False, False, 15.0, False, True, False),
+    ("M03", 55, "Breast Cancer - HER2+", "Stage IV (Oligometastatic)", 1, 2200.0, 180.0, 11.5, 65.0, 1.0, 35.0, 0, False, False, False, False, 15.0, True, False, False),
+    ("M04", 66, "Multiple Myeloma - IgG", "Stage II (ISS)", 1, 2200.0, 180.0, 11.5, 55.0, 1.0, 35.0, 4, False, False, False, False, 0.0, False, False, True),
+    ("M05", 66, "Multiple Myeloma - Light Chain", "Stage III (ISS)", 1, 2200.0, 180.0, 11.5, 55.0, 1.0, 35.0, 3, False, False, False, False, 0.0, False, False, False),
+    ("M06", 62, "NSCLC - Adenocarcinoma", "Stage IV (Oligometastatic)", 1, 2200.0, 180.0, 11.5, 70.0, 1.0, 35.0, 0, False, False, False, False, 40.0, False, False, False),
+]
+
+
+@pytest.mark.parametrize(
+    "criteria",
+    [
+        CohortFilterCriteria(
+            min_age=18,
+            target_cancer_types=["Breast Cancer", "TNBC"],
+            allowed_stages=["Stage IV (Oligometastatic)", "Stage IV (Polymetastatic)"],
+            max_ecog=1,
+            min_egfr=50.0,
+            min_prior_lines=0,
+            max_prior_lines=0,
+            target_biomarker_her2_negative=True,
+            target_biomarker_hormone_receptor_negative=True,
+        ),
+        CohortFilterCriteria(
+            min_age=18,
+            target_cancer_types=["Multiple Myeloma"],
+            allowed_stages=["Stage I (ISS)", "Stage II (ISS)", "Stage III (ISS)"],
+            max_ecog=2,
+            min_egfr=40.0,
+            min_prior_lines=3,
+            max_prior_lines=10,
+            exclude_active_autoimmune=False,
+            target_biomarker_bcma_positive=True,
+        ),
+    ],
+)
+def test_multi_indication_cohort_and_individual_engines_agree_1_to_1(criteria: CohortFilterCriteria):
+    mem_db = DuckDBClient(Path(":memory:"))
+    conn = mem_db.get_connection()
+    try:
+        conn.execute("DELETE FROM patients")
+        for row in MULTI_INDICATION_PARITY_COHORT:
+            conn.execute(
+                """
+                INSERT INTO patients (
+                    patient_id, age, primary_cancer_type, cancer_stage, ecog_score, anc, platelets,
+                    hemoglobin, egfr_ml_min, total_bilirubin, alt_u_l, prior_lines_therapy,
+                    active_brain_metastases, stable_treated_brain_mets, active_autoimmune_disease,
+                    egfr_mutation, pdl1_tps_percent, her2_positive, hormone_receptor_positive, bcma_positive
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                row,
+            )
+    finally:
+        conn.close()
+
+    sim = CohortSimulationEngine()
+    sim.db = mem_db
+    funnel = sim.simulate_eligibility_funnel(criteria)
+
+    individually_eligible = []
+    for row in MULTI_INDICATION_PARITY_COHORT:
+        patient_obj = SimpleNamespace(
+            patient_id=row[0],
+            age=row[1],
+            primary_cancer_type=row[2],
+            cancer_stage=row[3],
+            ecog_score=row[4],
+            anc=row[5],
+            platelets=row[6],
+            hemoglobin=row[7],
+            egfr_ml_min=row[8],
+            total_bilirubin=row[9],
+            alt_u_l=row[10],
+            prior_lines_therapy=row[11],
+            active_brain_metastases=row[12],
+            stable_treated_brain_mets=row[13],
+            active_autoimmune_disease=row[14],
+            egfr_mutation=row[15],
+            pdl1_tps_percent=row[16],
+            her2_positive=row[17],
+            hormone_receptor_positive=row[18],
+            bcma_positive=row[19],
+        )
+        checks, hard_failures, _ = evaluate_patient_against_criteria(patient_obj, criteria)
+        if not hard_failures and all(c.passed and c.status == "PASS" for c in checks):
+            individually_eligible.append(row[0])
+
+    assert funnel["final_eligible_count"] == len(individually_eligible)
+    assert funnel["final_eligible_count"] == 1
+
+
+def test_multi_indication_cohort_generator_and_patient_screening_biomarkers(patient_headers):
+    from app.engine.synthetic_data import generate_synthetic_cohort
+
+    df = generate_synthetic_cohort(total_patients=2000, seed=42)
+    types = set(df["primary_cancer_type"].unique())
+    assert any("NSCLC" in t for t in types)
+    assert any("Breast Cancer" in t for t in types)
+    assert any("Multiple Myeloma" in t for t in types)
+    assert "Stage II (ISS)" in set(df["cancer_stage"].unique())
+
+    # Myeloma patient with confirmed BCMA+ matches Myeloma (PS-ONC-2026-003) preliminarily and fails NSCLC (PS-ONC-2026-001)
+    myeloma_payload = {
+        "primary_cancer_type": "Multiple Myeloma - IgG",
+        "age": 65,
+        "cancer_stage": "Stage II (ISS)",
+        "ecog_score": 1,
+        "egfr_ml_min": 55.0,
+        "anc": 2400.0,
+        "platelets": 180.0,
+        "hemoglobin": 11.2,
+        "total_bilirubin": 0.9,
+        "alt_u_l": 30.0,
+        "prior_lines": 4,
+        "has_active_brain_mets": False,
+        "has_stable_brain_mets": False,
+        "has_active_autoimmune": False,
+        "has_bcma_positive": True,
+    }
+    resp = client.post("/api/v1/patient/screen-eligibility", json=myeloma_payload, headers=patient_headers)
+    assert resp.status_code == 200, resp.text
+    matches = {m["protocol_id"]: m for m in resp.json()["matches"]}
+    assert matches["PS-ONC-2026-003"]["match_status"] == "PRELIMINARY_MATCH"
+    assert matches["PS-ONC-2026-001"]["match_status"] == "NOT_ELIGIBLE"
+    assert matches["PS-ONC-2026-002"]["match_status"] == "NOT_ELIGIBLE"

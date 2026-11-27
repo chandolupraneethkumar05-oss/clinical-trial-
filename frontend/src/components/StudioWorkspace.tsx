@@ -14,7 +14,13 @@ import { BurdenOverviewTab } from './BurdenOverviewTab';
 import { WhatIfSensitivityConsole } from './WhatIfSensitivityConsole';
 import { BenchmarkGrid } from './BenchmarkGrid';
 import { AuditTrailView } from './AuditTrailView';
-import type { AuditEvent, AuditVerificationStatus, PatientScreeningRecord } from '../types/audit';
+import type {
+  AuditEvent,
+  AuditVerificationStatus,
+  ManagedUserAccount,
+  PatientInterestSummary,
+  PatientScreeningRecord,
+} from '../types/audit';
 import { ProtocolInspectorDrawer } from './ProtocolInspectorDrawer';
 import { AIOptimizerModal } from './AIOptimizerModal';
 import { UserMenu } from './UserMenu';
@@ -48,6 +54,7 @@ interface StudioWorkspaceProps {
   funnelData: FunnelSimulationResult | null;
   retentionCurve: RetentionPoint[];
   benchmarks: BenchmarkTrial[];
+  benchmarksDisclaimer?: string | null;
   benchmarksError?: string | null;
   onRetryBenchmarks?: () => void;
   simulationError?: string | null;
@@ -82,6 +89,11 @@ interface StudioWorkspaceProps {
   verifyingScreeningId?: string | null;
   screeningVerifyError?: string | null;
   onVerifyScreening?: (screeningId: string) => Promise<void>;
+  patientInterests?: PatientInterestSummary[];
+  adminUsers?: ManagedUserAccount[];
+  promotingUserId?: string | null;
+  userPromoteError?: string | null;
+  onPromoteUser?: (userId: string, targetRole: 'doctor' | 'admin') => Promise<void>;
 }
 
 export const StudioWorkspace: FC<StudioWorkspaceProps> = ({
@@ -90,6 +102,7 @@ export const StudioWorkspace: FC<StudioWorkspaceProps> = ({
   funnelData,
   retentionCurve,
   benchmarks,
+  benchmarksDisclaimer = null,
   benchmarksError = null,
   onRetryBenchmarks,
   simulationError = null,
@@ -118,6 +131,11 @@ export const StudioWorkspace: FC<StudioWorkspaceProps> = ({
   verifyingScreeningId = null,
   screeningVerifyError = null,
   onVerifyScreening,
+  patientInterests = [],
+  adminUsers = [],
+  promotingUserId = null,
+  userPromoteError = null,
+  onPromoteUser,
 }) => {
   const [internalTab, setInternalTab] = useState<StudioTab>('sandbox');
   const currentTab = activeTab ?? internalTab;
@@ -503,9 +521,17 @@ export const StudioWorkspace: FC<StudioWorkspaceProps> = ({
                 {/* Extracted Structured Biomarker Filters */}
                 {protocol.eligibility?.structured_filters && (
                   <div className="p-3 bg-charcoal-950 text-white rounded-xl space-y-2">
-                    <span className="text-[10px] font-mono uppercase text-terracotta-300 block font-bold tracking-wider">
-                      Extracted Ingestion Filters (Active in DuckDB)
-                    </span>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[10px] font-mono uppercase text-terracotta-300 font-bold tracking-wider">
+                        Extracted Ingestion Filters (Active in DuckDB)
+                      </span>
+                      {protocol.eligibility.criteria && protocol.eligibility.criteria.length > 0 && (
+                        <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-charcoal-800 text-sage-300 border border-charcoal-700">
+                          {protocol.eligibility.criteria.filter((c) => c.validation_status === 'VALIDATED').length}/
+                          {protocol.eligibility.criteria.length} text-verified
+                        </span>
+                      )}
+                    </div>
                     <div className="grid grid-cols-2 gap-2 text-[11px] font-mono">
                       {protocol.eligibility.structured_filters.min_egfr !== undefined && (
                         <div className="p-1.5 rounded bg-charcoal-900 border border-charcoal-800">
@@ -673,8 +699,11 @@ export const StudioWorkspace: FC<StudioWorkspaceProps> = ({
             {currentTab === 'benchmarks' && (
               <BenchmarkGrid
                 benchmarks={benchmarks}
+                disclaimer={benchmarksDisclaimer}
                 error={benchmarksError}
                 onRetry={onRetryBenchmarks}
+                onUnauthorized={onUnauthorized}
+                defaultNctId={protocol.nct_id}
               />
             )}
 
@@ -689,6 +718,12 @@ export const StudioWorkspace: FC<StudioWorkspaceProps> = ({
                 verifyingScreeningId={verifyingScreeningId}
                 screeningVerifyError={screeningVerifyError}
                 onVerifyScreening={onVerifyScreening}
+                patientInterests={patientInterests}
+                userRole={user?.role}
+                adminUsers={adminUsers}
+                promotingUserId={promotingUserId}
+                userPromoteError={userPromoteError}
+                onPromoteUser={onPromoteUser}
               />
             )}
           </div>

@@ -93,6 +93,7 @@ export const ProtocolUploadModal: FC<ProtocolUploadModalProps> = ({
   const [isDragging, setIsDragging] = useState(false);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [selectedSample, setSelectedSample] = useState<string | null>(null);
+  const [savedProtocols, setSavedProtocols] = useState<ClinicalProtocol[]>([]);
   const [errorMessage, setErrorMessage] = useState('');
   const [loadingMsgIdx, setLoadingMsgIdx] = useState(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -102,11 +103,38 @@ export const ProtocolUploadModal: FC<ProtocolUploadModalProps> = ({
 
   useEffect(() => {
     isMountedRef.current = true;
+    const controller = new AbortController();
+
+    async function fetchSavedProtocols() {
+      const token = getStoredAuthToken();
+      if (!token) return;
+      try {
+        const res = await fetch(apiUrl('/api/v1/protocol/uploaded'), {
+          headers: { Authorization: `Bearer ${token}` },
+          signal: controller.signal,
+        });
+        if (res.status === 401) {
+          onUnauthorized?.();
+          return;
+        }
+        if (res.ok) {
+          const parsed = await parseJsonSafe(res);
+          if (isMountedRef.current && Array.isArray(parsed)) {
+            setSavedProtocols(parsed as ClinicalProtocol[]);
+          }
+        }
+      } catch {
+        // Ignore non-fatal saved list fetch failures
+      }
+    }
+
+    void fetchSavedProtocols();
     return () => {
       isMountedRef.current = false;
+      controller.abort();
       if (timeoutRef.current) clearTimeout(timeoutRef.current);
     };
-  }, []);
+  }, [onUnauthorized]);
 
   // Cycle through loading messages
   useEffect(() => {
@@ -469,6 +497,37 @@ export const ProtocolUploadModal: FC<ProtocolUploadModalProps> = ({
               </button>
             )}
           </div>
+
+          {/* ── Saved Uploaded Protocols (from DuckDB) ───────────────────── */}
+          {savedProtocols.length > 0 && (
+            <div className="space-y-2">
+              <div className="flex items-center space-x-2">
+                <span className="text-[10px] font-mono font-semibold text-charcoal-500 uppercase tracking-widest">
+                  Saved Institutional Uploads ({savedProtocols.length})
+                </span>
+                <div className="flex-1 h-px bg-linen-200" />
+              </div>
+
+              <div className="space-y-1.5 max-h-36 overflow-y-auto pr-1">
+                {savedProtocols.map((saved) => (
+                  <button
+                    key={saved.protocol_id}
+                    type="button"
+                    onClick={() => void onProtocolLoaded(saved)}
+                    className="w-full text-left px-3 py-2 rounded-xl border border-linen-200 bg-linen-50 hover:bg-linen-100 flex items-center justify-between gap-2 text-xs transition-colors cursor-pointer"
+                  >
+                    <div className="min-w-0">
+                      <span className="font-mono font-bold text-charcoal-900 mr-2">{saved.protocol_id}</span>
+                      <span className="text-charcoal-700 truncate">{saved.title}</span>
+                    </div>
+                    <span className="text-[10px] font-mono text-terracotta-600 shrink-0 font-semibold">
+                      {saved.visits.length} visits
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* ── Footer note ──────────────────────────────────────────────── */}
           <p className="text-[10px] text-charcoal-400 font-mono text-center leading-relaxed">

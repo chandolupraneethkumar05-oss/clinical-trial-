@@ -6,6 +6,7 @@ Falls back gracefully to canonical NSCLC defaults when extraction yields sparse 
 """
 from __future__ import annotations
 import hashlib
+import io
 import re
 import uuid
 from typing import Optional
@@ -21,7 +22,13 @@ except ImportError:
     except ImportError:
         PYMUPDF_AVAILABLE = False
 
-from app.models.protocol import ClinicalTrialProtocol, ProtocolEligibilityCriteria
+try:
+    import pdfplumber
+    PDFPLUMBER_AVAILABLE = True
+except ImportError:
+    PDFPLUMBER_AVAILABLE = False
+
+from app.models.protocol import ClinicalTrialProtocol, ProtocolEligibilityCriteria, StructuredCriterion
 from app.models.burden import ProtocolVisit, AssessmentProcedure, InvasivenessTier
 from app.engine.burden_scorer import burden_engine, STANDARD_PROCEDURE_CATALOG
 
@@ -166,10 +173,41 @@ def _extract_age_range(text: str) -> tuple[Optional[int], Optional[int]]:
     return min_age, max_age
 
 
+def _infer_week_number(label: str, fallback_week: int) -> int:
+    """Extracts canonical study week number from a visit header string."""
+    norm = _normalize(label)
+    if "screening" in norm or "baseline" in norm:
+        return -2 if "screening" in norm else 0
+    week_match = re.search(r"week\s*([-–]?\d+)", norm)
+    if week_match:
+        return int(week_match.group(1).replace("–", "-"))
+    cycle_match = re.search(r"c(\d+)\s*d(\d+)", norm)
+    if cycle_match:
+        cycle_num = int(cycle_match.group(1))
+        day_num = int(cycle_match.group(2))
+        return (cycle_num - 1) * 3 + max(0, (day_num - 1) // 7)
+    visit_num_match = re.search(r"visit\s*[-–]?\s*(\d+)", norm)
+    if visit_num_match:
+        return (int(visit_num_match.group(1)) - 1) * 3
+    if "eot" in norm or "end of treatment" in norm:
+        return max(fallback_week + 4, 24)
+    return fallback_week + 3
+
+
+def _cell_is_marked(cell: Optional[str]) -> bool:
+    """Returns True when a Schedule-of-Assessments table cell marks a scheduled procedure."""
+    if not cell:
+        return False
+    cleaned = re.sub(r"\s+", " ", cell).strip().lower()
+    if not cleaned or cleaned in {"-", "—", "–", "no", "n/a", "na", "0"}:
+        return False
+    return cleaned in {"x", "✓", "✔", "yes", "y", "•", "●", "1", "[x]"} or cleaned.startswith(("x ", "x/", "✓"))
+
+
 class ProtocolPDFParser:
     """
-    Extracts ClinicalTrialProtocol data from raw PDF bytes using PyMuPDF.
-    Degrades gracefully when extraction yields sparse results.
+    Extracts ClinicalTrialProtocol data from raw PDF bytes using PyMuPDF text extraction
+    plus pdfplumber structured SoA table detection. Degrades gracefully on sparse PDFs.
     """
 
     def parse(self, file_bytes: bytes, filename: str) -> ClinicalTrialProtocol:
@@ -184,10 +222,100 @@ class ProtocolPDFParser:
         except Exception as e:
             return self._fallback_protocol(filename, reason=f"PDF read error: {e}")
 
-        return self._parse_text(full_text, filename, page_count, file_bytes=file_bytes)
+        table_visits = self._extract_visits_from_pdf_tables(file_bytes)
+        return self._parse_text(
+            full_text,
+            filename,
+            page_count,
+            file_bytes=file_bytes,
+            table_visits=table_visits,
+        )
+
+    def _extract_visits_from_pdf_tables(self, file_bytes: bytes) -> list[ProtocolVisit]:
+        """Attempts structured SoA table extraction via pdfplumber for tabular matrices."""
+        if not PDFPLUMBER_AVAILABLE:
+            return []
+
+        visits_by_col: list[tuple[str, int, list[AssessmentProcedure]]] = []
+        try:
+            with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
+                for page in pdf.pages[:60]:
+                    tables = page.extract_tables() or []
+                    for table in tables:
+                        if not table or len(table) < 2:
+                            continue
+                        header_row = [str(c or "").strip() for c in table[0]]
+                        visit_cols: list[tuple[int, str, int]] = []
+                        running_week = -5
+                        for col_idx, col_title in enumerate(header_row[1:], start=1):
+                            if not col_title:
+                                continue
+                            norm_col = _normalize(col_title)
+                            if any(re.search(pat, norm_col) for pat in VISIT_HEADER_PATTERNS):
+                                wk = _infer_week_number(col_title, running_week)
+                                running_week = wk
+                                visit_cols.append((col_idx, col_title[:65], wk))
+                        if len(visit_cols) < 3:
+                            continue
+
+                        col_procs: dict[int, list[AssessmentProcedure]] = {c[0]: [] for c in visit_cols}
+                        for row in table[1:]:
+                            if not row:
+                                continue
+                            proc_label = str(row[0] or "").strip()
+                            if not proc_label or len(proc_label) < 2:
+                                continue
+                            matched_keys = _detect_procedures_in_line(proc_label)
+                            for col_idx, _title, _wk in visit_cols:
+                                if col_idx < len(row) and _cell_is_marked(row[col_idx]):
+                                    if matched_keys:
+                                        for k in matched_keys:
+                                            if k in STANDARD_PROCEDURE_CATALOG:
+                                                proc = AssessmentProcedure(**STANDARD_PROCEDURE_CATALOG[k])
+                                                if not any(existing.name == proc.name for existing in col_procs[col_idx]):
+                                                    col_procs[col_idx].append(proc)
+                                    elif len(proc_label) <= 80:
+                                        clean_label = re.sub(r"\s+", " ", proc_label)
+                                        if not any(existing.name == clean_label for existing in col_procs[col_idx]):
+                                            col_procs[col_idx].append(
+                                                AssessmentProcedure(
+                                                    name=clean_label,
+                                                    category=InvasivenessTier.MINIMALLY_INVASIVE,
+                                                    invasiveness_weight=2.0,
+                                                    estimated_duration_minutes=20,
+                                                    fasting_required=False,
+                                                )
+                                            )
+
+                        for col_idx, title, wk in visit_cols:
+                            procs = col_procs[col_idx]
+                            if not procs:
+                                procs = [AssessmentProcedure(**STANDARD_PROCEDURE_CATALOG["vitals"])]
+                            visits_by_col.append((title, wk, procs))
+                        if len(visits_by_col) >= 3:
+                            break
+                    if len(visits_by_col) >= 3:
+                        break
+        except Exception:
+            return []
+
+        return [
+            ProtocolVisit(
+                visit_id=f"V-{idx:02d}",
+                week_number=wk,
+                visit_name=title,
+                procedures=procs,
+            )
+            for idx, (title, wk, procs) in enumerate(visits_by_col[:20], start=1)
+        ]
 
     def _parse_text(
-        self, full_text: str, filename: str, page_count: int, file_bytes: Optional[bytes] = None
+        self,
+        full_text: str,
+        filename: str,
+        page_count: int,
+        file_bytes: Optional[bytes] = None,
+        table_visits: Optional[list[ProtocolVisit]] = None,
     ) -> ClinicalTrialProtocol:
         lines = full_text.splitlines()
 
@@ -199,7 +327,7 @@ class ProtocolPDFParser:
         # ── 2. Section segmentation ───────────────────────────────────────────
         sections = self._segment_sections(lines)
 
-        # ── 3. Eligibility criteria extraction ───────────────────────────────
+        # ── 3. Eligibility criteria & biomarker extraction ───────────────────
         inclusion = self._extract_criteria_bullets(
             sections.get("inclusion", []), "inclusion"
         )
@@ -209,7 +337,7 @@ class ProtocolPDFParser:
 
         eligibility_text = " ".join(
             sections.get("inclusion", []) + sections.get("exclusion", [])
-        )
+        ) or full_text[:12000]
         extracted_egfr = _extract_egfr(eligibility_text)
         min_egfr = min(150.0, max(10.0, extracted_egfr)) if extracted_egfr is not None else 60.0
         extracted_ecog = _extract_ecog(eligibility_text)
@@ -233,34 +361,131 @@ class ProtocolPDFParser:
                 "Prior systemic therapy for advanced/metastatic disease (unless protocol-specified)",
             ]
 
+        inclusion_blob = " ".join(inclusion).lower()
         exclusion_blob = " ".join(exclusion).lower()
+        elig_blob = f"{inclusion_blob} {exclusion_blob}".lower()
+
+        has_cns_clause = ("cns" in exclusion_blob or "brain" in exclusion_blob)
         blanket_cns_exclusion = (
-            ("cns" in exclusion_blob or "brain" in exclusion_blob)
+            has_cns_clause
             and ("regardless of" in exclusion_blob or "any known brain" in exclusion_blob or "known or suspected" in exclusion_blob)
             and not any(tok in exclusion_blob for tok in ["untreated", "active", "symptomatic", "uncontrolled"])
         )
+
+        is_tnbc = "tnbc" in indication.lower() or "triple-negative" in indication.lower()
+        is_myeloma = "myeloma" in indication.lower()
+        is_nsclc = "nsclc" in indication.lower() or "non-small cell" in indication.lower()
+
+        allowed_stages = (
+            ["Stage I (ISS)", "Stage II (ISS)", "Stage III (ISS)"]
+            if is_myeloma
+            else ["Stage IIIB", "Stage IIIC", "Stage IV (Oligometastatic)", "Stage IV (Polymetastatic)"]
+        )
+
+        prior_lines_match = re.search(r"(?:>=|≥|at least)\s*(\d+)\s*prior\s+lines", elig_blob)
+        min_prior_lines = int(prior_lines_match.group(1)) if prior_lines_match else (3 if is_myeloma else 0)
+        max_prior_lines = 10 if is_myeloma else 1
 
         structured_filters: dict = {
             "min_age": min_age,
             "max_ecog": max_ecog,
             "min_egfr": min_egfr,
-            "allowed_stages": ["Stage IIIB", "Stage IIIC", "Stage IV (Oligometastatic)", "Stage IV (Polymetastatic)"],
-            "min_prior_lines": 0,
-            "max_prior_lines": 1,
+            "allowed_stages": allowed_stages,
+            "min_prior_lines": min_prior_lines,
+            "max_prior_lines": max_prior_lines,
             "exclude_active_brain_mets": True,
             "allow_stable_brain_mets": not blanket_cns_exclusion,
-            "exclude_active_autoimmune": True,
+            "exclude_active_autoimmune": not is_myeloma,
         }
         if max_age:
             structured_filters["max_age"] = max_age
 
-        # ── 4. Schedule of Assessments extraction ────────────────────────────
-        soa_lines = sections.get("soa", [])
-        visits = self._extract_visits(soa_lines, full_text)
+        if is_nsclc:
+            structured_filters["target_cancer_types"] = ["NSCLC"]
+            if "egfr" in exclusion_blob or "wild-type" in elig_blob:
+                structured_filters["target_biomarker_egfr_negative"] = True
+        elif is_tnbc:
+            structured_filters["target_cancer_types"] = ["Breast Cancer", "TNBC", "Triple Negative"]
+            if "her2" in elig_blob or "triple" in elig_blob:
+                structured_filters["target_biomarker_her2_negative"] = True
+                structured_filters["target_biomarker_hormone_receptor_negative"] = True
+        elif is_myeloma:
+            structured_filters["target_cancer_types"] = ["Multiple Myeloma"]
+            if "bcma" in elig_blob:
+                structured_filters["target_biomarker_bcma_positive"] = True
 
-        # Fallback: if sparse visits, enrich with canonical defaults
-        if len(visits) < 3:
-            visits = self._get_fallback_visits()
+        pdl1_match = re.search(r"pd-?l1\s*(?:tps|cps)?\s*[≥>=]+\s*(\d{1,3})\s*%?", elig_blob)
+        if pdl1_match:
+            pdl1_val = float(pdl1_match.group(1))
+            if 0.0 <= pdl1_val <= 100.0:
+                structured_filters["min_pdl1_tps"] = pdl1_val
+
+        structured_criteria: list[StructuredCriterion] = [
+            StructuredCriterion(
+                criterion_id="CRIT-AGE",
+                description=f"Age >= {min_age}" + (f" and <= {max_age}" if max_age else "") + " years",
+                criterion_type="INCLUSION",
+                clinical_parameter="age",
+                comparator=">=",
+                threshold=min_age,
+                unit="years",
+                extraction_confidence=0.9 if raw_min_age is not None else 0.55,
+                validation_status="VALIDATED" if raw_min_age is not None else "HEURISTIC",
+            ),
+            StructuredCriterion(
+                criterion_id="CRIT-ECOG",
+                description=f"ECOG Performance Status <= {max_ecog}",
+                criterion_type="INCLUSION",
+                clinical_parameter="ecog_score",
+                comparator="<=",
+                threshold=max_ecog,
+                extraction_confidence=0.92 if extracted_ecog is not None else 0.55,
+                validation_status="VALIDATED" if extracted_ecog is not None else "HEURISTIC",
+            ),
+            StructuredCriterion(
+                criterion_id="CRIT-EGFR",
+                description=f"Renal clearance eGFR >= {int(min_egfr)} mL/min",
+                criterion_type="INCLUSION",
+                clinical_parameter="egfr_ml_min",
+                comparator=">=",
+                threshold=min_egfr,
+                unit="mL/min/1.73m2",
+                extraction_confidence=0.95 if extracted_egfr is not None else 0.55,
+                validation_status="VALIDATED" if extracted_egfr is not None else "HEURISTIC",
+            ),
+            StructuredCriterion(
+                criterion_id="CRIT-CNS",
+                description=(
+                    "No active or stable CNS metastases"
+                    if blanket_cns_exclusion
+                    else "Untreated/active CNS metastases excluded (stable treated permitted)"
+                ),
+                criterion_type="EXCLUSION",
+                clinical_parameter="has_active_brain_mets",
+                comparator="!=",
+                threshold=True,
+                is_hard_rule=True,
+                extraction_confidence=0.9 if has_cns_clause else 0.6,
+                validation_status="VALIDATED" if has_cns_clause else "HEURISTIC",
+            ),
+        ]
+
+        # ── 4. Schedule of Assessments extraction ────────────────────────────
+        extraction_status = "extracted"
+        extraction_notes = None
+        if table_visits and len(table_visits) >= 3:
+            visits = table_visits
+            extraction_notes = f"Extracted {len(visits)} visits from structured SoA tables."
+        else:
+            soa_lines = sections.get("soa", [])
+            visits = self._extract_visits(soa_lines, full_text)
+            if len(visits) < 3:
+                visits = self._get_fallback_visits()
+                extraction_status = "heuristic_fallback"
+                extraction_notes = (
+                    "Document yielded sparse SoA tables or visits (< 3 detected). "
+                    "Calibrated oncology baseline schedule applied alongside extracted criteria."
+                )
 
         # ── 5. Compute burden ────────────────────────────────────────────────
         study_duration = min(156, max(4, self._estimate_duration(full_text, visits)))
@@ -284,10 +509,13 @@ class ProtocolPDFParser:
                 inclusion_criteria=inclusion,
                 exclusion_criteria=exclusion,
                 structured_filters=structured_filters,
+                criteria=structured_criteria,
             ),
             burden=burden,
             source_filename=filename,
             extracted_page_count=page_count,
+            extraction_status=extraction_status,
+            extraction_notes=extraction_notes,
         )
 
     # ── Section Segmentation ──────────────────────────────────────────────────

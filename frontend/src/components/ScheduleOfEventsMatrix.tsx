@@ -85,13 +85,56 @@ export const ScheduleOfEventsMatrix: FC<ScheduleOfEventsMatrixProps> = ({
     });
   };
 
-  // Filter sections that actually have procedures in this trial
+  // Filter sections that actually have procedures in this trial, plus dynamic custom assessments
   const activeSections = useMemo(() => {
-    return DEFAULT_PROCEDURE_SECTIONS.map(sec => ({
+    const matchedProcedureNames = new Set<string>();
+    const standardSections = DEFAULT_PROCEDURE_SECTIONS.map((sec) => ({
       ...sec,
-      procedures: sec.procedures.filter(p => visits.some(v => hasProcedure(v, p.key) !== undefined))
-    })).filter(sec => sec.procedures.length > 0);
+      procedures: sec.procedures.filter((p) =>
+        visits.some((v) => {
+          const hit = hasProcedure(v, p.key);
+          if (hit) matchedProcedureNames.add(hit.name.toLowerCase());
+          return hit !== undefined;
+        })
+      ),
+    })).filter((sec) => sec.procedures.length > 0);
+
+    const customProcedures: ProcedureRowDef[] = [];
+    const seenCustom = new Set<string>();
+    for (const v of visits) {
+      for (const proc of v.procedures) {
+        const norm = proc.name.toLowerCase();
+        if (!matchedProcedureNames.has(norm) && !seenCustom.has(norm)) {
+          seenCustom.add(norm);
+          customProcedures.push({
+            key: `custom:${norm}`,
+            name: proc.name,
+            category: proc.category,
+            invasiveness_weight: proc.invasiveness_weight,
+            duration_minutes: proc.estimated_duration_minutes,
+            color: 'text-charcoal-700 bg-linen-100',
+          });
+        }
+      }
+    }
+
+    if (customProcedures.length > 0) {
+      standardSections.push({
+        section: '6. Additional Protocol Assessments',
+        procedures: customProcedures,
+      });
+    }
+
+    return standardSections;
   }, [visits]);
+
+  const matchCellProcedure = (visit: Visit, procKey: string): Procedure | undefined => {
+    if (procKey.startsWith('custom:')) {
+      const targetName = procKey.slice('custom:'.length);
+      return visit.procedures.find((p) => p.name.toLowerCase() === targetName);
+    }
+    return hasProcedure(visit, procKey);
+  };
 
   return (
     <div className="bg-white border border-linen-300 rounded-2xl shadow-xs flex flex-col select-none overflow-hidden">
@@ -195,7 +238,7 @@ export const ScheduleOfEventsMatrix: FC<ScheduleOfEventsMatrixProps> = ({
 
                     {/* Visit Matrix Check Cells */}
                     {visits.map((v) => {
-                      const matchedProc = hasProcedure(v, procDef.key);
+                      const matchedProc = matchCellProcedure(v, procDef.key);
                       const isPeak = peakWeeks.includes(v.week_number);
 
                       return (

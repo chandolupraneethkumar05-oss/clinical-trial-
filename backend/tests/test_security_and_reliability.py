@@ -565,3 +565,37 @@ def test_end_to_end_synthetic_patient_and_investigator_workflow():
 
     audit_check = client.get("/api/v1/audit/verify", headers=d_headers)
     assert audit_check.status_code == 200 and audit_check.json()["valid"] is True
+
+
+def test_retention_extended_duration_zero_cohort_and_admin_user_listing():
+    admin_tok, _ = _signin("sarah.jenkins@iqvia.com", "IQVIA2026!")
+    doc_tok, _ = _signin("elena.vance@novartis.com", "Novartis2026!")
+    _, _, _, pat_tok = _signup_fresh_patient()
+
+    # Retention supports 0 enrolled and durations up to 156 weeks; >156 rejected with 422
+    zero_ret = client.get(
+        "/api/v1/cohort/retention-curve?enrolled_size=0&composite_pbi=62.5&duration_weeks=156",
+        headers={"Authorization": f"Bearer {doc_tok}"},
+    )
+    assert zero_ret.status_code == 200
+    assert len(zero_ret.json()["retention_curve"]) == 157
+    assert zero_ret.json()["retention_curve"][0]["retained_percentage"] == 0.0
+
+    over_ret = client.get(
+        "/api/v1/cohort/retention-curve?enrolled_size=100&composite_pbi=62.5&duration_weeks=160",
+        headers={"Authorization": f"Bearer {doc_tok}"},
+    )
+    assert over_ret.status_code == 422
+
+    # Admin-only user governance listing RBAC & secret hygiene
+    assert client.get("/api/v1/auth/users").status_code == 401
+    assert client.get("/api/v1/auth/users", headers={"Authorization": f"Bearer {pat_tok}"}).status_code == 403
+    assert client.get("/api/v1/auth/users", headers={"Authorization": f"Bearer {doc_tok}"}).status_code == 403
+
+    users_resp = client.get("/api/v1/auth/users", headers={"Authorization": f"Bearer {admin_tok}"})
+    assert users_resp.status_code == 200
+    users_list = users_resp.json()
+    assert len(users_list) >= 4
+    for u in users_list:
+        assert "password_hash" not in u
+        assert "token_version" not in u

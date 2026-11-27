@@ -192,9 +192,9 @@ async def simulate_funnel(
 
 @router.api_route("/retention-curve", methods=["GET", "POST"])
 async def calculate_retention_curve(
-    enrolled_size: int = Query(default=400, ge=10, le=10000),
+    enrolled_size: int = Query(default=400, ge=0, le=10000),
     composite_pbi: float = Query(default=62.5, ge=0.0, le=100.0),
-    duration_weeks: int = Query(default=52, ge=4, le=104),
+    duration_weeks: int = Query(default=52, ge=4, le=156),
     peak_weeks: list[int] = Query(default=[1, 6, 12, 24]),
     _user: AuthenticatedUser = Depends(require_role(["doctor", "admin"]))
 ):

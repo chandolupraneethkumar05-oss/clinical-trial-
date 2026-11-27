@@ -618,6 +618,40 @@ async def logout(
     }
 
 
+@router.get("/users")
+async def list_registered_users(
+    _current_admin: AuthenticatedUser = Depends(require_role(["admin"])),
+):
+    """
+    Lists registered accounts for administrator role governance.
+    Strictly limited to admin role; never exposes password hashes or session secrets.
+    """
+    conn = db_client.get_connection()
+    try:
+        rows = conn.execute(
+            """
+            SELECT id, name, email, role, organization, provider, CAST(created_at AS VARCHAR)
+            FROM users
+            ORDER BY created_at DESC
+            LIMIT 200
+            """
+        ).fetchall()
+        return [
+            {
+                "id": r[0],
+                "name": r[1],
+                "email": r[2],
+                "role": (r[3] or ROLE_PATIENT).lower().strip(),
+                "organization": r[4],
+                "provider": r[5] or "email",
+                "created_at": str(r[6]) if r[6] else None,
+            }
+            for r in rows
+        ]
+    finally:
+        conn.close()
+
+
 @router.post("/promote-user")
 async def promote_user(
     payload: PromoteUserRequest,

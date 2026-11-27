@@ -149,18 +149,11 @@ export const WhatIfSensitivityConsole: FC<WhatIfSensitivityConsoleProps> = ({
         const newFunnel = await onSimulateFunnel(criteria, controller.signal);
         if (controller.signal.aborted || abortRef.current !== controller) return;
 
-        const basePbi = protocol.burden?.composite_pbi_score ?? 55.0;
-        const adjustedPbi = Math.max(
-          20.0,
-          Math.min(
-            100.0,
-            basePbi - (sliders.maxEcog > baseline.maxEcog ? 3.5 : 0) - (sliders.minEgfr < baseline.minEgfr ? 2.5 : 0)
-          )
-        );
-        const enrolledForCurve = Math.max(10, Math.min(10000, newFunnel.final_eligible_count || 10));
+        const effectivePbi = protocol.burden?.composite_pbi_score ?? 55.0;
+        const enrolledForCurve = Math.max(0, Math.min(10000, Math.round(newFunnel.final_eligible_count || 0)));
         const newRetention = await onCalculateRetention(
           enrolledForCurve,
-          adjustedPbi,
+          effectivePbi,
           protocol.study_duration_weeks,
           protocol.burden?.peak_burden_weeks,
           controller.signal
@@ -198,8 +191,6 @@ export const WhatIfSensitivityConsole: FC<WhatIfSensitivityConsoleProps> = ({
     [
       protoKey,
       protocol,
-      baseline.maxEcog,
-      baseline.minEgfr,
       onSimulateFunnel,
       onCalculateRetention,
       onSimulationUpdated,

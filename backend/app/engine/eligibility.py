@@ -79,6 +79,18 @@ def stage_matches(patient_stage: str, allowed_stage: str) -> bool:
     return False
 
 
+def cancer_type_matches(patient_cancer_type: str, allowed_type: str) -> bool:
+    """
+    Symmetric case-insensitive substring comparison for histology/diagnosis filtering
+    (e.g., 'NSCLC - Adenocarcinoma' matches 'NSCLC'; 'Breast Cancer - Triple Negative (TNBC)' matches 'TNBC').
+    """
+    p_norm = patient_cancer_type.strip().lower()
+    a_norm = allowed_type.strip().lower()
+    if not p_norm or not a_norm:
+        return False
+    return p_norm == a_norm or a_norm in p_norm or p_norm in a_norm
+
+
 def compute_max_alt_u_l(criteria: CohortFilterCriteria) -> tuple[float, str]:
     """Returns (max_alt_u_l, human_readable_threshold_description) identically for both engines."""
     if criteria.max_alt_u_l is not None:
@@ -311,6 +323,7 @@ def evaluate_patient_against_criteria(
     hard_exclusion_failures: list[str] = []
 
     age = getattr(patient, "age", None)
+    primary_cancer_type = getattr(patient, "primary_cancer_type", None)
     cancer_stage = getattr(patient, "cancer_stage", None)
     ecog_score = getattr(patient, "ecog_score", None)
     egfr_ml_min = getattr(patient, "egfr_ml_min", None)
@@ -340,6 +353,18 @@ def evaluate_patient_against_criteria(
     if has_egfr_mut is None and hasattr(patient, "egfr_mutation"):
         has_egfr_mut = getattr(patient, "egfr_mutation", None)
 
+    has_her2_pos = getattr(patient, "has_her2_positive", None)
+    if has_her2_pos is None and hasattr(patient, "her2_positive"):
+        has_her2_pos = getattr(patient, "her2_positive", None)
+
+    has_hr_pos = getattr(patient, "has_hormone_receptor_positive", None)
+    if has_hr_pos is None and hasattr(patient, "hormone_receptor_positive"):
+        has_hr_pos = getattr(patient, "hormone_receptor_positive", None)
+
+    has_bcma_pos = getattr(patient, "has_bcma_positive", None)
+    if has_bcma_pos is None and hasattr(patient, "bcma_positive"):
+        has_bcma_pos = getattr(patient, "bcma_positive", None)
+
     pdl1_tps_percent = getattr(patient, "pdl1_tps_percent", None)
 
     # 1. Age
@@ -363,6 +388,25 @@ def evaluate_patient_against_criteria(
             patient_value=f"{age} years",
             required_threshold=f"{criteria.min_age} - {criteria.max_age} years",
             impact_note="Within approved trial age range." if age_ok else "Outside study age boundary.",
+        ))
+
+    # 1b. Primary Cancer Diagnosis (evaluated whenever protocol specifies target disease AND diagnosis is provided)
+    if criteria.target_cancer_types is not None and primary_cancer_type and str(primary_cancer_type).strip():
+        target_types = [t.strip() for t in criteria.target_cancer_types if t and t.strip()]
+        dx_ok = bool(target_types) and any(cancer_type_matches(str(primary_cancer_type), t) for t in target_types)
+        checks.append(CriterionEvaluation(
+            criterion="Primary Cancer Diagnosis",
+            category="CLINICAL_ONCOLOGY",
+            status="PASS" if dx_ok else "FAIL",
+            passed=dx_ok,
+            patient_value=str(primary_cancer_type).strip(),
+            required_threshold=", ".join(target_types) if target_types else "None Allowed",
+            impact_note=(
+                "Confirmed histological diagnosis matches study disease indication."
+                if dx_ok
+                else "Histological diagnosis does not match protocol indication."
+            ),
+            is_mandatory=True,
         ))
 
     # 2. Cancer Stage
@@ -713,6 +757,93 @@ def evaluate_patient_against_criteria(
             patient_value=pdl1_value,
             required_threshold=f">= {min_pdl1:.1f}%",
             impact_note=pdl1_note,
+            is_mandatory=True,
+        ))
+
+    # 15. Molecular Biomarker: HER2 Negative (e.g., TNBC)
+    if criteria.target_biomarker_her2_negative:
+        if has_her2_pos is None:
+            her2_status = "NEEDS_INVESTIGATOR_REVIEW"
+            her2_ok = False
+            her2_val = "Unknown / Not Provided (Investigator Review Required)"
+            her2_note = "HER2 IHC/FISH biomarker status is not documented."
+        elif has_her2_pos is True:
+            her2_status = "FAIL"
+            her2_ok = False
+            her2_val = "Confirmed Positive (HER2+)"
+            her2_note = "HER2-positive disease excludes Triple-Negative cohort eligibility."
+        else:
+            her2_status = "PASS"
+            her2_ok = True
+            her2_val = "Confirmed Negative (HER2-)"
+            her2_note = "Confirmed HER2-negative receptor status."
+
+        checks.append(CriterionEvaluation(
+            criterion="HER2 Receptor Status",
+            category="MOLECULAR_BIOMARKER",
+            status=her2_status,
+            passed=her2_ok,
+            patient_value=her2_val,
+            required_threshold="HER2 Negative",
+            impact_note=her2_note,
+            is_mandatory=True,
+        ))
+
+    # 16. Molecular Biomarker: Hormone Receptor Negative (ER-/PR-)
+    if criteria.target_biomarker_hormone_receptor_negative:
+        if has_hr_pos is None:
+            hr_status = "NEEDS_INVESTIGATOR_REVIEW"
+            hr_ok = False
+            hr_val = "Unknown / Not Provided (Investigator Review Required)"
+            hr_note = "ER/PR hormone receptor status is not documented."
+        elif has_hr_pos is True:
+            hr_status = "FAIL"
+            hr_ok = False
+            hr_val = "Confirmed Positive (ER+ or PR+)"
+            hr_note = "Hormone receptor-positive disease excludes TNBC protocol eligibility."
+        else:
+            hr_status = "PASS"
+            hr_ok = True
+            hr_val = "Confirmed Negative (ER-/PR-)"
+            hr_note = "Confirmed hormone receptor-negative status."
+
+        checks.append(CriterionEvaluation(
+            criterion="Hormone Receptor Status (ER/PR)",
+            category="MOLECULAR_BIOMARKER",
+            status=hr_status,
+            passed=hr_ok,
+            patient_value=hr_val,
+            required_threshold="ER/PR Negative",
+            impact_note=hr_note,
+            is_mandatory=True,
+        ))
+
+    # 17. Molecular Biomarker: BCMA Positive (e.g., Multiple Myeloma bispecific/CAR-T)
+    if criteria.target_biomarker_bcma_positive:
+        if has_bcma_pos is None:
+            bcma_status = "NEEDS_INVESTIGATOR_REVIEW"
+            bcma_ok = False
+            bcma_val = "Unknown / Not Provided (Investigator Review Required)"
+            bcma_note = "BCMA marrow IHC/flow cytometry expression is not documented."
+        elif has_bcma_pos is False:
+            bcma_status = "FAIL"
+            bcma_ok = False
+            bcma_val = "Confirmed Negative (BCMA-)"
+            bcma_note = "Confirmed absence of BCMA target antigen."
+        else:
+            bcma_status = "PASS"
+            bcma_ok = True
+            bcma_val = "Confirmed Positive (BCMA+)"
+            bcma_note = "Confirmed BCMA target expression for bispecific therapy."
+
+        checks.append(CriterionEvaluation(
+            criterion="BCMA Expression Status",
+            category="MOLECULAR_BIOMARKER",
+            status=bcma_status,
+            passed=bcma_ok,
+            patient_value=bcma_val,
+            required_threshold="BCMA Positive",
+            impact_note=bcma_note,
             is_mandatory=True,
         ))
 
