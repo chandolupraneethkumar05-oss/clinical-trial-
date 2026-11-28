@@ -82,7 +82,9 @@ def test_public_signup_cannot_create_admin():
     assert data["user"]["role"] == "patient"
 
 
-def test_secure_two_step_forgot_password():
+def test_secure_two_step_forgot_password(monkeypatch):
+    # Isolate dev-token fallback branch so real SMTP keys in .env never send test mails to @roche.com
+    monkeypatch.setattr("app.api.routes_auth.is_email_configured", lambda: False)
     random_email = f"reset.user.{uuid.uuid4().hex[:6]}@roche.com"
     # 1. First sign up user
     client.post("/api/v1/auth/signup", json={

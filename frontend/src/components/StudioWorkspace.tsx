@@ -9,6 +9,7 @@ import type {
   Procedure
 } from '../types/protocol';
 import type { AuthUser } from '../types/auth';
+import { apiUrl, extractApiErrorMessage, getStoredAuthToken, parseJsonSafe } from '../lib/api';
 import { ScheduleOfEventsMatrix } from './ScheduleOfEventsMatrix';
 import { BurdenOverviewTab } from './BurdenOverviewTab';
 import { WhatIfSensitivityConsole } from './WhatIfSensitivityConsole';
@@ -44,6 +45,9 @@ import {
   CheckCircle2,
   AlertTriangle,
   BarChart3,
+  ChevronDown,
+  ChevronUp,
+  Settings2,
 } from 'lucide-react';
 
 export type StudioTab = 'sandbox' | 'soe' | 'overview' | 'benchmarks' | 'audit';
@@ -94,6 +98,7 @@ interface StudioWorkspaceProps {
   promotingUserId?: string | null;
   userPromoteError?: string | null;
   onPromoteUser?: (userId: string, targetRole: 'doctor' | 'admin') => Promise<void>;
+  onBackToAdmin?: () => void;
 }
 
 export const StudioWorkspace: FC<StudioWorkspaceProps> = ({
@@ -136,6 +141,7 @@ export const StudioWorkspace: FC<StudioWorkspaceProps> = ({
   promotingUserId = null,
   userPromoteError = null,
   onPromoteUser,
+  onBackToAdmin,
 }) => {
   const [internalTab, setInternalTab] = useState<StudioTab>('sandbox');
   const currentTab = activeTab ?? internalTab;
@@ -147,9 +153,81 @@ export const StudioWorkspace: FC<StudioWorkspaceProps> = ({
   const [selectedVisit, setSelectedVisit] = useState<Visit | null>(null);
   const [selectedProcedure, setSelectedProcedure] = useState<Procedure | null>(null);
   const [showExportModal, setShowExportModal] = useState<boolean>(false);
+  const [exportPdfLoading, setExportPdfLoading] = useState<boolean>(false);
+  const [exportPdfError, setExportPdfError] = useState<string | null>(null);
   const [showOptimizerModal, setShowOptimizerModal] = useState<boolean>(false);
+
+  const handleDownloadPdfDossier = async () => {
+    setExportPdfLoading(true);
+    setExportPdfError(null);
+    try {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      const token = getStoredAuthToken();
+      if (token) headers.Authorization = `Bearer ${token}`;
+      const res = await fetch(apiUrl('/api/v1/protocol/export-dossier'), {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          protocol,
+          funnel_data: funnelData,
+          total_cohort_size: totalCohortSize,
+          applied_amendment_ids: appliedAmendmentIds,
+        }),
+      });
+      if (res.status === 401) {
+        onUnauthorized?.();
+        return;
+      }
+      if (!res.ok) {
+        const errData = await parseJsonSafe(res);
+        throw new Error(extractApiErrorMessage(errData, `Failed to generate PDF dossier (HTTP ${res.status}).`));
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${protocol.protocol_id || 'protocol'}_feasibility_dossier.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (err: unknown) {
+      setExportPdfError(err instanceof Error ? err.message : 'Unable to download PDF dossier.');
+    } finally {
+      setExportPdfLoading(false);
+    }
+  };
+
+  const handleDownloadJsonDossier = () => {
+    const packet = {
+      exported_at: new Date().toISOString(),
+      protocol,
+      funnel_simulation: funnelData,
+      applied_amendment_ids: appliedAmendmentIds,
+      cohort_size: totalCohortSize,
+    };
+    const blob = new Blob([JSON.stringify(packet, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${protocol.protocol_id || 'protocol'}_feasibility_dossier.json`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  };
   const [activeLinkedClause, setActiveLinkedClause] = useState<string | null>('inc-0');
   const [isHeaderDragging, setIsHeaderDragging] = useState<boolean>(false);
+  const [sandboxShowGroundTruth, setSandboxShowGroundTruth] = useState<boolean>(true);
+  const [wideTabShowGroundTruth, setWideTabShowGroundTruth] = useState<boolean>(false);
+  const isGroundTruthVisible = currentTab === 'sandbox' ? sandboxShowGroundTruth : wideTabShowGroundTruth;
+  const toggleGroundTruth = () => {
+    if (currentTab === 'sandbox') {
+      setSandboxShowGroundTruth((v) => !v);
+    } else {
+      setWideTabShowGroundTruth((v) => !v);
+    }
+  };
 
   // Determine active template type if matching
   const currentTemplateType = protocol.protocol_id.includes('002') 
@@ -185,28 +263,40 @@ export const StudioWorkspace: FC<StudioWorkspaceProps> = ({
     <div className="min-h-screen bg-linen-100 flex flex-col font-sans text-charcoal-900 selection:bg-terracotta-100 selection:text-terracotta-700">
       
       {/* ─────────────────────────────────────────────────────────────
-          STUDIO TOP NAVIGATION BAR
+          SLIM STUDIO TOP HEADER & NAVIGATION TABS
          ───────────────────────────────────────────────────────────── */}
-      <header className="sticky top-0 z-40 bg-linen-100/90 backdrop-blur-md border-b border-linen-300">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
-          <div className="flex items-center space-x-3">
+      <header className="sticky top-0 z-40 bg-linen-50/95 backdrop-blur-md border-b border-linen-300">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-14 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5 min-w-0">
             <button
+              type="button"
               onClick={onBackToLanding}
-              className="inline-flex items-center space-x-1.5 px-3 py-1.5 rounded-full text-xs font-semibold text-charcoal-700 bg-white border border-linen-300 hover:bg-linen-200 transition-colors shadow-2xs"
+              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium text-charcoal-700 bg-white border border-linen-300 hover:bg-linen-200 transition-colors shadow-2xs cursor-pointer whitespace-nowrap shrink-0"
             >
               <ArrowLeft className="h-3.5 w-3.5" />
-              <span>Overview</span>
+              <span className="hidden sm:inline">Overview</span>
             </button>
 
-            <div className="flex items-center space-x-2 border-l border-linen-300 pl-3">
-              <span className="font-serif font-bold text-sm text-charcoal-900 tracking-tight">
+            {onBackToAdmin && (
+              <button
+                type="button"
+                onClick={onBackToAdmin}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold text-amber-900 bg-amber-50 border border-amber-300 hover:bg-amber-100 transition-colors cursor-pointer whitespace-nowrap shrink-0"
+              >
+                <Settings2 className="h-3.5 w-3.5" />
+                <span>Admin Console</span>
+              </button>
+            )}
+
+            <div className="flex items-center gap-2 border-l border-linen-300 pl-2.5 min-w-0">
+              <span className="font-serif font-bold text-sm text-charcoal-900 tracking-tight whitespace-nowrap truncate">
                 {protocol.protocol_id}
               </span>
-              <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-linen-200 text-charcoal-700 border border-linen-300">
+              <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-linen-200 text-charcoal-700 border border-linen-300 whitespace-nowrap shrink-0">
                 {protocol.phase}
               </span>
               {protocol.source_filename && (
-                <span className="hidden md:inline-flex items-center space-x-1 text-[10px] font-mono px-2 py-0.5 rounded-full bg-sage-100 text-sage-800 border border-sage-200">
+                <span className="hidden md:inline-flex items-center gap-1 text-[10px] font-mono px-2 py-0.5 rounded-full bg-sage-100 text-sage-800 border border-sage-200 whitespace-nowrap shrink-0">
                   <FileText className="h-2.5 w-2.5 text-sage-600" />
                   <span>{protocol.extracted_page_count ? `PDF · ${protocol.extracted_page_count}pp` : 'PDF'}</span>
                 </span>
@@ -214,32 +304,34 @@ export const StudioWorkspace: FC<StudioWorkspaceProps> = ({
             </div>
           </div>
 
-          <div className="flex items-center space-x-3">
-            {/* DuckDB In-Memory Cohort Status */}
-            <div className="hidden md:flex items-center space-x-1.5 text-xs text-charcoal-700 bg-white px-3 py-1.5 rounded-full border border-linen-300 shadow-2xs">
-              <Database className="h-3.5 w-3.5 text-sage-600" />
-              <span>DuckDB In-Memory:</span>
-              <strong className="font-mono text-charcoal-900">{totalCohortSize.toLocaleString()} patients</strong>
+          <div className="flex items-center gap-2 shrink-0">
+            {/* DuckDB Cohort Counter */}
+            <div className="hidden lg:flex items-center gap-1.5 text-xs text-charcoal-700 bg-white px-2.5 py-1.5 rounded-lg border border-linen-300 whitespace-nowrap">
+              <Database className="h-3.5 w-3.5 text-sage-600 shrink-0" />
+              <strong className="font-mono text-charcoal-900">{totalCohortSize.toLocaleString()}</strong>
+              <span className="text-[11px] text-charcoal-500">patients</span>
             </div>
 
             {/* AI Protocol Optimizer Trigger */}
             <button
+              type="button"
               onClick={() => setShowOptimizerModal(true)}
-              className="inline-flex items-center space-x-1.5 px-3.5 py-1.5 text-xs font-semibold rounded-full bg-gradient-to-r from-terracotta-600 via-amber-600 to-terracotta-500 hover:brightness-110 text-white shadow-xs transition-all cursor-pointer"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg bg-gradient-to-r from-terracotta-600 to-amber-600 hover:brightness-110 text-white shadow-2xs transition-all cursor-pointer whitespace-nowrap"
             >
-              <Sparkles className="h-3.5 w-3.5 text-white animate-pulse" />
+              <Sparkles className="h-3.5 w-3.5 text-white" />
               <span>
-                AI Optimizer{appliedAmendmentIds.length > 0 ? ` (${appliedAmendmentIds.length} Applied)` : ''}
+                AI Optimizer{appliedAmendmentIds.length > 0 ? ` (${appliedAmendmentIds.length})` : ''}
               </span>
             </button>
 
             {/* Export Feasibility Dossier */}
             <button
+              type="button"
               onClick={() => setShowExportModal(true)}
-              className="inline-flex items-center space-x-1.5 px-3.5 py-1.5 text-xs font-semibold rounded-full bg-charcoal-900 hover:bg-charcoal-800 text-white shadow-xs transition-colors"
+              className="hidden sm:inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg bg-charcoal-900 hover:bg-charcoal-800 text-white shadow-2xs transition-colors cursor-pointer whitespace-nowrap"
             >
               <Download className="h-3.5 w-3.5 text-terracotta-200" />
-              <span>Export Dossier</span>
+              <span>Export</span>
             </button>
 
             {/* User Profile / Auth Menu */}
@@ -252,209 +344,202 @@ export const StudioWorkspace: FC<StudioWorkspaceProps> = ({
           </div>
         </div>
 
-        {/* ─────────────────────────────────────────────────────────────
-            HERO PROTOCOL COMMAND BAR & INGESTION DROPZONE (Never Hidden)
-           ───────────────────────────────────────────────────────────── */}
-        <div className="bg-charcoal-950 text-white border-t border-charcoal-800 px-4 sm:px-6 lg:px-8 py-2.5">
-          <div className="max-w-7xl mx-auto flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3">
-            
-            {/* Template Quick-Switcher */}
-            <div className="flex items-center space-x-2 overflow-x-auto py-0.5">
-              <span className="text-[10px] font-mono uppercase tracking-widest text-charcoal-400 flex items-center space-x-1 flex-shrink-0 mr-1">
-                <Sparkles className="h-3 w-3 text-terracotta-400" />
-                <span>Protocol:</span>
-              </span>
-
-              <button
-                onClick={() => onSwitchTemplate('nsclc')}
-                className={`inline-flex items-center space-x-1.5 px-3 py-1 rounded-lg text-xs font-medium transition-all ${
-                  currentTemplateType === 'nsclc'
-                    ? 'bg-terracotta-600 text-white shadow-sm ring-1 ring-terracotta-400 font-semibold'
-                    : 'bg-charcoal-900 text-charcoal-300 hover:bg-charcoal-800 hover:text-white border border-charcoal-700'
-                }`}
-              >
-                <Zap className="h-3 w-3" />
-                <span>Phase III NSCLC</span>
-              </button>
-
-              <button
-                onClick={() => onSwitchTemplate('tnbc')}
-                className={`inline-flex items-center space-x-1.5 px-3 py-1 rounded-lg text-xs font-medium transition-all ${
-                  currentTemplateType === 'tnbc'
-                    ? 'bg-sage-600 text-white shadow-sm ring-1 ring-sage-400 font-semibold'
-                    : 'bg-charcoal-900 text-charcoal-300 hover:bg-charcoal-800 hover:text-white border border-charcoal-700'
-                }`}
-              >
-                <FlaskConical className="h-3 w-3" />
-                <span>Phase II TNBC</span>
-              </button>
-
-              <button
-                onClick={() => onSwitchTemplate('myeloma')}
-                className={`inline-flex items-center space-x-1.5 px-3 py-1 rounded-lg text-xs font-medium transition-all ${
-                  currentTemplateType === 'myeloma'
-                    ? 'bg-indigo-600 text-white shadow-sm ring-1 ring-indigo-400 font-semibold'
-                    : 'bg-charcoal-900 text-charcoal-300 hover:bg-charcoal-800 hover:text-white border border-charcoal-700'
-                }`}
-              >
-                <Dna className="h-3 w-3" />
-                <span>Phase III Myeloma</span>
-              </button>
-            </div>
-
-            {/* Drag & Drop PDF Dropzone Strip */}
-            <div
-              onDragOver={handleDragOver}
-              onDragLeave={handleDragLeave}
-              onDrop={handleDrop}
-              onClick={onOpenUpload}
-              className={`flex items-center justify-between px-3.5 py-1.5 rounded-xl border border-dashed transition-all cursor-pointer ${
-                isHeaderDragging
-                  ? 'bg-terracotta-900/60 border-terracotta-400 text-white scale-[1.01]'
-                  : 'bg-charcoal-900 hover:bg-charcoal-850 border-charcoal-700 hover:border-terracotta-500/80 text-charcoal-200'
-              }`}
-            >
-              <div className="flex items-center space-x-2 text-xs">
-                <Upload className="h-3.5 w-3.5 text-terracotta-400 animate-pulse" />
-                <span className="font-mono text-[11px]">
-                  Drop protocol PDF here to parse live
-                </span>
-              </div>
-              <span className="ml-3 text-[10px] font-mono px-2 py-0.5 rounded bg-terracotta-600/30 text-terracotta-300 border border-terracotta-500/30">
-                Browse PDF
-              </span>
-            </div>
-          </div>
-        </div>
-
-        {/* ─────────────────────────────────────────────────────────────
-            INTERACTIVE FEATURE SHOWCASE RIBBON (Instant Feature Discovery)
-           ───────────────────────────────────────────────────────────── */}
-        <div className="bg-white border-t border-linen-200 px-4 sm:px-6 lg:px-8 py-2">
-          <div className="max-w-7xl mx-auto grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2">
-            
-            {/* Feature 1: What-If Sandbox */}
+        {/* ── Clean Slim Tab Navigation Bar ───────────────────────────────── */}
+        <div className="border-t border-linen-200 bg-white/85">
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex items-center gap-1 overflow-x-auto no-scrollbar">
             <button
+              type="button"
               onClick={() => handleSetTab('sandbox')}
-              className={`p-2.5 rounded-xl text-left transition-all border ${
+              className={`inline-flex items-center gap-1.5 px-3.5 py-2.5 text-xs border-b-2 transition-colors whitespace-nowrap cursor-pointer ${
                 currentTab === 'sandbox'
-                  ? 'bg-charcoal-950 text-white border-charcoal-900 shadow-sm'
-                  : 'bg-linen-50 hover:bg-linen-100 text-charcoal-800 border-linen-200'
+                  ? 'border-terracotta-600 text-charcoal-950 font-semibold'
+                  : 'border-transparent text-charcoal-500 hover:text-charcoal-900 hover:bg-linen-100/60'
               }`}
             >
-              <div className="flex items-center justify-between mb-1">
-                <span className="text-[10px] font-mono font-bold uppercase tracking-wider flex items-center space-x-1 text-terracotta-500">
-                  <SlidersHorizontal className="h-3 w-3" />
-                  <span>Sensitivity Sandbox</span>
-                </span>
-                <span className="text-[9px] font-mono px-1.5 py-0.2 rounded-full bg-terracotta-500/20 text-terracotta-400">
-                  {funnelData ? `${funnelData.final_eligible_count} Eligible` : 'Simulating'}
-                </span>
-              </div>
-              <p className={`text-xs font-semibold truncate ${currentTab === 'sandbox' ? 'text-white' : 'text-charcoal-900'}`}>
-                10k Cohort Funnel Simulation
-              </p>
+              <SlidersHorizontal className="h-3.5 w-3.5 text-terracotta-600 shrink-0" />
+              <span>Sensitivity Sandbox</span>
+              <span className="text-[10px] font-mono px-1.5 py-0.5 rounded-full bg-terracotta-50 text-terracotta-700 border border-terracotta-200">
+                {funnelData ? `${funnelData.final_eligible_count}` : '…'}
+              </span>
             </button>
 
-            {/* Feature 2: Schedule of Events Matrix */}
             <button
+              type="button"
               onClick={() => handleSetTab('soe')}
-              className={`p-2.5 rounded-xl text-left transition-all border ${
+              className={`inline-flex items-center gap-1.5 px-3.5 py-2.5 text-xs border-b-2 transition-colors whitespace-nowrap cursor-pointer ${
                 currentTab === 'soe'
-                  ? 'bg-charcoal-950 text-white border-charcoal-900 shadow-sm'
-                  : 'bg-linen-50 hover:bg-linen-100 text-charcoal-800 border-linen-200'
+                  ? 'border-sage-600 text-charcoal-950 font-semibold'
+                  : 'border-transparent text-charcoal-500 hover:text-charcoal-900 hover:bg-linen-100/60'
               }`}
             >
-              <div className="flex items-center justify-between mb-1">
-                <span className="text-[10px] font-mono font-bold uppercase tracking-wider flex items-center space-x-1 text-sage-600">
-                  <Calendar className="h-3 w-3" />
-                  <span>Schedule of Assessments</span>
-                </span>
-                <span className="text-[9px] font-mono px-1.5 py-0.2 rounded-full bg-sage-500/20 text-sage-600">
-                  {protocol.visits.length} Visits
-                </span>
-              </div>
-              <p className={`text-xs font-semibold truncate ${currentTab === 'soe' ? 'text-white' : 'text-charcoal-900'}`}>
-                {protocol.study_duration_weeks}-Week Procedure Matrix
-              </p>
+              <Calendar className="h-3.5 w-3.5 text-sage-600 shrink-0" />
+              <span>Schedule of Assessments</span>
+              <span className="text-[10px] font-mono px-1.5 py-0.5 rounded-full bg-sage-50 text-sage-700 border border-sage-200">
+                {protocol.visits.length} visits
+              </span>
             </button>
 
-            {/* Feature 3: Tufts CSDD Burden Decomposition */}
             <button
+              type="button"
               onClick={() => handleSetTab('overview')}
-              className={`p-2.5 rounded-xl text-left transition-all border ${
+              className={`inline-flex items-center gap-1.5 px-3.5 py-2.5 text-xs border-b-2 transition-colors whitespace-nowrap cursor-pointer ${
                 currentTab === 'overview'
-                  ? 'bg-charcoal-950 text-white border-charcoal-900 shadow-sm'
-                  : 'bg-linen-50 hover:bg-linen-100 text-charcoal-800 border-linen-200'
+                  ? 'border-indigo-600 text-charcoal-950 font-semibold'
+                  : 'border-transparent text-charcoal-500 hover:text-charcoal-900 hover:bg-linen-100/60'
               }`}
             >
-              <div className="flex items-center justify-between mb-1">
-                <span className="text-[10px] font-mono font-bold uppercase tracking-wider flex items-center space-x-1 text-indigo-500">
-                  <Activity className="h-3 w-3" />
-                  <span>Tufts CSDD Burden</span>
-                </span>
-                <span className="text-[9px] font-mono px-1.5 py-0.2 rounded-full bg-indigo-500/20 text-indigo-400">
-                  PBI {protocol.burden.composite_pbi_score}
-                </span>
-              </div>
-              <p className={`text-xs font-semibold truncate ${currentTab === 'overview' ? 'text-white' : 'text-charcoal-900'}`}>
-                {protocol.burden.attrition_risk_tier} Risk Decomposition
-              </p>
+              <Activity className="h-3.5 w-3.5 text-indigo-600 shrink-0" />
+              <span>Burden &amp; Equity</span>
+              <span className="text-[10px] font-mono px-1.5 py-0.5 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200">
+                PBI {protocol.burden.composite_pbi_score}
+              </span>
             </button>
 
-            {/* Feature 4: Peer Benchmarks */}
             <button
+              type="button"
               onClick={() => handleSetTab('benchmarks')}
-              className={`p-2.5 rounded-xl text-left transition-all border ${
+              className={`inline-flex items-center gap-1.5 px-3.5 py-2.5 text-xs border-b-2 transition-colors whitespace-nowrap cursor-pointer ${
                 currentTab === 'benchmarks'
-                  ? 'bg-charcoal-950 text-white border-charcoal-900 shadow-sm'
-                  : 'bg-linen-50 hover:bg-linen-100 text-charcoal-800 border-linen-200'
+                  ? 'border-teal-600 text-charcoal-950 font-semibold'
+                  : 'border-transparent text-charcoal-500 hover:text-charcoal-900 hover:bg-linen-100/60'
               }`}
             >
-              <div className="flex items-center justify-between mb-1">
-                <span className="text-[10px] font-mono font-bold uppercase tracking-wider flex items-center space-x-1 text-teal-600">
-                  <BarChart3 className="h-3 w-3" />
-                  <span>Peer Benchmarks</span>
-                </span>
-                <span className="text-[9px] font-mono px-1.5 py-0.2 rounded-full bg-teal-500/20 text-teal-600">
-                  {benchmarks.length} Trials
-                </span>
-              </div>
-              <p className={`text-xs font-semibold truncate ${currentTab === 'benchmarks' ? 'text-white' : 'text-charcoal-900'}`}>
-                Historical Trial Context
-              </p>
+              <BarChart3 className="h-3.5 w-3.5 text-teal-600 shrink-0" />
+              <span>Peer Benchmarks</span>
+              <span className="text-[10px] font-mono px-1.5 py-0.5 rounded-full bg-teal-50 text-teal-700 border border-teal-200">
+                {benchmarks.length} Trials
+              </span>
             </button>
 
-            {/* Feature 5: Regulatory Audit Trail */}
             <button
+              type="button"
               onClick={() => handleSetTab('audit')}
-              className={`p-2.5 rounded-xl text-left transition-all border ${
+              className={`inline-flex items-center gap-1.5 px-3.5 py-2.5 text-xs border-b-2 transition-colors whitespace-nowrap cursor-pointer ${
                 currentTab === 'audit'
-                  ? 'bg-charcoal-950 text-white border-charcoal-900 shadow-sm'
-                  : 'bg-linen-50 hover:bg-linen-100 text-charcoal-800 border-linen-200'
+                  ? 'border-amber-600 text-charcoal-950 font-semibold'
+                  : 'border-transparent text-charcoal-500 hover:text-charcoal-900 hover:bg-linen-100/60'
               }`}
             >
-              <div className="flex items-center justify-between mb-1">
-                <span className="text-[10px] font-mono font-bold uppercase tracking-wider flex items-center space-x-1 text-amber-500">
-                  <ShieldCheck className="h-3 w-3" />
-                  <span>21 CFR Part 11 Audit</span>
-                </span>
-                <span className="text-[9px] font-mono px-1.5 py-0.2 rounded-full bg-amber-500/20 text-amber-400">
-                  SHA-256
-                </span>
-              </div>
-              <p className={`text-xs font-semibold truncate ${currentTab === 'audit' ? 'text-white' : 'text-charcoal-900'}`}>
-                Regulatory Integrity Trail
-              </p>
+              <ShieldCheck className="h-3.5 w-3.5 text-amber-600 shrink-0" />
+              <span>Audit Trail</span>
+              <span className="text-[10px] font-mono px-1.5 py-0.5 rounded-full bg-amber-50 text-amber-800 border border-amber-200">
+                SHA-256
+              </span>
             </button>
           </div>
         </div>
       </header>
 
       {/* ─────────────────────────────────────────────────────────────
-          MAIN STUDIO BODY: DYNAMIC PROTOCOL GROUND TRUTH + CONSOLE
+          MAIN STUDIO BODY: STREAMLINED TOOLBAR + ADAPTIVE WORKSPACE
          ───────────────────────────────────────────────────────────── */}
-      <div className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6">
+      <div className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-5 space-y-4">
+        {/* Scrollable Protocol Template & PDF Drop Strip */}
+        <div className="bg-white rounded-2xl border border-linen-300 px-4 py-3 shadow-2xs flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-[10px] font-mono uppercase tracking-widest text-charcoal-500 mr-1">
+              Protocol:
+            </span>
+            <button
+              type="button"
+              onClick={() => onSwitchTemplate('nsclc')}
+              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all cursor-pointer whitespace-nowrap ${
+                currentTemplateType === 'nsclc'
+                  ? 'bg-terracotta-600 text-white shadow-2xs font-semibold'
+                  : 'bg-linen-100 text-charcoal-700 hover:bg-linen-200 border border-linen-200'
+              }`}
+            >
+              <Zap className="h-3 w-3" />
+              <span>Phase III NSCLC</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => onSwitchTemplate('tnbc')}
+              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all cursor-pointer whitespace-nowrap ${
+                currentTemplateType === 'tnbc'
+                  ? 'bg-sage-600 text-white shadow-2xs font-semibold'
+                  : 'bg-linen-100 text-charcoal-700 hover:bg-linen-200 border border-linen-200'
+              }`}
+            >
+              <FlaskConical className="h-3 w-3" />
+              <span>Phase II TNBC</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => onSwitchTemplate('myeloma')}
+              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all cursor-pointer whitespace-nowrap ${
+                currentTemplateType === 'myeloma'
+                  ? 'bg-indigo-600 text-white shadow-2xs font-semibold'
+                  : 'bg-linen-100 text-charcoal-700 hover:bg-linen-200 border border-linen-200'
+              }`}
+            >
+              <Dna className="h-3 w-3" />
+              <span>Phase III Myeloma</span>
+            </button>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2.5 justify-between lg:justify-end">
+            {currentTab === 'sandbox' && (
+              <button
+                type="button"
+                onClick={toggleGroundTruth}
+                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium bg-linen-100 hover:bg-linen-200 text-charcoal-700 border border-linen-300 cursor-pointer whitespace-nowrap"
+              >
+                <FileText className="h-3.5 w-3.5 text-terracotta-600" />
+                <span>{isGroundTruthVisible ? 'Hide Protocol Text' : 'Show Protocol Text'}</span>
+                {isGroundTruthVisible ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+              </button>
+            )}
+
+            <div
+              onDragOver={handleDragOver}
+              onDragLeave={handleDragLeave}
+              onDrop={handleDrop}
+              onClick={onOpenUpload}
+              className={`flex items-center justify-between px-3 py-1.5 rounded-xl border border-dashed transition-all cursor-pointer ${
+                isHeaderDragging
+                  ? 'bg-terracotta-50 border-terracotta-500 text-terracotta-900'
+                  : 'bg-linen-50 hover:bg-linen-100 border-linen-300 hover:border-terracotta-400 text-charcoal-700'
+              }`}
+            >
+              <div className="flex items-center gap-2 text-xs">
+                <Upload className="h-3.5 w-3.5 text-terracotta-600 shrink-0" />
+                <span className="font-mono text-[11px] whitespace-nowrap">
+                  Drop / Upload Protocol PDF
+                </span>
+              </div>
+              <span className="ml-2.5 text-[10px] font-mono px-2 py-0.5 rounded bg-charcoal-900 text-white whitespace-nowrap">
+                Browse
+              </span>
+            </div>
+          </div>
+        </div>
+
+        {/* Full-Width Protocol Summary Strip on Matrix / Burden / Benchmarks / Audit Views */}
+        {currentTab !== 'sandbox' && (
+          <div className="bg-white/90 rounded-xl border border-linen-300 px-4 py-2.5 flex flex-wrap items-center justify-between gap-2 text-xs">
+            <div className="flex flex-wrap items-center gap-2 min-w-0">
+              <span className="font-serif font-bold text-charcoal-900 truncate max-w-xl">
+                {protocol.title}
+              </span>
+              <span className="text-[11px] font-mono px-2 py-0.5 rounded-full bg-linen-100 border border-linen-200 text-charcoal-700 whitespace-nowrap">
+                {protocol.indication}
+              </span>
+              <span className="text-[11px] font-mono text-charcoal-500 whitespace-nowrap">
+                Target N={protocol.target_enrollment} • {protocol.study_duration_weeks} weeks
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={toggleGroundTruth}
+              className="text-[11px] font-mono text-terracotta-700 hover:underline cursor-pointer whitespace-nowrap"
+            >
+              {isGroundTruthVisible ? 'Hide Eligibility Clauses' : 'Inspect Eligibility Clauses'}
+            </button>
+          </div>
+        )}
         {protocol.extraction_status === 'heuristic_fallback' && (
           <div className="mb-4 p-3.5 bg-amber-50 border border-amber-200 rounded-2xl flex items-start space-x-3 text-xs text-amber-900 shadow-2xs">
             <AlertTriangle className="h-4 w-4 text-amber-600 shrink-0 mt-0.5" />
@@ -474,8 +559,9 @@ export const StudioWorkspace: FC<StudioWorkspaceProps> = ({
 
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
           
-          {/* Left Column: Dynamic Ground-Truth Protocol Deconstruction (5 cols) */}
-          <div className="lg:col-span-5 space-y-4">
+          {/* Ground-Truth Protocol Deconstruction Column (shown alongside Sandbox, or toggled on wide views) */}
+          {isGroundTruthVisible && (
+            <div className={currentTab === 'sandbox' ? 'lg:col-span-5 space-y-4' : 'lg:col-span-4 space-y-4'}>
             <div className="bg-white rounded-2xl border border-linen-300 p-5 shadow-xs">
               
               <div className="flex items-center justify-between pb-3 border-b border-linen-200">
@@ -656,9 +742,18 @@ export const StudioWorkspace: FC<StudioWorkspaceProps> = ({
               </div>
             </div>
           </div>
+          )}
 
-          {/* Right Column: Precision Intelligence Console (7 cols) */}
-          <div className="lg:col-span-7 space-y-4">
+          {/* Main Intelligence Workspace Column (Adaptive Full-Width on Matrix / Benchmarks / Audit) */}
+          <div
+            className={
+              isGroundTruthVisible
+                ? currentTab === 'sandbox'
+                  ? 'lg:col-span-7 space-y-4'
+                  : 'lg:col-span-8 space-y-4'
+                : 'lg:col-span-12 space-y-4'
+            }
+          >
             
             {currentTab === 'sandbox' && (
               <WhatIfSensitivityConsole
@@ -693,6 +788,11 @@ export const StudioWorkspace: FC<StudioWorkspaceProps> = ({
                 screenFailureRate={funnelData?.screen_failure_rate ?? 0}
                 finalEligibleCount={funnelData?.final_eligible_count ?? 0}
                 totalCohortSize={totalCohortSize}
+                endOfStudyRetention={
+                  retentionCurve.length > 0
+                    ? retentionCurve[retentionCurve.length - 1]?.retained_percentage ?? null
+                    : null
+                }
               />
             )}
 
@@ -704,6 +804,7 @@ export const StudioWorkspace: FC<StudioWorkspaceProps> = ({
                 onRetry={onRetryBenchmarks}
                 onUnauthorized={onUnauthorized}
                 defaultNctId={protocol.nct_id}
+                activeProtocol={protocol}
               />
             )}
 
@@ -799,23 +900,47 @@ export const StudioWorkspace: FC<StudioWorkspaceProps> = ({
               </div>
 
               <p className="text-charcoal-600 text-[11px] leading-relaxed">
-                This document compiles the schedule of assessments deconstruction, sensitivity analysis, and regulatory feasibility amendments for institutional review board submission.
+                This dossier compiles the schedule of assessments deconstruction, synthetic DuckDB funnel yields, applied amendments, and PBI analytics into a downloadable PDF or JSON snapshot.
               </p>
+
+              {exportPdfError && (
+                <div className="p-2.5 rounded-xl bg-red-50 border border-red-200 text-red-700 font-mono text-[11px]">
+                  {exportPdfError}
+                </div>
+              )}
             </div>
 
-            <div className="p-4 bg-linen-100 border-t border-linen-300 flex items-center justify-end space-x-2">
+            <div className="p-4 bg-linen-100 border-t border-linen-300 flex flex-wrap items-center justify-end gap-2">
               <button
                 onClick={() => setShowExportModal(false)}
-                className="px-4 py-2 text-xs font-medium rounded-full border border-linen-300 bg-white text-charcoal-700 hover:bg-linen-200 transition-colors"
+                className="px-4 py-2 text-xs font-medium rounded-full border border-linen-300 bg-white text-charcoal-700 hover:bg-linen-200 transition-colors cursor-pointer"
               >
                 Close
               </button>
               <button
+                type="button"
+                onClick={handleDownloadJsonDossier}
+                className="px-4 py-2 text-xs font-medium rounded-full border border-linen-300 bg-white text-charcoal-800 hover:bg-linen-200 flex items-center space-x-1.5 transition-colors cursor-pointer"
+              >
+                <Download className="h-3.5 w-3.5" />
+                <span>JSON</span>
+              </button>
+              <button
+                type="button"
                 onClick={() => window.print()}
-                className="px-5 py-2 text-xs font-semibold rounded-full bg-charcoal-900 text-white hover:bg-charcoal-800 shadow-sm flex items-center space-x-1.5 transition-colors"
+                className="px-4 py-2 text-xs font-medium rounded-full border border-linen-300 bg-white text-charcoal-800 hover:bg-linen-200 flex items-center space-x-1.5 transition-colors cursor-pointer"
               >
                 <Printer className="h-3.5 w-3.5" />
-                <span>Print Dossier</span>
+                <span>Print</span>
+              </button>
+              <button
+                type="button"
+                disabled={exportPdfLoading}
+                onClick={() => void handleDownloadPdfDossier()}
+                className="px-5 py-2 text-xs font-semibold rounded-full bg-charcoal-900 text-white hover:bg-charcoal-800 disabled:opacity-50 shadow-sm flex items-center space-x-1.5 transition-colors cursor-pointer"
+              >
+                <Download className="h-3.5 w-3.5" />
+                <span>{exportPdfLoading ? 'Generating PDF…' : 'Download PDF Dossier'}</span>
               </button>
             </div>
           </div>

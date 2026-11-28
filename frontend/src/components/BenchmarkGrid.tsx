@@ -1,8 +1,8 @@
 import { useState, useRef, useEffect } from 'react';
 import type { FC, FormEvent } from 'react';
-import type { BenchmarkTrial, LiveClinicalTrialSummary } from '../types/protocol';
+import type { BenchmarkTrial, ClinicalProtocol, LiveClinicalTrialSummary } from '../types/protocol';
 import { apiFetchJson, getStoredAuthToken, SessionExpiredError } from '../lib/api';
-import { CheckCircle2, XCircle, Search, ExternalLink, Database, Globe, Loader2, Info } from 'lucide-react';
+import { CheckCircle2, XCircle, Search, ExternalLink, Database, Globe, Loader2, Info, GitCompare } from 'lucide-react';
 
 interface BenchmarkGridProps {
   benchmarks: BenchmarkTrial[];
@@ -11,6 +11,7 @@ interface BenchmarkGridProps {
   onRetry?: () => void;
   onUnauthorized?: () => void;
   defaultNctId?: string | null;
+  activeProtocol?: ClinicalProtocol | null;
 }
 
 const NCT_ID_REGEX = /^NCT\d{8}$/i;
@@ -22,6 +23,7 @@ export const BenchmarkGrid: FC<BenchmarkGridProps> = ({
   onRetry,
   onUnauthorized,
   defaultNctId = null,
+  activeProtocol = null,
 }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<'ALL' | 'COMPLETED' | 'TERMINATED'>('ALL');
@@ -30,6 +32,7 @@ export const BenchmarkGrid: FC<BenchmarkGridProps> = ({
   const [liveTrial, setLiveTrial] = useState<LiveClinicalTrialSummary | null>(null);
   const [liveLoading, setLiveLoading] = useState(false);
   const [liveError, setLiveError] = useState<string | null>(null);
+  const [comparedNctId, setComparedNctId] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
@@ -101,7 +104,7 @@ export const BenchmarkGrid: FC<BenchmarkGridProps> = ({
             </h2>
           </div>
           <p className="text-[11px] text-charcoal-500 font-mono mt-0.5">
-            Validation of ProtocolShield predictive burden models against real-world completed vs terminated Phase III trials from ClinicalTrials.gov.
+            Live completed vs terminated Phase III trials retrieved directly from ClinicalTrials.gov API v2.
           </p>
         </div>
 
@@ -241,6 +244,52 @@ export const BenchmarkGrid: FC<BenchmarkGridProps> = ({
         </div>
       )}
 
+      {/* ── Side-by-Side Active Protocol vs Registry Comparator ───────────── */}
+      {activeProtocol && comparedNctId && (() => {
+        const target = safeBenchmarks.find((b) => b.nct_id === comparedNctId);
+        if (!target) return null;
+        const sf = activeProtocol.eligibility.structured_filters || {};
+        return (
+          <div className="p-4 bg-linen-50 border-b border-linen-200 space-y-2 text-xs select-text">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center space-x-2">
+                <GitCompare className="h-4 w-4 text-terracotta-600" />
+                <span className="font-serif font-bold text-charcoal-900">
+                  Protocol vs Registry Comparison: {activeProtocol.protocol_id} vs {target.nct_id}
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setComparedNctId(null)}
+                className="text-[11px] font-mono text-charcoal-600 hover:text-charcoal-900 underline cursor-pointer"
+              >
+                Close comparison
+              </button>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 font-mono text-[11px]">
+              <div className="bg-white p-3 rounded-xl border border-linen-300 space-y-1">
+                <span className="text-[10px] font-bold uppercase text-terracotta-700 block">
+                  Active Studio Protocol ({activeProtocol.phase})
+                </span>
+                <p className="font-serif font-semibold text-charcoal-900 text-xs">{activeProtocol.title}</p>
+                <p>Composite PBI: <strong>{activeProtocol.burden.composite_pbi_score} / 100</strong> ({activeProtocol.burden.attrition_risk_tier})</p>
+                <p>Schedule: <strong>{activeProtocol.burden.total_study_visits} visits</strong> • {activeProtocol.burden.total_clinic_hours}h clinic • {activeProtocol.burden.total_biopsies} biopsies</p>
+                <p>Filters: eGFR ≥ {String(sf.min_egfr ?? '—')} mL/min • ECOG ≤ {String(sf.max_ecog ?? '—')}</p>
+              </div>
+              <div className="bg-white p-3 rounded-xl border border-linen-300 space-y-1">
+                <span className="text-[10px] font-bold uppercase text-teal-800 block">
+                  ClinicalTrials.gov ({target.phase} • {target.actual_status})
+                </span>
+                <p className="font-serif font-semibold text-charcoal-900 text-xs">{target.title}</p>
+                <p>External PBI: <strong>No SoA</strong> (public registry entries omit per-visit schedules)</p>
+                <p>Enrollment: <strong>{target.enrolled_patients}</strong> {target.enrollment_type ? `(${target.enrollment_type})` : ''}</p>
+                <p>Complexity Signals: {target.protocol_complexity_flags.join(' • ')}</p>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
       {/* ── Table Grid ─────────────────────────────────────────────────────── */}
       <div className="overflow-x-auto">
         {filtered.length === 0 ? (
@@ -309,15 +358,30 @@ export const BenchmarkGrid: FC<BenchmarkGridProps> = ({
 
                   {/* Accrual */}
                   <td className="py-3 px-4 font-mono text-charcoal-800 text-right text-xs">
-                    {trial.enrolled_patients} {trial.target_enrollment ? `/ ${trial.target_enrollment}` : ''}
+                    {trial.enrolled_patients}
+                    {trial.target_enrollment ? ` / ${trial.target_enrollment}` : ''}
+                    {trial.enrollment_type ? (
+                      <span className="text-[10px] text-charcoal-500 block">{trial.enrollment_type}</span>
+                    ) : null}
                   </td>
 
                   {/* PBI Score */}
                   <td className="py-3 px-4 font-mono text-xs">
-                    <span className={`font-bold ${trial.predicted_pbi > 70 ? 'text-terracotta-600' : 'text-charcoal-900'}`}>
-                      {trial.predicted_pbi}
-                    </span>
-                    <span className="text-[10px] text-charcoal-500 block">({trial.burden_tier})</span>
+                    {trial.predicted_pbi != null ? (
+                      <>
+                        <span className={`font-bold ${trial.predicted_pbi > 70 ? 'text-terracotta-600' : 'text-charcoal-900'}`}>
+                          {trial.predicted_pbi}
+                        </span>
+                        <span className="text-[10px] text-charcoal-500 block">({trial.burden_tier || 'Scored'})</span>
+                      </>
+                    ) : (
+                      <>
+                        <span className="font-semibold text-charcoal-700">No SoA</span>
+                        <span className="text-[10px] text-charcoal-500 block">
+                          {trial.burden_tier || 'Registry Only (No SoA)'}
+                        </span>
+                      </>
+                    )}
                   </td>
 
                   {/* Verdict */}
@@ -337,8 +401,22 @@ export const BenchmarkGrid: FC<BenchmarkGridProps> = ({
                     </ul>
                   </td>
 
-                  {/* External Link */}
-                  <td className="py-3 px-4 text-right">
+                  {/* External Link & Active Comparator */}
+                  <td className="py-3 px-4 text-right space-x-2 whitespace-nowrap">
+                    {activeProtocol && (
+                      <button
+                        type="button"
+                        onClick={() => setComparedNctId((prev) => (prev === trial.nct_id ? null : trial.nct_id))}
+                        className={`inline-flex items-center space-x-1 px-2 py-1 rounded-lg border font-mono text-[10px] cursor-pointer ${
+                          comparedNctId === trial.nct_id
+                            ? 'bg-terracotta-600 text-white border-terracotta-600'
+                            : 'bg-white text-charcoal-700 border-linen-300 hover:border-terracotta-400'
+                        }`}
+                      >
+                        <GitCompare className="h-3 w-3" />
+                        <span>{comparedNctId === trial.nct_id ? 'Comparing' : 'Compare'}</span>
+                      </button>
+                    )}
                     <a
                       href={`https://clinicaltrials.gov/study/${trial.nct_id}`}
                       target="_blank"

@@ -13,3 +13,5 @@ export interface AuthUser {
 }
 
 export type AuthModalView = 'signin' | 'signup' | 'forgot_password';
+
+export type PortalLoginRole = UserRole;

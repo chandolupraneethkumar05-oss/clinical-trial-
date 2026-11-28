@@ -342,11 +342,15 @@ export const ProtocolUploadModal: FC<ProtocolUploadModalProps> = ({
             <p className="font-serif font-bold text-sm text-charcoal-900">
               {loadedProtocol?.extraction_status === 'heuristic_fallback'
                 ? 'Protocol Initialized with Baseline Schedule'
+                : loadedProtocol?.extraction_status === 'gemini_structured'
+                ? 'Protocol Parsed via Gemini Semantic Extraction'
                 : 'Protocol Structure Extracted'}
             </p>
             <p className="text-xs text-charcoal-500">
               {loadedProtocol?.extraction_status === 'heuristic_fallback'
                 ? 'Sparse tables detected. Standard Phase II/III oncology baseline parameters loaded.'
+                : loadedProtocol?.extraction_status === 'gemini_structured'
+                ? 'Recovered structured visits and eligibility rules from unstructured protocol text.'
                 : 'Loading interactive workspace…'}
             </p>
           </div>

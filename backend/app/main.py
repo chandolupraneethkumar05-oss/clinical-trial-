@@ -19,6 +19,8 @@ from app.api.routes_optimizer import router as optimizer_router
 from app.api.routes_auth import router as auth_router, seed_default_users_if_empty
 from app.api.routes_patient import router as patient_router
 from app.api.routes_audit import router as audit_router
+from app.api.routes_assistant import router as assistant_router
+from app.engine.public_overview import compute_public_overview
 from app.engine.synthetic_data import seed_database_if_empty
 
 # Configure application-level logging
@@ -89,7 +91,7 @@ async def security_headers_middleware(request: Request, call_next):
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     response.headers.setdefault("X-Frame-Options", "DENY")
     response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
-    response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+    response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(self), geolocation=()")
     if request.url.path.startswith(f"{settings.API_V1_STR}/auth") or request.url.path.startswith(
         f"{settings.API_V1_STR}/patient"
     ):
@@ -105,6 +107,7 @@ app.include_router(optimizer_router, prefix=settings.API_V1_STR)
 app.include_router(auth_router, prefix=settings.API_V1_STR)
 app.include_router(patient_router, prefix=settings.API_V1_STR)
 app.include_router(audit_router, prefix=settings.API_V1_STR)
+app.include_router(assistant_router, prefix=settings.API_V1_STR)
 
 
 @app.get("/")
@@ -131,6 +134,7 @@ async def health_check():
 
 
 @app.get("/ready")
+@app.get(f"{settings.API_V1_STR}/system/ready")
 async def readiness_check():
     """
     Readiness probe verifying DuckDB connectivity, required schema initialization, and cohort seeding.
@@ -169,3 +173,19 @@ async def readiness_check():
             "persistent_storage": True,
         },
     }
+
+
+@app.get(f"{settings.API_V1_STR}/system/public-overview")
+async def get_public_overview():
+    """
+    Returns live, non-PII aggregate telemetry computed from DuckDB and mathematical engines
+    for the public Landing Page. Contains no personal records or fabricated static estimates.
+    """
+    try:
+        return compute_public_overview()
+    except Exception:
+        logger.exception("Failed to compute live public overview telemetry.")
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "Live system telemetry is temporarily unavailable."},
+        )

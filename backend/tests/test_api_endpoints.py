@@ -91,20 +91,118 @@ def test_cohort_funnel_simulation_endpoint():
     assert res.get("is_synthetic_data") is True
 
 
-def test_historical_benchmarks_endpoint():
+def test_historical_benchmarks_endpoint(monkeypatch):
     # Verify unauthenticated request rejected with 401
     unauth_resp = client.get("/api/v1/benchmark/historical-trials")
     assert unauth_resp.status_code == 401
 
-    # Verify authenticated doctor request succeeds
+    class _MockResponse:
+        def __init__(self, status_code: int, payload: dict):
+            self.status_code = status_code
+            self._payload = payload
+
+        def json(self):
+            return self._payload
+
+    class _MockAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def get(self, url, params=None):
+            status_filter = (params or {}).get("filter.overallStatus", "")
+            if status_filter == "COMPLETED":
+                return _MockResponse(
+                    200,
+                    {
+                        "studies": [
+                            {
+                                "protocolSection": {
+                                    "identificationModule": {
+                                        "nctId": "NCT01326767",
+                                        "briefTitle": "Live Completed NSCLC Phase 3 Study",
+                                    },
+                                    "statusModule": {"overallStatus": "COMPLETED"},
+                                    "designModule": {
+                                        "phases": ["PHASE3"],
+                                        "enrollmentInfo": {"count": 366, "type": "ACTUAL"},
+                                        "armsInterventionsModule": {},
+                                    },
+                                    "armsInterventionsModule": {"armGroups": [{"label": "A"}, {"label": "B"}]},
+                                    "outcomesModule": {"primaryOutcomes": [{"measure": "OS"}], "secondaryOutcomes": []},
+                                    "eligibilityModule": {"eligibilityCriteria": "ECOG 0-1; eGFR >= 45"},
+                                }
+                            }
+                        ]
+                    },
+                )
+            return _MockResponse(
+                200,
+                {
+                    "studies": [
+                        {
+                            "protocolSection": {
+                                "identificationModule": {
+                                    "nctId": "NCT01379976",
+                                    "briefTitle": "Live Terminated NSCLC Phase 3 Study",
+                                },
+                                "statusModule": {
+                                    "overallStatus": "TERMINATED",
+                                    "whyStopped": "Difficulty of recruitment at study centers",
+                                },
+                                "designModule": {
+                                    "phases": ["PHASE3"],
+                                    "enrollmentInfo": {"count": 107, "type": "ACTUAL"},
+                                },
+                                "armsInterventionsModule": {"armGroups": [{"label": "A"}, {"label": "B"}]},
+                                "outcomesModule": {"primaryOutcomes": [{"measure": "PFS"}], "secondaryOutcomes": [{"measure": "ORR"}]},
+                                "eligibilityModule": {"eligibilityCriteria": "Mandatory biopsy; brain metastasis excluded"},
+                            }
+                        }
+                    ]
+                },
+            )
+
+    import app.api.routes_benchmark as routes_benchmark
+    monkeypatch.setattr(routes_benchmark.httpx, "AsyncClient", _MockAsyncClient)
+
     headers = get_doctor_auth_headers()
     resp = client.get("/api/v1/benchmark/historical-trials", headers=headers)
     assert resp.status_code == 200
     data = resp.json()
-    assert data["benchmark_count"] >= 3
+    assert data["benchmark_count"] == 2
     assert any(t["actual_status"] == "COMPLETED" for t in data["trials"])
     assert any(t["actual_status"] == "TERMINATED" for t in data["trials"])
-    assert data.get("data_source") == "synthetic_benchmark"
+    assert all(t["predicted_pbi"] is None for t in data["trials"])
+    assert data.get("data_source") == "ClinicalTrials.gov API v2"
+
+
+def test_historical_benchmarks_upstream_unavailable_honest_error(monkeypatch):
+    class _FailingAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def get(self, url, params=None):
+            import httpx
+            raise httpx.ConnectError("upstream offline")
+
+    import app.api.routes_benchmark as routes_benchmark
+    monkeypatch.setattr(routes_benchmark.httpx, "AsyncClient", _FailingAsyncClient)
+
+    headers = get_doctor_auth_headers()
+    resp = client.get("/api/v1/benchmark/historical-trials", headers=headers)
+    assert resp.status_code == 503
 
 
 def test_retention_curve_endpoint_get_and_post():
@@ -124,3 +222,20 @@ def test_retention_curve_endpoint_get_and_post():
     post_resp = client.post("/api/v1/cohort/retention-curve?enrolled_size=400&composite_pbi=62.5", headers=headers)
     assert post_resp.status_code == 200
     assert "retention_curve" in post_resp.json()
+
+
+def test_public_overview_endpoint_returns_live_non_pii_aggregates():
+    with TestClient(app) as live_client:
+        resp = live_client.get("/api/v1/system/public-overview")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["is_synthetic_cohort"] is True
+    assert data["cohort_patient_count"] >= 1000
+    assert data["baseline_nsclc"]["eligible_count"] > 0
+    assert data["baseline_nsclc"]["composite_pbi_score"] > 0
+    assert set(data["simulation_scenarios"].keys()) == {"baseline", "scenarioA", "scenarioB"}
+    assert set(data["case_studies"].keys()) == {"nsclc", "breast", "myeloma"}
+    assert "pediatric" not in data["case_studies"]
+    serialized = str(data).lower()
+    assert "password_hash" not in serialized
+    assert "@novartis" not in serialized

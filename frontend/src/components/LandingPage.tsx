@@ -1,18 +1,30 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import type { FC } from 'react';
 import type { AuthUser } from '../types/auth';
+import type { PublicOverviewResponse } from '../types/overview';
+import { apiFetchJson } from '../lib/api';
 import { UserMenu } from './UserMenu';
 import { KineticSculptureCanvas } from './KineticSculptureCanvas';
 import { 
   ArrowRight, 
   ShieldCheck, 
-  ChevronRight, 
   Play, 
+  Pause,
   Award, 
   X,
   FileCheck,
   Sparkles,
-  Lock
+  Lock,
+  Upload,
+  Sliders,
+  UserCheck,
+  CheckCircle2,
+  ExternalLink,
+  Activity,
+  Layers,
+  FlaskConical,
+  Zap,
+  Dna
 } from 'lucide-react';
 import { 
   ResponsiveContainer, 
@@ -53,12 +65,80 @@ export const LandingPage: FC<LandingPageProps> = ({
   // Interactive telehealth slider for Schedule of Assessments
   const [telehealthPct, setTelehealthPct] = useState<number>(30);
 
-  // Video / Product Tour Modal state
+  // Interactive Visual Tour & Testing Walkthrough state
   const [isTourOpen, setIsTourOpen] = useState<boolean>(false);
-  const [tourStep, setTourStep] = useState<number>(1);
+  const [tourStep, setTourStep] = useState<number>(1); // 1: Ingest PDF, 2: Studio & Heatmap, 3: What-If Console, 4: Patient Portal
+  const [tourAutoPlay, setTourAutoPlay] = useState<boolean>(true);
+  const [tourProgress, setTourProgress] = useState<number>(0); // 0 to 100%
 
-  // Active Case Study tab state
-  const [activeCaseStudy, setActiveCaseStudy] = useState<'nsclc' | 'breast' | 'myeloma' | 'pediatric'>('nsclc');
+  // Auto-advance visual tour effect when modal is active
+  useEffect(() => {
+    let interval: ReturnType<typeof setInterval> | null = null;
+    if (isTourOpen && tourAutoPlay) {
+      interval = setInterval(() => {
+        setTourProgress((prev) => {
+          if (prev >= 100) {
+            setTourStep((s) => (s >= 4 ? 1 : s + 1));
+            return 0;
+          }
+          return prev + 1.25; // ~8 seconds per step
+        });
+      }, 100);
+    }
+    return () => {
+      if (interval) clearInterval(interval);
+    };
+  }, [isTourOpen, tourAutoPlay]);
+
+  const handleOpenTour = (step = 1) => {
+    setTourStep(step);
+    setTourProgress(0);
+    setTourAutoPlay(true);
+    setIsTourOpen(true);
+  };
+
+  // Active Case Study tab state (maps cleanly to live backend protocols)
+  const [activeCaseStudy, setActiveCaseStudy] = useState<'nsclc' | 'breast' | 'myeloma'>('nsclc');
+
+  // Live public overview telemetry from DuckDB & mathematical scoring engines
+  const [overview, setOverview] = useState<PublicOverviewResponse | null>(null);
+  const [overviewLoading, setOverviewLoading] = useState<boolean>(true);
+  const [overviewError, setOverviewError] = useState<string | null>(null);
+  const [overviewReloadNonce, setOverviewReloadNonce] = useState<number>(0);
+
+  const handleRetryOverview = useCallback(() => {
+    setOverviewLoading(true);
+    setOverviewError(null);
+    setOverviewReloadNonce((n) => n + 1);
+  }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+
+    async function fetchOverview() {
+      try {
+        const data = await apiFetchJson<PublicOverviewResponse>('/api/v1/system/public-overview', {
+          signal: controller.signal,
+        });
+        if (controller.signal.aborted) return;
+        setOverview(data);
+        setOverviewError(null);
+      } catch (err: unknown) {
+        if ((err as Error)?.name === 'AbortError' || controller.signal.aborted) return;
+        setOverview(null);
+        setOverviewError(
+          err instanceof Error ? err.message : 'Unable to reach live backend overview telemetry.'
+        );
+      } finally {
+        if (!controller.signal.aborted) {
+          setOverviewLoading(false);
+        }
+      }
+    }
+
+    fetchOverview();
+    return () => controller.abort();
+  }, [overviewReloadNonce]);
 
   // Scroll tracking effect
   useEffect(() => {
@@ -71,122 +151,12 @@ export const LandingPage: FC<LandingPageProps> = ({
 
   const isLightHeader = scrollY > 580;
 
-  // Dynamic retention datasets based on active scenario
-  const retentionScenarios = {
-    baseline: {
-      name: 'Standard Phase III Protocol (Baseline)',
-      color: '#e05a47',
-      retentionAt52: 49,
-      patientsSaved: 0,
-      capitalSaved: '$0',
-      description: 'Rigid renal clearance (eGFR < 60), mandatory week 12 core biopsy, and 14 on-site clinic visits.',
-      data: [
-        { week: 0, retained: 100 },
-        { week: 4, retained: 93 },
-        { week: 8, retained: 86 },
-        { week: 12, retained: 71 }, // Biopsy spike
-        { week: 16, retained: 67 },
-        { week: 24, retained: 61 },
-        { week: 36, retained: 55 },
-        { week: 48, retained: 51 },
-        { week: 52, retained: 49 },
-      ]
-    },
-    scenarioA: {
-      name: 'Scenario A: Relaxed eGFR (50 mL/min)',
-      color: '#d97706',
-      retentionAt52: 63,
-      patientsSaved: 142,
-      capitalSaved: '$1.4M',
-      description: 'Broadens kidney threshold from 60 to 50 mL/min based on real-world pharmacokinetic tolerability.',
-      data: [
-        { week: 0, retained: 100 },
-        { week: 4, retained: 96 },
-        { week: 8, retained: 91 },
-        { week: 12, retained: 80 },
-        { week: 16, retained: 77 },
-        { week: 24, retained: 72 },
-        { week: 36, retained: 68 },
-        { week: 48, retained: 65 },
-        { week: 52, retained: 63 },
-      ]
-    },
-    scenarioB: {
-      name: 'Scenario B: Decentralized Labs & Optional Biopsy',
-      color: '#2d6a4f',
-      retentionAt52: 76,
-      patientsSaved: 268,
-      capitalSaved: '$2.8M',
-      description: 'Converts 4 routine safety visits to local telehealth/phlebotomy and makes week 12 biopsy optional.',
-      data: [
-        { week: 0, retained: 100 },
-        { week: 4, retained: 98 },
-        { week: 8, retained: 95 },
-        { week: 12, retained: 89 },
-        { week: 16, retained: 87 },
-        { week: 24, retained: 83 },
-        { week: 36, retained: 80 },
-        { week: 48, retained: 78 },
-        { week: 52, retained: 76 },
-      ]
-    }
-  };
-
-  const activeData = retentionScenarios[activeScenario];
-
-  // Case study data dictionary (Synthetic simulation models inspired by public protocols)
-  const caseStudies = {
-    nsclc: {
-      title: 'Phase III Non-Small Cell Lung Cancer (NSCLC)',
-      sponsor: 'Public Protocol Reference (EGFR / TKI Paradigm)',
-      target: 'EGFR Exon 20 Insertion / TKI Combination (Synthetic Simulation)',
-      challenge: 'Over-stringent eGFR cutoffs (60 mL/min) and dual contrast CT restaging at Weeks 6 and 12 caused an initial 91.2% screen failure rate in the synthetic cohort.',
-      result: 'ProtocolShield simulated relaxing eGFR to 50 mL/min and staggering the second imaging window by 14 days.',
-      metrics: [
-        { label: 'Screen Failures Recovered (Model)', value: '+34%' },
-        { label: 'Accrual Time Shortened (Est.)', value: '4.2 Months' },
-        { label: 'Avoided Trial Cost (Model)', value: '$2.4M' }
-      ]
-    },
-    breast: {
-      title: 'Phase II Triple-Negative Breast Cancer',
-      sponsor: 'Public Protocol Reference (Neoadjuvant ADC Paradigm)',
-      target: 'ADC + Immunotherapy Neoadjuvant (Synthetic Simulation)',
-      challenge: 'Serial 12-hour PK blood draws on Cycle 1 Day 1 and Cycle 2 Day 1 resulted in 42% early patient consent revocations in simulation.',
-      result: 'Algorithmic burden analysis proved population PK modeling could drop 4 of the 8 serial draws without statistical loss.',
-      metrics: [
-        { label: 'Clinic Dwell Reduced', value: '-5.5 Hours' },
-        { label: 'Simulated Dropout Rate', value: '42% → 14%' },
-        { label: 'Patient Burden Index', value: '78 → 44' }
-      ]
-    },
-    myeloma: {
-      title: 'Phase III Relapsed Multiple Myeloma',
-      sponsor: 'Public Protocol Reference (Bispecific T-Cell Paradigm)',
-      target: 'BCMA Bispecific T-Cell Engager (Synthetic Simulation)',
-      challenge: 'Mandatory on-site hospitalization for 48 hours during step-up dosing severely bottlenecked site recruitment capacity.',
-      result: 'ProtocolShield modeled safety biomarkers to identify low-risk cytokine release profiles eligible for community outpatient monitoring.',
-      metrics: [
-        { label: 'Site Activation Speed (Model)', value: '2.8x Faster' },
-        { label: 'Patient Travel Burden', value: '-62%' },
-        { label: 'Simulated Cohort Enrollment', value: '100% on schedule' }
-      ]
-    },
-    pediatric: {
-      title: 'Rare Pediatric Solid Tumor Model',
-      sponsor: 'Rare Disease Protocol Reference',
-      target: 'NTRK Fusion Targeted Inhibitor (Synthetic Simulation)',
-      challenge: 'Families faced an average 180-mile round-trip travel every 2 weeks, leading to devastating early protocol withdrawals.',
-      result: 'Simulated decentralized mobile phlebotomy and local community pharmacy delivery with verified SHA-256 audit trail.',
-      metrics: [
-        { label: 'Family Travel Mileage', value: '-78%' },
-        { label: 'Study Retention at 1 Yr', value: '88%' },
-        { label: 'Audit Trail Verification', value: 'SHA-256 Verified' }
-      ]
-    }
-  };
-
-  const activeStudy = caseStudies[activeCaseStudy];
+  const cohortCount = overview?.cohort_patient_count ?? null;
+  const cohortLabel = cohortCount != null ? cohortCount.toLocaleString() : '—';
+  const baselineNsclc = overview?.baseline_nsclc ?? null;
+  const scenarios = overview?.simulation_scenarios ?? null;
+  const activeData = scenarios ? scenarios[activeScenario] : null;
+  const activeStudy = overview?.case_studies ? overview.case_studies[activeCaseStudy] : null;
 
   return (
     <div className="relative min-h-screen bg-charcoal-950 text-charcoal-900 font-sans selection:bg-terracotta-100 selection:text-terracotta-700 antialiased">
@@ -248,9 +218,9 @@ export const LandingPage: FC<LandingPageProps> = ({
 
 
       {/* ─────────────────────────────────────────────────────────────
-          CARD 1: HERO SECTION (Pinned Sticky Base Layer, z-0)
+          CARD 1: HERO SECTION (Clean non-overlapping flow layout, z-0)
          ───────────────────────────────────────────────────────────── */}
-      <section className="sticky top-0 h-screen min-h-[720px] max-h-[960px] w-full flex flex-col justify-between overflow-hidden z-0 bg-charcoal-950 text-white">
+      <section className="relative min-h-[min(100vh,860px)] w-full flex flex-col justify-between overflow-x-hidden z-0 bg-charcoal-950 text-white">
         
         {/* Background Photo with Parallax Fade & Gradient Overlay */}
         <div 
@@ -288,14 +258,18 @@ export const LandingPage: FC<LandingPageProps> = ({
               </h1>
 
               <p className="text-sm sm:text-base text-slate-300 max-w-2xl leading-relaxed font-normal">
-                Test study protocols against <strong className="text-white font-semibold">10,000 synthetic patient records</strong>. Find recruitment bottlenecks, avoid unnecessary patient burden, and reduce trial delays.
+                Test study protocols against{' '}
+                <strong className="text-white font-semibold">
+                  {cohortCount != null ? `${cohortLabel} synthetic patient records` : 'live DuckDB synthetic patient records'}
+                </strong>
+                . Find recruitment bottlenecks, avoid unnecessary patient burden, and reduce trial delays.
               </p>
 
               {/* Glanceable Capability Chips */}
               <div className="flex flex-wrap items-center gap-2 pt-1 font-mono text-[11px] text-slate-300">
                 <span className="px-2.5 py-1 rounded-lg bg-white/10 border border-white/15 backdrop-blur-xs flex items-center space-x-1.5">
                   <span className="h-1.5 w-1.5 rounded-full bg-terracotta-400" />
-                  <span>10,000 Synthetic Cohort (Demo)</span>
+                  <span>{cohortCount != null ? `${cohortLabel} Synthetic Cohort (Live DB)` : 'Synthetic Cohort (Live DB)'}</span>
                 </span>
                 <span className="px-2.5 py-1 rounded-lg bg-white/10 border border-white/15 backdrop-blur-xs flex items-center space-x-1.5">
                   <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
@@ -321,13 +295,13 @@ export const LandingPage: FC<LandingPageProps> = ({
                 </button>
 
                 <button
-                  onClick={() => setIsTourOpen(true)}
+                  onClick={() => handleOpenTour(1)}
                   className="inline-flex items-center space-x-2 px-5 py-3.5 rounded-full text-sm font-medium bg-white/10 hover:bg-white/15 text-white border border-white/20 backdrop-blur-xs transition-colors cursor-pointer group"
                 >
                   <div className="h-5 w-5 rounded-full bg-white/20 flex items-center justify-center group-hover:scale-110 transition-transform">
                     <Play className="h-2.5 w-2.5 fill-current ml-0.5 text-white" />
                   </div>
-                  <span>Watch 45s Product Tour</span>
+                  <span>Visual Tour & Testing Guide</span>
                 </button>
               </div>
             </div>
@@ -335,7 +309,7 @@ export const LandingPage: FC<LandingPageProps> = ({
             {/* Right: Floating Glass Preview Card */}
             <div className="lg:col-span-4 flex justify-end">
               <div 
-                onClick={() => setIsTourOpen(true)}
+                onClick={() => handleOpenTour(1)}
                 className="bg-charcoal-900/90 backdrop-blur-md border border-white/15 rounded-3xl p-4.5 max-w-xs sm:max-w-sm shadow-2xl space-y-3.5 cursor-pointer hover:border-terracotta-400/50 hover:scale-[1.02] transition-all duration-300 group"
               >
                 <div className="relative rounded-2xl overflow-hidden aspect-video bg-charcoal-950 flex items-center justify-center">
@@ -354,24 +328,24 @@ export const LandingPage: FC<LandingPageProps> = ({
                   
                   <div className="absolute top-2.5 left-2.5 flex items-center space-x-1.5 bg-black/60 backdrop-blur-xs text-[10px] font-mono text-white px-2 py-0.5 rounded-full border border-white/10">
                     <span className="h-1.5 w-1.5 rounded-full bg-terracotta-500 animate-pulse" />
-                    <span>SIMULATION BENCHMARK</span>
+                    <span>VISUAL TESTING GUIDE</span>
                   </div>
 
                   <span className="absolute bottom-2.5 right-2.5 text-[10px] font-mono bg-black/70 text-white px-2 py-0.5 rounded-md">
-                    0:45 TOUR
+                    PAGE WALKTHROUGH
                   </span>
                 </div>
 
                 <div>
                   <div className="flex items-center justify-between text-[11px] font-mono text-terracotta-300">
-                    <span>SIMULATION BENCHMARK</span>
-                    <span>-34% ATTRITION</span>
+                    <span>STEP-BY-STEP TEST GUIDE</span>
+                    <span>4 KEY WORKFLOWS</span>
                   </div>
                   <h4 className="font-serif font-bold text-sm text-white mt-1 leading-snug group-hover:text-terracotta-200 transition-colors">
-                    Phase III Lung Cancer: Restoring Feasibility
+                    How to Ingest Protocols & Test This Platform
                   </h4>
                   <p className="text-[11px] text-slate-300 mt-1 leading-relaxed">
-                    Click to view how adjusting kidney thresholds and visit schedules recovered 142 excluded patients in synthetic simulation.
+                    Visual guide through PDF ingestion, patient burden heatmap scoring, What-If sensitivity, and patient eligibility screening.
                   </p>
                 </div>
               </div>
@@ -448,7 +422,11 @@ export const LandingPage: FC<LandingPageProps> = ({
                 </div>
               </div>
               <div className="mt-6 pt-4 border-t border-linen-200 flex items-center justify-between text-[11px] font-mono text-terracotta-600 font-semibold">
-                <span>Simulated Screen Failure</span>
+                <span>
+                  {baselineNsclc
+                    ? `${baselineNsclc.screen_failure_rate}% Screen Failure (NSCLC Baseline)`
+                    : 'Simulated Screen Failure'}
+                </span>
                 <ArrowRight className="h-3.5 w-3.5" />
               </div>
             </div>
@@ -459,10 +437,10 @@ export const LandingPage: FC<LandingPageProps> = ({
                   02 • TRAVEL AND DISTANCE
                 </span>
                 <h3 className="font-serif font-bold text-lg text-charcoal-900 leading-snug">
-                  31.6 Miles Round-Trip
+                  {overview ? `${overview.cohort_averages.distance_miles} Miles Avg Travel` : 'Geographic Travel Barrier'}
                 </h3>
                 <p className="text-xs text-charcoal-600 mt-2.5 leading-relaxed">
-                  Suburban and rural patients face significant travel hours and caregiver reliance, driving accelerated study dropouts (Tufts CSDD benchmark).
+                  Mean distance to oncology trial centers across the loaded cohort drives missed appointments and early discontinuation.
                 </p>
                 <div className="mt-3">
                   <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200">
@@ -471,7 +449,7 @@ export const LandingPage: FC<LandingPageProps> = ({
                 </div>
               </div>
               <div className="mt-6 pt-4 border-t border-linen-200 flex items-center justify-between text-[11px] font-mono text-terracotta-600 font-semibold">
-                <span>Remote Dropout Risk</span>
+                <span>Live DuckDB Cohort Average</span>
                 <ArrowRight className="h-3.5 w-3.5" />
               </div>
             </div>
@@ -482,10 +460,10 @@ export const LandingPage: FC<LandingPageProps> = ({
                   03 • LONG CLINIC VISITS
                 </span>
                 <h3 className="font-serif font-bold text-lg text-charcoal-900 leading-snug">
-                  6.5 Hours Clinic Dwell
+                  {baselineNsclc ? `${baselineNsclc.avg_visit_hours} Hours Avg Visit` : 'High Clinic Dwell'}
                 </h3>
                 <p className="text-xs text-charcoal-600 mt-2.5 leading-relaxed">
-                  Stacking IV infusions, contrast CTs, and biopsies onto single visits creates high patient fatigue and dropouts.
+                  Stacking IV infusions, contrast CTs, and biopsies onto single visits creates high patient fatigue ({baselineNsclc ? `${baselineNsclc.total_clinic_hours}h total across ${baselineNsclc.total_visits} visits` : 'measured per protocol'}).
                 </p>
                 <div className="mt-3">
                   <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-terracotta-50 text-terracotta-700 border border-terracotta-200">
@@ -494,7 +472,7 @@ export const LandingPage: FC<LandingPageProps> = ({
                 </div>
               </div>
               <div className="mt-6 pt-4 border-t border-linen-200 flex items-center justify-between text-[11px] font-mono text-terracotta-600 font-semibold">
-                <span>Simulated Visit Clustering Risk</span>
+                <span>Computed SoA Dwell Burden</span>
                 <ArrowRight className="h-3.5 w-3.5" />
               </div>
             </div>
@@ -502,22 +480,22 @@ export const LandingPage: FC<LandingPageProps> = ({
             <div className="bg-white rounded-3xl border border-linen-300 p-6 shadow-xs flex flex-col justify-between hover:shadow-lg hover:-translate-y-1 hover:border-terracotta-300 transition-all duration-300">
               <div>
                 <span className="text-[10px] font-mono font-bold uppercase tracking-wider text-charcoal-400 block mb-2">
-                  04 • COST OF DELAY
+                  04 • PROTOCOL BURDEN INDEX
                 </span>
                 <h3 className="font-serif font-bold text-lg text-charcoal-900 leading-snug">
-                  $600k – $2.0M / Month
+                  {baselineNsclc ? `${baselineNsclc.composite_pbi_score} / 100 PBI Score` : 'Tufts CSDD PBI Model'}
                 </h3>
                 <p className="text-xs text-charcoal-600 mt-2.5 leading-relaxed">
-                  Each delayed month adds significant operational expense and postpones life-saving therapy access (Tufts CSDD benchmark).
+                  Composite Patient Burden Index combines temporal dwell, procedure invasiveness, and fasting/visit cadence without guessing financial cost.
                 </p>
                 <div className="mt-3">
                   <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-sage-50 text-sage-800 border border-sage-200">
-                    Trial Delay Expense
+                    {baselineNsclc ? `${baselineNsclc.attrition_risk_tier} Attrition Tier` : 'Deterministic Risk Tier'}
                   </span>
                 </div>
               </div>
               <div className="mt-6 pt-4 border-t border-linen-200 flex items-center justify-between text-[11px] font-mono text-terracotta-600 font-semibold">
-                <span>Modeled Savings Potential</span>
+                <span>Sponsor Burn Configurable in Optimizer</span>
                 <ArrowRight className="h-3.5 w-3.5" />
               </div>
             </div>
@@ -566,10 +544,12 @@ export const LandingPage: FC<LandingPageProps> = ({
                         </span>
                       </div>
                       <p className="text-[11px] text-charcoal-500 mt-1 pl-4">
-                        eGFR &lt; 60 mL/min • Mandatory Wk 12 Biopsy • 14 On-Site Visits
+                        {scenarios?.baseline.description ?? 'eGFR < 60 mL/min • Baseline Visits & Biopsy Schedule'}
                       </p>
                     </div>
-                    <span className="text-xs font-mono font-bold text-terracotta-700">49% Retained</span>
+                    <span className="text-xs font-mono font-bold text-terracotta-700">
+                      {scenarios ? `${scenarios.baseline.retentionAt52}% Retained` : '…'}
+                    </span>
                   </button>
 
                   <button
@@ -588,10 +568,12 @@ export const LandingPage: FC<LandingPageProps> = ({
                         </span>
                       </div>
                       <p className="text-[11px] text-charcoal-500 mt-1 pl-4">
-                        eGFR &lt; 50 mL/min • Staggered CT Imaging Window
+                        {scenarios?.scenarioA.description ?? 'Relaxes renal eligibility cutoff against DuckDB cohort'}
                       </p>
                     </div>
-                    <span className="text-xs font-mono font-bold text-amber-700">63% Retained (+14%)</span>
+                    <span className="text-xs font-mono font-bold text-amber-700">
+                      {scenarios ? `${scenarios.scenarioA.retentionAt52}% Retained (+${scenarios.scenarioA.patientsGained} Elig.)` : '…'}
+                    </span>
                   </button>
 
                   <button
@@ -610,10 +592,14 @@ export const LandingPage: FC<LandingPageProps> = ({
                         </span>
                       </div>
                       <p className="text-[11px] text-charcoal-500 mt-1 pl-4">
-                        Local Phlebotomy • Telehealth Check-ins • Optional Biopsy
+                        {scenarios?.scenarioB.description ?? 'Telehealth visits, mobile PK, and optional re-biopsy'}
                       </p>
                     </div>
-                    <span className="text-xs font-mono font-bold text-sage-800">76% Retained (+27%)</span>
+                    <span className="text-xs font-mono font-bold text-sage-800">
+                      {scenarios
+                        ? `${scenarios.scenarioB.retentionAt52}% Retained (+${(scenarios.scenarioB.retentionAt52 - scenarios.baseline.retentionAt52).toFixed(1)}%)`
+                        : '…'}
+                    </span>
                   </button>
                 </div>
 
@@ -634,75 +620,108 @@ export const LandingPage: FC<LandingPageProps> = ({
                 <div className="flex flex-wrap items-center justify-between gap-3 pb-4 border-b border-linen-200">
                   <div>
                     <span className="text-[10px] font-mono font-bold uppercase tracking-wider text-charcoal-400 block">
-                      LONGITUDINAL ATTRITION TRAJECTORY
+                      LIVE LONGITUDINAL ATTRITION TRAJECTORY
                     </span>
                     <h4 className="font-serif font-bold text-base text-charcoal-900 mt-0.5">
-                      {activeData.name}
+                      {activeData ? activeData.name : overviewLoading ? 'Computing live scenario trajectory…' : 'Live simulation unavailable'}
                     </h4>
                   </div>
                   <div className="flex items-center space-x-2">
                     <span className="text-xs font-mono font-bold bg-white px-3 py-1 rounded-full border border-linen-300 text-charcoal-800">
-                      Week 0 → 52
+                      Week 0 → {baselineNsclc?.study_duration_weeks ?? 52}
                     </span>
                   </div>
                 </div>
 
+                {overviewError && (
+                  <div className="bg-red-50 border border-red-200 rounded-xl p-3 flex items-center justify-between text-xs text-red-700 font-mono">
+                    <span>Live backend telemetry offline: {overviewError}</span>
+                    <button
+                      onClick={handleRetryOverview}
+                      className="px-2.5 py-1 rounded-lg bg-red-600 text-white font-semibold hover:bg-red-700 cursor-pointer"
+                    >
+                      Retry
+                    </button>
+                  </div>
+                )}
+
                 {/* Dynamic Metric Ticker Strip */}
                 <div className="grid grid-cols-3 gap-3">
                   <div className="bg-white p-3.5 rounded-2xl border border-linen-200">
-                    <span className="text-[10px] font-mono text-charcoal-400 block">52-WK RETENTION (MODEL)</span>
+                    <span className="text-[10px] font-mono text-charcoal-400 block">WK {baselineNsclc?.study_duration_weeks ?? 52} RETENTION</span>
                     <span className="font-serif text-2xl font-bold text-charcoal-900">
-                      {activeData.retentionAt52}%
+                      {activeData ? `${activeData.retentionAt52}%` : '—'}
                     </span>
-                    <span className="text-[10px] text-charcoal-500 block mt-0.5">Active Cohort</span>
+                    <span className="text-[10px] text-charcoal-500 block mt-0.5">Modeled Cohort</span>
                   </div>
 
                   <div className="bg-white p-3.5 rounded-2xl border border-linen-200">
-                    <span className="text-[10px] font-mono text-charcoal-400 block">PATIENTS SAVED (SIMULATION)</span>
+                    <span className="text-[10px] font-mono text-charcoal-400 block">ELIGIBLE CANDIDATES</span>
                     <span className="font-serif text-2xl font-bold text-terracotta-600">
-                      +{activeData.patientsSaved}
+                      {activeData ? activeData.eligibleCount.toLocaleString() : '—'}
                     </span>
-                    <span className="text-[10px] text-charcoal-500 block mt-0.5">Enrolled Volunteers</span>
+                    <span className="text-[10px] text-charcoal-500 block mt-0.5">
+                      {activeData && activeData.patientsGained > 0
+                        ? `+${activeData.patientsGained.toLocaleString()} vs Baseline`
+                        : 'DuckDB Matched'}
+                    </span>
                   </div>
 
                   <div className="bg-white p-3.5 rounded-2xl border border-linen-200">
-                    <span className="text-[10px] font-mono text-charcoal-400 block">ESTIMATED COST SAVED</span>
+                    <span className="text-[10px] font-mono text-charcoal-400 block">COMPOSITE PBI SCORE</span>
                     <span className="font-serif text-2xl font-bold text-sage-700">
-                      {activeData.capitalSaved}
+                      {activeData ? `${activeData.compositePbi} / 100` : '—'}
                     </span>
-                    <span className="text-[10px] text-charcoal-500 block mt-0.5">Delay Penalties (Tufts Model)</span>
+                    <span className="text-[10px] text-charcoal-500 block mt-0.5">
+                      {activeData?.hoursReduced
+                        ? `-${activeData.hoursReduced}h dwell vs Baseline`
+                        : 'Tufts CSDD Index'}
+                    </span>
                   </div>
                 </div>
 
                 {/* Area Chart */}
                 <div className="h-64 sm:h-72 w-full pt-2">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <AreaChart data={activeData.data} margin={{ top: 10, right: 10, left: -25, bottom: 0 }}>
-                      <defs>
-                        <linearGradient id="landingRetained" x1="0" y1="0" x2="0" y2="1">
-                          <stop offset="5%" stopColor={activeData.color} stopOpacity={0.3} />
-                          <stop offset="95%" stopColor={activeData.color} stopOpacity={0.0} />
-                        </linearGradient>
-                      </defs>
-                      <CartesianGrid strokeDasharray="3 3" stroke="#ebe6dc" />
-                      <XAxis dataKey="week" stroke="#948a7e" tick={{ fontSize: 10 }} tickFormatter={(w) => `Wk ${w}`} />
-                      <YAxis domain={[0, 100]} stroke="#948a7e" tick={{ fontSize: 10 }} tickFormatter={(v) => `${v}%`} />
-                      <Tooltip 
-                        contentStyle={{ backgroundColor: '#191b1a', borderColor: '#383a3d', borderRadius: '12px', color: '#fff', fontSize: '11px' }}
-                        formatter={(val: any) => [`${val}% retained`, 'Active Trial Cohort']}
-                        labelFormatter={(label) => `Study Week ${label}`}
-                      />
-                      <ReferenceLine x={12} stroke="#c84b31" strokeDasharray="3 3" label={{ value: 'Week 12 Biopsy Spike', fill: '#c84b31', fontSize: 10 }} />
-                      <Area type="monotone" dataKey="retained" stroke={activeData.color} strokeWidth={2.8} fill="url(#landingRetained)" />
-                    </AreaChart>
-                  </ResponsiveContainer>
+                  {activeData ? (
+                    <ResponsiveContainer width="100%" height="100%">
+                      <AreaChart data={activeData.data} margin={{ top: 10, right: 10, left: -25, bottom: 0 }}>
+                        <defs>
+                          <linearGradient id="landingRetained" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="5%" stopColor={activeData.color} stopOpacity={0.3} />
+                            <stop offset="95%" stopColor={activeData.color} stopOpacity={0.0} />
+                          </linearGradient>
+                        </defs>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#ebe6dc" />
+                        <XAxis dataKey="week" stroke="#948a7e" tick={{ fontSize: 10 }} tickFormatter={(w) => `Wk ${w}`} />
+                        <YAxis domain={[0, 100]} stroke="#948a7e" tick={{ fontSize: 10 }} tickFormatter={(v) => `${v}%`} />
+                        <Tooltip 
+                          contentStyle={{ backgroundColor: '#191b1a', borderColor: '#383a3d', borderRadius: '12px', color: '#fff', fontSize: '11px' }}
+                          formatter={(val: any) => [`${val}% retained`, 'Active Trial Cohort']}
+                          labelFormatter={(label) => `Study Week ${label}`}
+                        />
+                        <ReferenceLine
+                          x={baselineNsclc?.clause_diagnostics.biopsy.peak_week ?? 12}
+                          stroke="#c84b31"
+                          strokeDasharray="3 3"
+                          label={{ value: 'Biopsy Assessment', fill: '#c84b31', fontSize: 10 }}
+                        />
+                        <Area type="monotone" dataKey="retained" stroke={activeData.color} strokeWidth={2.8} fill="url(#landingRetained)" />
+                      </AreaChart>
+                    </ResponsiveContainer>
+                  ) : (
+                    <div className="h-full w-full flex items-center justify-center rounded-2xl border border-dashed border-linen-300 text-xs font-mono text-charcoal-500">
+                      {overviewLoading ? 'Running live DuckDB cohort simulation…' : 'Live chart unavailable until backend reconnects.'}
+                    </div>
+                  )}
                 </div>
 
                 <div className="bg-white p-3.5 rounded-2xl border border-linen-200 text-xs text-charcoal-600 flex items-start space-x-2.5">
                   <Sparkles className="h-4 w-4 text-terracotta-600 shrink-0 mt-0.5" />
                   <p className="leading-relaxed">
                     <strong className="text-charcoal-900 font-semibold">Active Insight: </strong>
-                    {activeData.description} Notice how eliminating the Week 12 invasive biopsy bottleneck flattens the attrition cliff.
+                    {activeData
+                      ? `${activeData.description} Compare how reducing protocol burden impacts modeled retention over ${baselineNsclc?.study_duration_weeks ?? 52} weeks.`
+                      : 'Select any simulation scenario above to inspect live DuckDB eligibility yield and modeled retention.'}
                   </p>
                 </div>
 
@@ -824,20 +843,41 @@ export const LandingPage: FC<LandingPageProps> = ({
                   <div className="bg-white p-2.5 rounded-xl border border-linen-300 text-[10px] text-charcoal-700 space-y-1">
                     <div className="flex items-center justify-between font-bold text-terracotta-700">
                       <span>
-                        {selectedClause === 'egfr' && '⚠️ eGFR < 60 mL/min Exclusion'}
-                        {selectedClause === 'ecog' && '⚠️ ECOG > 1 Performance Filter'}
-                        {selectedClause === 'biopsy' && '⚠️ Week 12 Invasive Biopsy'}
+                        {selectedClause === 'egfr' &&
+                          `⚠️ ${baselineNsclc?.clause_diagnostics.egfr.threshold ?? 'eGFR < 60 mL/min'} Exclusion`}
+                        {selectedClause === 'ecog' &&
+                          `⚠️ ${baselineNsclc?.clause_diagnostics.ecog.threshold ?? 'ECOG > 1'} Performance Filter`}
+                        {selectedClause === 'biopsy' &&
+                          `⚠️ Week ${baselineNsclc?.clause_diagnostics.biopsy.peak_week ?? 12} Invasive Biopsy`}
                       </span>
                       <span>
-                        {selectedClause === 'egfr' && '41.2% Excluded'}
-                        {selectedClause === 'ecog' && '23.0% Excluded'}
-                        {selectedClause === 'biopsy' && '42% Drop Hazard'}
+                        {selectedClause === 'egfr' &&
+                          (baselineNsclc
+                            ? `+${baselineNsclc.clause_diagnostics.egfr.recoverable_candidates} Recoverable`
+                            : '…')}
+                        {selectedClause === 'ecog' &&
+                          (baselineNsclc
+                            ? `+${baselineNsclc.clause_diagnostics.ecog.recoverable_candidates} Recoverable`
+                            : '…')}
+                        {selectedClause === 'biopsy' &&
+                          (baselineNsclc
+                            ? `-${baselineNsclc.clause_diagnostics.biopsy.pbi_reduction_if_optional} PBI Impact`
+                            : '…')}
                       </span>
                     </div>
                     <p className="text-charcoal-500 font-sans">
-                      {selectedClause === 'egfr' && 'Primary recruitment bottleneck. 412 of 1,000 screened candidates rejected for borderline creatinine.'}
-                      {selectedClause === 'ecog' && 'Excludes ambulatory patients with minimal cancer-related performance fatigue.'}
-                      {selectedClause === 'biopsy' && 'Sharpest attrition inflection in 52-week survival curve.'}
+                      {selectedClause === 'egfr' &&
+                        (baselineNsclc
+                          ? `Lowering renal gate by 10 mL/min expands eligible NSCLC count from ${baselineNsclc.eligible_count.toLocaleString()} to ${baselineNsclc.clause_diagnostics.egfr.relaxed_eligible_count.toLocaleString()} in DuckDB.`
+                          : 'Queries live DuckDB renal cutoffs across the loaded oncology cohort.')}
+                      {selectedClause === 'ecog' &&
+                        (baselineNsclc
+                          ? `Allowing next ECOG tier expands eligible NSCLC count from ${baselineNsclc.eligible_count.toLocaleString()} to ${baselineNsclc.clause_diagnostics.ecog.relaxed_eligible_count.toLocaleString()}.`
+                          : 'Evaluates ECOG performance sensitivity against live patient profiles.')}
+                      {selectedClause === 'biopsy' &&
+                        (baselineNsclc
+                          ? `Replacing mandatory on-treatment biopsy with ctDNA + hybrid labs saves ${baselineNsclc.clause_diagnostics.biopsy.hours_saved_if_hybrid} clinic hours.`
+                          : 'Models burden and dropout hazard spikes across scheduled study weeks.')}
                     </p>
                   </div>
                 </div>
@@ -888,24 +928,36 @@ export const LandingPage: FC<LandingPageProps> = ({
                   <div className="grid grid-cols-4 gap-1 text-center font-mono text-[9px] pt-1">
                     <div className="bg-white p-1.5 rounded border border-linen-200">
                       <span className="text-charcoal-400 block">SCRN</span>
-                      <span className="font-bold text-charcoal-900">3.5h</span>
+                      <span className="font-bold text-charcoal-900">
+                        {baselineNsclc?.visit_previews?.[0] ? `${baselineNsclc.visit_previews[0].hours}h` : '—'}
+                      </span>
                     </div>
                     <div className="bg-white p-1.5 rounded border border-linen-200">
                       <span className="text-charcoal-400 block">C1D1</span>
-                      <span className="font-bold text-amber-600">6.2h</span>
+                      <span className="font-bold text-amber-600">
+                        {baselineNsclc?.visit_previews?.[1] ? `${baselineNsclc.visit_previews[1].hours}h` : '—'}
+                      </span>
                     </div>
                     <div className="bg-white p-1.5 rounded border border-linen-200">
-                      <span className="text-charcoal-400 block">WK 12</span>
-                      <span className="font-bold text-terracotta-600">7.8h</span>
+                      <span className="text-charcoal-400 block">PEAK WK</span>
+                      <span className="font-bold text-terracotta-600">
+                        {baselineNsclc?.peak_visit_hours != null ? `${baselineNsclc.peak_visit_hours}h` : '—'}
+                      </span>
                     </div>
                     <div className="bg-sage-100 p-1.5 rounded border border-sage-300">
                       <span className="text-sage-800 block">DWELL</span>
-                      <span className="font-bold text-sage-900">{Math.round(78.5 - telehealthPct * 0.6)}h</span>
+                      <span className="font-bold text-sage-900">
+                        {baselineNsclc
+                          ? `${Math.max(10, Math.round(baselineNsclc.total_clinic_hours * (1 - telehealthPct / 200)))}h`
+                          : '—'}
+                      </span>
                     </div>
                   </div>
 
                   <p className="text-[10px] text-charcoal-500 font-sans mt-1">
-                    Migrating 3 safety checks to local providers cuts patient dwell by {Math.round(telehealthPct * 0.6)} hours.
+                    {baselineNsclc
+                      ? `Preview model: ${telehealthPct}% telehealth migration offsets ~${Math.round((baselineNsclc.total_clinic_hours * telehealthPct) / 200)} of ${baselineNsclc.total_clinic_hours} baseline hours.`
+                      : 'Interactive Schedule of Assessments dwell projection based on live template hours.'}
                   </p>
                 </div>
 
@@ -932,15 +984,19 @@ export const LandingPage: FC<LandingPageProps> = ({
                 {/* Mini DuckDB Funnel Mockup */}
                 <div className="bg-linen-100 rounded-2xl border border-linen-200 p-4 space-y-3 font-mono text-[10px]">
                   <div className="flex items-center justify-between pb-1.5 border-b border-linen-200 text-charcoal-600 font-bold">
-                    <span>DUCKDB IN-MEMORY OLAP</span>
-                    <span className="text-terracotta-600">&lt; 5ms QUERY</span>
+                    <span>DUCKDB LIVE COHORT FUNNEL</span>
+                    <span className="text-terracotta-600">
+                      {overview ? `${overview.measured_query_ms}ms SQL` : 'DUCKDB SQL'}
+                    </span>
                   </div>
 
                   <div className="space-y-2">
                     <div>
                       <div className="flex justify-between text-[10px]">
-                        <span>10k Synthetic Patients</span>
-                        <span className="font-bold">10,000 (100%)</span>
+                        <span>Loaded Synthetic Cohort</span>
+                        <span className="font-bold">
+                          {baselineNsclc ? `${baselineNsclc.total_population.toLocaleString()} (100%)` : '—'}
+                        </span>
                       </div>
                       <div className="w-full bg-linen-300 rounded-full h-1.5 mt-1">
                         <div className="bg-charcoal-900 h-1.5 rounded-full w-full" />
@@ -949,28 +1005,48 @@ export const LandingPage: FC<LandingPageProps> = ({
 
                     <div>
                       <div className="flex justify-between text-[10px]">
-                        <span>EGFR / Biomarker Filter</span>
-                        <span className="font-bold text-amber-700">1,480 (14.8%)</span>
+                        <span>{baselineNsclc?.funnel_stages?.[3]?.stage ?? 'Organ & Lab Gates'}</span>
+                        <span className="font-bold text-amber-700">
+                          {baselineNsclc?.funnel_stages?.[3]
+                            ? `${baselineNsclc.funnel_stages[3].count.toLocaleString()} (${baselineNsclc.funnel_stages[3].pass_rate}%)`
+                            : '—'}
+                        </span>
                       </div>
                       <div className="w-full bg-linen-300 rounded-full h-1.5 mt-1">
-                        <div className="bg-amber-600 h-1.5 rounded-full w-[14.8%]" />
+                        <div
+                          className="bg-amber-600 h-1.5 rounded-full"
+                          style={{ width: `${Math.min(100, baselineNsclc?.funnel_stages?.[3]?.pass_rate ?? 0)}%` }}
+                        />
                       </div>
                     </div>
 
                     <div>
                       <div className="flex justify-between text-[10px]">
-                        <span>Enrolled Cohort</span>
-                        <span className="font-bold text-sage-800">877 (8.77%)</span>
+                        <span>Eligible NSCLC Cohort</span>
+                        <span className="font-bold text-sage-800">
+                          {baselineNsclc
+                            ? `${baselineNsclc.eligible_count.toLocaleString()} (${baselineNsclc.overall_yield_percentage}%)`
+                            : '—'}
+                        </span>
                       </div>
                       <div className="w-full bg-linen-300 rounded-full h-1.5 mt-1">
-                        <div className="bg-sage-600 h-1.5 rounded-full w-[8.77%]" />
+                        <div
+                          className="bg-sage-600 h-1.5 rounded-full"
+                          style={{ width: `${Math.min(100, Math.max(2, baselineNsclc?.overall_yield_percentage ?? 0))}%` }}
+                        />
                       </div>
                     </div>
                   </div>
 
                   <div className="bg-white p-2 rounded-xl border border-linen-200 text-[10px] text-charcoal-700 flex justify-between">
-                    <span>Screen Failure: 91.2%</span>
-                    <span className="font-bold text-terracotta-600">Bottleneck: eGFR &lt; 60</span>
+                    <span>
+                      {baselineNsclc ? `Screen Failure: ${baselineNsclc.screen_failure_rate}%` : 'Screen Failure: —'}
+                    </span>
+                    <span className="font-bold text-terracotta-600">
+                      {baselineNsclc
+                        ? `${baselineNsclc.clause_diagnostics.egfr.threshold} (+${baselineNsclc.clause_diagnostics.egfr.recoverable_candidates})`
+                        : 'Live SQL Sensitivity'}
+                    </span>
                   </div>
                 </div>
 
@@ -979,7 +1055,7 @@ export const LandingPage: FC<LandingPageProps> = ({
                     3. What-If Sensitivity Sandbox
                   </h3>
                   <p className="text-xs text-charcoal-600 mt-2 leading-relaxed">
-                    Test relaxing criteria across 10,000 synthetic patient phenotypes in real time. Simulate recruitment velocity, screen failures, and accrual timeline gains instantly.
+                    Test relaxing criteria across {cohortLabel} synthetic patient phenotypes in real time. Simulate recruitment velocity, screen failures, and accrual timeline gains directly in DuckDB.
                   </p>
                 </div>
               </div>
@@ -1007,13 +1083,13 @@ export const LandingPage: FC<LandingPageProps> = ({
                 The new system of intelligence for clinical trials.
               </h2>
               <p className="text-sm sm:text-base text-charcoal-700 leading-relaxed font-normal">
-                Built on a decoupled, deterministic architecture: PyMuPDF document ingestion feeds the Tufts CSDD burden decomposition, while an in-process DuckDB OLAP database queries 10,000 synthetic patient phenotypes in real time.
+                Built on a decoupled, deterministic architecture: PyMuPDF document ingestion feeds the Tufts CSDD burden decomposition, while an in-process DuckDB OLAP database queries {cohortLabel} synthetic patient phenotypes in real time.
               </p>
 
               <div className="space-y-3.5 text-xs text-charcoal-800 font-mono">
                 <div className="flex items-center space-x-2.5">
                   <span className="h-2 w-2 rounded-full bg-sage-600" />
-                  <span>Deterministic DuckDB OLAP (Sub-5ms Cohort Slicing)</span>
+                  <span>Deterministic DuckDB OLAP Cohort Slicing ({overview ? `${overview.measured_query_ms}ms SQL` : 'Live Query'})</span>
                 </div>
                 <div className="flex items-center space-x-2.5">
                   <span className="h-2 w-2 rounded-full bg-sage-600" />
@@ -1025,7 +1101,7 @@ export const LandingPage: FC<LandingPageProps> = ({
                 </div>
                 <div className="flex items-center space-x-2.5">
                   <span className="h-2 w-2 rounded-full bg-sage-600" />
-                  <span>FHIR R4 Synthetic Oncology Data Model (10,000 Profiles)</span>
+                  <span>Synthetic Oncology Data Model ({cohortLabel} Profiles)</span>
                 </div>
               </div>
 
@@ -1104,30 +1180,38 @@ export const LandingPage: FC<LandingPageProps> = ({
             <div className="md:col-span-6 grid grid-cols-2 gap-4">
               
               <div className="bg-white rounded-3xl border border-linen-300 p-6 flex flex-col justify-center shadow-xs hover:border-terracotta-300 transition-colors">
-                <span className="font-serif text-4xl sm:text-5xl font-bold text-charcoal-900">80%</span>
+                <span className="font-serif text-4xl sm:text-5xl font-bold text-charcoal-900">
+                  {baselineNsclc ? `${baselineNsclc.screen_failure_rate}%` : '—'}
+                </span>
                 <span className="text-xs text-charcoal-600 mt-2 font-medium">
-                  Phase III trials delayed due to slow accrual and subject dropouts (Tufts CSDD benchmark).
+                  Baseline NSCLC screen failure rate measured across the active DuckDB cohort.
                 </span>
               </div>
 
               <div className="bg-white rounded-3xl border border-linen-300 p-6 flex flex-col justify-center shadow-xs hover:border-terracotta-300 transition-colors">
-                <span className="font-serif text-4xl sm:text-5xl font-bold text-terracotta-600">$2.4M</span>
+                <span className="font-serif text-4xl sm:text-5xl font-bold text-terracotta-600">
+                  {baselineNsclc ? `${baselineNsclc.composite_pbi_score}` : '—'}
+                </span>
                 <span className="text-xs text-charcoal-600 mt-2 font-medium">
-                  Estimated trial delay expense avoided per optimized Phase III protocol (Model estimate).
+                  Composite Patient Burden Index (0–100 scale) computed for the NSCLC baseline template.
                 </span>
               </div>
 
               <div className="bg-white rounded-3xl border border-linen-300 p-6 flex flex-col justify-center shadow-xs hover:border-terracotta-300 transition-colors">
-                <span className="font-serif text-4xl sm:text-5xl font-bold text-charcoal-900">10,000</span>
+                <span className="font-serif text-4xl sm:text-5xl font-bold text-charcoal-900">
+                  {cohortLabel}
+                </span>
                 <span className="text-xs text-charcoal-600 mt-2 font-medium">
-                  Synthetic patient records screened in sub-5ms with in-process DuckDB.
+                  Synthetic oncology patient records currently loaded and queried in DuckDB.
                 </span>
               </div>
 
               <div className="bg-white rounded-3xl border border-linen-300 p-6 flex flex-col justify-center shadow-xs hover:border-terracotta-300 transition-colors">
-                <span className="font-serif text-4xl sm:text-5xl font-bold text-sage-700">100%</span>
+                <span className="font-serif text-4xl sm:text-5xl font-bold text-sage-700">
+                  {overview ? overview.audit_events_count.toLocaleString() : '—'}
+                </span>
                 <span className="text-xs text-charcoal-600 mt-2 font-medium">
-                  Auditable mathematical scoring with deterministic criteria execution.
+                  Cryptographically linked SHA-256 audit log entries persisted in the database.
                 </span>
               </div>
 
@@ -1189,7 +1273,7 @@ export const LandingPage: FC<LandingPageProps> = ({
               Validated across oncology, rare disease, and hematology models.
             </h2>
             <p className="text-xs sm:text-sm text-charcoal-600 font-normal">
-              Explore how protocol design teams evaluate eligibility trade-offs across 10,000 synthetic patient records inspired by public Phase II/III trial architectures.
+              Explore live optimizer evaluations across {cohortLabel} synthetic patient records for all built-in oncology protocol templates.
             </p>
           </div>
 
@@ -1225,20 +1309,11 @@ export const LandingPage: FC<LandingPageProps> = ({
             >
               Relapsed Multiple Myeloma
             </button>
-            <button
-              onClick={() => setActiveCaseStudy('pediatric')}
-              className={`px-4 py-2 rounded-full text-xs font-medium transition-all cursor-pointer ${
-                activeCaseStudy === 'pediatric'
-                  ? 'bg-charcoal-900 text-white shadow-xs'
-                  : 'bg-linen-100 text-charcoal-700 hover:bg-linen-200 border border-linen-300'
-              }`}
-            >
-              Pediatric Rare Oncology
-            </button>
           </div>
 
           {/* Active Case Study Details Card */}
           <div className="bg-linen-50 rounded-3xl border border-linen-300 p-8 shadow-xs">
+            {activeStudy ? (
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-center">
               
               <div className="lg:col-span-7 space-y-4">
@@ -1254,11 +1329,11 @@ export const LandingPage: FC<LandingPageProps> = ({
 
                 <div className="space-y-3 text-xs text-charcoal-700 leading-relaxed">
                   <p>
-                    <strong className="text-charcoal-900 font-semibold">The Bottleneck: </strong>
+                    <strong className="text-charcoal-900 font-semibold">Measured Bottleneck: </strong>
                     {activeStudy.challenge}
                   </p>
                   <p>
-                    <strong className="text-charcoal-900 font-semibold">ProtocolShield Solution: </strong>
+                    <strong className="text-charcoal-900 font-semibold">Live Optimizer Output: </strong>
                     {activeStudy.result}
                   </p>
                 </div>
@@ -1278,7 +1353,7 @@ export const LandingPage: FC<LandingPageProps> = ({
               <div className="lg:col-span-5 grid grid-cols-1 sm:grid-cols-3 gap-3">
                 {activeStudy.metrics.map((m, idx) => (
                   <div key={idx} className="bg-white rounded-2xl p-4 border border-linen-200 text-center shadow-2xs">
-                    <span className="font-serif text-2xl font-bold text-charcoal-900 block">
+                    <span className="font-serif text-xl sm:text-2xl font-bold text-charcoal-900 block">
                       {m.value}
                     </span>
                     <span className="text-[10px] font-mono text-charcoal-500 block mt-1">
@@ -1289,6 +1364,13 @@ export const LandingPage: FC<LandingPageProps> = ({
               </div>
 
             </div>
+            ) : (
+              <div className="py-8 text-center text-xs font-mono text-charcoal-500">
+                {overviewLoading
+                  ? 'Evaluating live protocol templates against DuckDB…'
+                  : 'Protocol case study telemetry is unavailable while offline.'}
+              </div>
+            )}
           </div>
 
         </section>
@@ -1464,179 +1546,515 @@ export const LandingPage: FC<LandingPageProps> = ({
 
 
       {/* ─────────────────────────────────────────────────────────────
-          11. INTERACTIVE 4-STEP PRODUCT TOUR MODAL
+          11. INTERACTIVE VISUAL WALKTHROUGH & TESTING GUIDE MODAL
          ───────────────────────────────────────────────────────────── */}
       {isTourOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm animate-in fade-in duration-200">
-          <div className="bg-charcoal-900 text-white rounded-3xl border border-white/20 max-w-3xl w-full p-6 sm:p-8 shadow-2xl relative space-y-6">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 bg-black/85 backdrop-blur-md animate-in fade-in duration-200">
+          <div className="bg-charcoal-900 text-white rounded-3xl border border-white/20 max-w-5xl w-full p-4 sm:p-6 shadow-2xl relative space-y-4 max-h-[94vh] flex flex-col justify-between overflow-y-auto">
             
             {/* Modal Header */}
-            <div className="flex items-center justify-between border-b border-white/10 pb-4">
-              <div className="flex items-center space-x-2.5">
-                <div className="h-8 w-8 rounded-lg bg-terracotta-600 flex items-center justify-center text-white">
-                  <ShieldCheck className="h-4 w-4" />
+            <div className="flex items-center justify-between border-b border-white/10 pb-3">
+              <div className="flex items-center space-x-3">
+                <div className="h-9 w-9 rounded-xl bg-terracotta-600 flex items-center justify-center text-white shadow-md">
+                  <Layers className="h-5 w-5" />
                 </div>
                 <div>
-                  <h3 className="font-serif font-bold text-base text-white">
-                    ProtocolShield Product Walkthrough
-                  </h3>
-                  <span className="text-[10px] font-mono text-slate-400">
-                    Step {tourStep} of 4: {
-                      tourStep === 1 ? 'Automated PDF Protocol Ingestion' :
-                      tourStep === 2 ? 'Tufts CSDD Burden Heatmap' :
-                      tourStep === 3 ? 'DuckDB 10,000 Cohort Screening' :
-                      'One-Click Protocol Optimization & Export'
-                    }
-                  </span>
+                  <div className="flex items-center space-x-2">
+                    <h3 className="font-serif font-bold text-base sm:text-lg text-white">
+                      ProtocolShield Visual Walkthrough & Testing Guide
+                    </h3>
+                    <span className="hidden sm:inline-flex items-center px-2 py-0.5 rounded text-[10px] font-mono bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                      Live App Pages
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-400">
+                    See our actual pages: how to ingest a PDF protocol, test burden heatmaps, run What-If sensitivity, and screen patients.
+                  </p>
                 </div>
               </div>
 
-              <button
-                onClick={() => setIsTourOpen(false)}
-                className="h-8 w-8 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center text-slate-300 hover:text-white transition-colors cursor-pointer"
-              >
-                <X className="h-4 w-4" />
-              </button>
-            </div>
-
-            {/* Simulated Live Product Screen */}
-            <div className="bg-charcoal-950 rounded-2xl border border-white/10 p-6 min-h-[260px] flex flex-col justify-between">
-              
-              {tourStep === 1 && (
-                <div className="space-y-4">
-                  <div className="flex items-center justify-between text-xs font-mono text-terracotta-400">
-                    <span>STAGE 1: PROTOCOL PDF EXTRACTION</span>
-                    <span>PyMuPDF Layout Engine</span>
-                  </div>
-                  <div className="bg-charcoal-900 p-4 rounded-xl border border-white/10 font-mono text-xs text-slate-300 space-y-2">
-                    <p className="text-white font-bold">Document: "ONC-2026-03_Protocol_v2.1.pdf" (148 Pages)</p>
-                    <p className="text-emerald-400">✓ Schedule of Assessments table identified on Page 34</p>
-                    <p className="text-emerald-400">✓ 14 Visits & 22 Diagnostic Procedures mapped to CDISC</p>
-                    <p className="text-amber-400">⚠️ 3 Overly-Restrictive Eligibility Clauses Flagged</p>
-                  </div>
-                  <p className="text-xs text-slate-400">
-                    Extracts dense unstructured tables in under 3 seconds without sending confidential protocol text outside your private workspace.
-                  </p>
-                </div>
-              )}
-
-              {tourStep === 2 && (
-                <div className="space-y-4">
-                  <div className="flex items-center justify-between text-xs font-mono text-terracotta-400">
-                    <span>STAGE 2: TUFTS CSDD BURDEN ANALYSIS</span>
-                    <span>Temporal • Invasiveness • Cognitive</span>
-                  </div>
-                  <div className="grid grid-cols-3 gap-3 text-center">
-                    <div className="bg-charcoal-900 p-3 rounded-xl border border-white/10">
-                      <span className="text-[10px] text-slate-400 block font-mono">DWELL TIME</span>
-                      <span className="font-serif text-xl font-bold text-white">78.5 Hrs</span>
-                      <span className="text-[9px] text-red-400 block">High Friction</span>
-                    </div>
-                    <div className="bg-charcoal-900 p-3 rounded-xl border border-white/10">
-                      <span className="text-[10px] text-slate-400 block font-mono">INVASIVENESS</span>
-                      <span className="font-serif text-xl font-bold text-amber-400">3 Core Biopsies</span>
-                      <span className="text-[9px] text-amber-300 block">Inflection Risk</span>
-                    </div>
-                    <div className="bg-charcoal-900 p-3 rounded-xl border border-white/10">
-                      <span className="text-[10px] text-slate-400 block font-mono">TRAVEL MILEAGE</span>
-                      <span className="font-serif text-xl font-bold text-white">31.6 Miles</span>
-                      <span className="text-[9px] text-slate-300 block">Avg Round-trip</span>
-                    </div>
-                  </div>
-                  <p className="text-xs text-slate-400">
-                    Quantifies the physical, logistical, and cognitive friction experienced by oncology patients across all 52 study weeks.
-                  </p>
-                </div>
-              )}
-
-              {tourStep === 3 && (
-                <div className="space-y-4">
-                  <div className="flex items-center justify-between text-xs font-mono text-terracotta-400">
-                    <span>STAGE 3: DUCKDB COHORT SCREENING</span>
-                    <span>10,000 FHIR Synthetic Patients</span>
-                  </div>
-                  <div className="bg-charcoal-900 p-4 rounded-xl border border-white/10 space-y-2">
-                    <div className="flex justify-between text-xs font-mono">
-                      <span>Initial Screen Failure Rate:</span>
-                      <span className="text-red-400 font-bold">91.2%</span>
-                    </div>
-                    <div className="flex justify-between text-xs font-mono">
-                      <span>Top Screening Killer:</span>
-                      <span className="text-amber-400 font-bold">eGFR &lt; 60 mL/min (41.2% fail)</span>
-                    </div>
-                    <div className="flex justify-between text-xs font-mono">
-                      <span>Query Execution Time:</span>
-                      <span className="text-emerald-400 font-bold">3.2 milliseconds (DuckDB OLAP)</span>
-                    </div>
-                  </div>
-                  <p className="text-xs text-slate-400">
-                    Slices real-world oncology phenotypes deterministically in memory with zero API token limits or model hallucinations.
-                  </p>
-                </div>
-              )}
-
-              {tourStep === 4 && (
-                <div className="space-y-4">
-                  <div className="flex items-center justify-between text-xs font-mono text-terracotta-400">
-                    <span>STAGE 4: WHAT-IF SENSITIVITY & EXPORT</span>
-                    <span>Tamper-Evident Audit Package (SHA-256)</span>
-                  </div>
-                  <div className="bg-charcoal-900 p-4 rounded-xl border border-white/10 font-mono text-xs text-emerald-400 space-y-1.5">
-                    <p>✓ Minimum eGFR adjusted to 50 mL/min (+142 patients)</p>
-                    <p>✓ 4 In-clinic visits migrated to telehealth (-26.4 hours dwell)</p>
-                    <p>✓ 52-Week Retention boosted from 49% to 76%</p>
-                    <p>✓ SHA-256 Audit Trail stamped: 7f8a9e2c...b1</p>
-                  </div>
-                  <p className="text-xs text-slate-400">
-                    Export audit-ready evidence packages directly for the IRB, Scientific Review Committee, and Protocol Authoring Team.
-                  </p>
-                </div>
-              )}
-
-              {/* Step Navigation Controls */}
-              <div className="flex items-center justify-between pt-4 border-t border-white/10 text-xs">
+              <div className="flex items-center space-x-2">
                 <button
-                  disabled={tourStep === 1}
-                  onClick={() => setTourStep(p => Math.max(1, p - 1))}
-                  className="px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 disabled:opacity-30 disabled:cursor-not-allowed transition-colors cursor-pointer"
+                  onClick={() => setTourAutoPlay(!tourAutoPlay)}
+                  className="hidden sm:inline-flex items-center space-x-1.5 px-3 py-1.5 rounded-lg text-xs font-mono bg-white/10 hover:bg-white/15 text-slate-200 border border-white/15 transition-colors cursor-pointer"
+                  title="Toggle auto-advancing visual tour"
                 >
-                  Previous
+                  {tourAutoPlay ? <Pause className="h-3 w-3" /> : <Play className="h-3 w-3 fill-current" />}
+                  <span>{tourAutoPlay ? 'Auto-Advancing' : 'Paused'}</span>
                 </button>
 
-                <div className="flex items-center space-x-1.5">
-                  {[1, 2, 3, 4].map(s => (
-                    <span
-                      key={s}
-                      onClick={() => setTourStep(s)}
-                      className={`h-2 w-2 rounded-full cursor-pointer transition-all ${
-                        tourStep === s ? 'w-5 bg-terracotta-500' : 'bg-white/30'
-                      }`}
-                    />
-                  ))}
+                <button
+                  onClick={() => setIsTourOpen(false)}
+                  className="h-8 w-8 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center text-slate-300 hover:text-white transition-colors cursor-pointer"
+                  aria-label="Close Walkthrough"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+            </div>
+
+            {/* Step Navigation Pills */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-1 font-mono text-xs">
+              {[
+                { step: 1, title: '1. Ingest Protocol PDF', icon: Upload },
+                { step: 2, title: '2. Studio & Heatmap', icon: Activity },
+                { step: 3, title: '3. What-If Console', icon: Sliders },
+                { step: 4, title: '4. Patient Screening', icon: UserCheck }
+              ].map((item) => {
+                const Icon = item.icon;
+                const isActive = tourStep === item.step;
+                return (
+                  <button
+                    key={item.step}
+                    onClick={() => {
+                      setTourStep(item.step);
+                      setTourProgress(0);
+                    }}
+                    className={`relative p-2.5 rounded-xl border transition-all text-left flex items-center space-x-2 cursor-pointer ${
+                      isActive 
+                        ? 'bg-terracotta-500/20 border-terracotta-400/50 text-white font-semibold shadow-sm'
+                        : 'bg-white/5 border-white/10 text-slate-400 hover:bg-white/10 hover:text-slate-200'
+                    }`}
+                  >
+                    <Icon className={`h-3.5 w-3.5 shrink-0 ${isActive ? 'text-terracotta-400' : 'text-slate-400'}`} />
+                    <span className="truncate">{item.title}</span>
+                    {isActive && tourAutoPlay && (
+                      <span 
+                        className="absolute bottom-0 left-0 h-0.5 bg-terracotta-400 transition-all duration-100 rounded-full"
+                        style={{ width: `${tourProgress}%` }}
+                      />
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* Main Visual Display Frame (Simulated Browser Screen + Testing Guide) */}
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-stretch">
+              
+              {/* Left Column: Authentic Page Screen Mockup (8 Cols) */}
+              <div className="lg:col-span-8 rounded-2xl border border-white/15 bg-charcoal-950 overflow-hidden shadow-inner flex flex-col justify-between">
+                
+                {/* Browser Chrome Header */}
+                <div className="bg-charcoal-900/90 border-b border-white/10 px-4 py-2 flex items-center justify-between text-xs font-mono">
+                  <div className="flex items-center space-x-2">
+                    <span className="h-2.5 w-2.5 rounded-full bg-red-500/80 inline-block" />
+                    <span className="h-2.5 w-2.5 rounded-full bg-amber-500/80 inline-block" />
+                    <span className="h-2.5 w-2.5 rounded-full bg-emerald-500/80 inline-block" />
+                  </div>
+                  <div className="bg-charcoal-950 px-3 py-1 rounded-md text-[11px] text-slate-300 border border-white/10 flex items-center space-x-1.5 max-w-xs truncate">
+                    <Lock className="h-2.5 w-2.5 text-emerald-400" />
+                    <span>
+                      {tourStep === 1 ? 'https://protocolshield.internal/studio/upload-protocol' :
+                       tourStep === 2 ? 'https://protocolshield.internal/studio#burden-heatmap' :
+                       tourStep === 3 ? 'https://protocolshield.internal/studio#what-if-console' :
+                       'https://protocolshield.internal/patient-portal#screen'}
+                    </span>
+                  </div>
+                  <span className="text-[10px] text-slate-500 uppercase">
+                    {tourStep === 1 ? 'PDF Ingestion' : tourStep === 2 ? 'Feasibility Studio' : tourStep === 3 ? 'Sensitivity Model' : 'Patient Portal'}
+                  </span>
                 </div>
 
-                {tourStep < 4 ? (
-                  <button
-                    onClick={() => setTourStep(p => Math.min(4, p + 1))}
-                    className="px-4 py-1.5 rounded-lg bg-terracotta-600 hover:bg-terracotta-500 text-white font-semibold transition-colors flex items-center space-x-1 cursor-pointer"
-                  >
-                    <span>Next</span>
-                    <ChevronRight className="h-3 w-3" />
-                  </button>
-                ) : (
+                {/* Simulated Actual Page Contents */}
+                <div className="p-4 sm:p-5 flex-1 flex flex-col justify-between min-h-[310px]">
+                  
+                  {/* Step 1: Ingesting a PDF Protocol */}
+                  {tourStep === 1 && (
+                    <div className="space-y-3.5 animate-in fade-in duration-200">
+                      <div className="border border-dashed border-terracotta-400/40 bg-terracotta-950/20 rounded-xl p-4 text-center space-y-2">
+                        <Upload className="h-7 w-7 text-terracotta-400 mx-auto" />
+                        <p className="text-xs font-semibold text-white">Drag & drop your clinical trial protocol PDF here</p>
+                        <p className="text-[11px] text-slate-400 font-mono">Supports up to 150MB PDF documents • Extracted in-memory via PyMuPDF</p>
+                      </div>
+
+                      <div className="space-y-1.5">
+                        <span className="text-[11px] font-mono text-slate-400 block">OR SELECT A PRE-LOADED CLINICAL PROTOCOL TEMPLATE:</span>
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                          <div className="bg-charcoal-900 border border-terracotta-500/50 p-2.5 rounded-lg text-left space-y-1">
+                            <div className="flex items-center justify-between">
+                              <span className="text-xs font-bold text-white flex items-center space-x-1">
+                                <Zap className="h-3 w-3 text-terracotta-400" />
+                                <span>Phase III NSCLC</span>
+                              </span>
+                              <span className="text-[9px] font-mono px-1 rounded bg-terracotta-500/20 text-terracotta-300">148 pgs</span>
+                            </div>
+                            <p className="text-[10px] text-slate-300">Anti-PD-1 + Chemo • 14 Visits • 52 Wks</p>
+                          </div>
+
+                          <div className="bg-charcoal-900 border border-white/10 p-2.5 rounded-lg text-left space-y-1 opacity-75">
+                            <div className="flex items-center justify-between">
+                              <span className="text-xs font-bold text-white flex items-center space-x-1">
+                                <FlaskConical className="h-3 w-3 text-emerald-400" />
+                                <span>Phase II TNBC</span>
+                              </span>
+                              <span className="text-[9px] font-mono px-1 rounded bg-emerald-500/20 text-emerald-300">112 pgs</span>
+                            </div>
+                            <p className="text-[10px] text-slate-300">ADC + IO Combination • 10 Visits</p>
+                          </div>
+
+                          <div className="bg-charcoal-900 border border-white/10 p-2.5 rounded-lg text-left space-y-1 opacity-75">
+                            <div className="flex items-center justify-between">
+                              <span className="text-xs font-bold text-white flex items-center space-x-1">
+                                <Dna className="h-3 w-3 text-indigo-400" />
+                                <span>Phase III Myeloma</span>
+                              </span>
+                              <span className="text-[9px] font-mono px-1 rounded bg-indigo-500/20 text-indigo-300">94 pgs</span>
+                            </div>
+                            <p className="text-[10px] text-slate-300">BCMA Bispecific • 12 Visits</p>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="bg-charcoal-900/90 border border-emerald-500/30 p-2.5 rounded-xl font-mono text-[11px] text-slate-300 space-y-1">
+                        <p className="text-emerald-400 font-bold">
+                          ✓ Reference Template Snapshot ({baselineNsclc?.protocol_id ?? 'PS-ONC-2026-001'}):
+                        </p>
+                        <p>
+                          • {baselineNsclc ? `${baselineNsclc.total_visits} Scheduled Visits • ${baselineNsclc.total_clinic_hours} Clinic Hours` : 'Schedule of Assessments mapped across study visits'}
+                        </p>
+                        <p>
+                          • {baselineNsclc ? `${baselineNsclc.eligible_count.toLocaleString()} of ${baselineNsclc.total_population.toLocaleString()} cohort candidates currently match baseline criteria` : 'Deterministic eligibility criteria evaluated in DuckDB'}
+                        </p>
+                        <p className="text-amber-300">
+                          ⚠️ {baselineNsclc
+                            ? `Relaxing ${baselineNsclc.clause_diagnostics.egfr.threshold} recovers +${baselineNsclc.clause_diagnostics.egfr.recoverable_candidates} candidates`
+                            : 'Overly-Restrictive Eligibility Clauses Flagged'}
+                        </p>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Step 2: Feasibility Studio & Patient Burden Heatmap */}
+                  {tourStep === 2 && (
+                    <div className="space-y-3.5 animate-in fade-in duration-200">
+                      {/* Studio Tab bar mockup */}
+                      <div className="flex items-center space-x-2 border-b border-white/10 pb-2 text-[11px] font-mono">
+                        <span className="text-slate-400 px-2 py-1 rounded bg-white/5">Assessments Matrix</span>
+                        <span className="text-white px-2 py-1 rounded bg-terracotta-600 font-bold">★ Burden Heatmap</span>
+                        <span className="text-slate-400 px-2 py-1 rounded bg-white/5">What-If Console</span>
+                        <span className="text-slate-400 px-2 py-1 rounded bg-white/5">Simulation Funnel</span>
+                      </div>
+
+                      {/* 3 Key Metric Cards */}
+                      <div className="grid grid-cols-3 gap-2.5 text-center">
+                        <div className="bg-charcoal-900 border border-white/10 p-2.5 rounded-xl">
+                          <span className="text-[9px] font-mono text-slate-400 block">DWELL TIME</span>
+                          <span className="font-serif text-lg font-bold text-white">
+                            {baselineNsclc ? `${baselineNsclc.total_clinic_hours} Hrs` : '—'}
+                          </span>
+                          <span className="text-[9px] text-red-400 block">
+                            {baselineNsclc ? `${baselineNsclc.attrition_risk_tier} Friction` : 'Measured'}
+                          </span>
+                        </div>
+                        <div className="bg-charcoal-900 border border-white/10 p-2.5 rounded-xl">
+                          <span className="text-[9px] font-mono text-slate-400 block">INVASIVENESS</span>
+                          <span className="font-serif text-lg font-bold text-amber-400">
+                            {baselineNsclc ? `${baselineNsclc.total_biopsies} Biopsies` : '—'}
+                          </span>
+                          <span className="text-[9px] text-amber-300 block">
+                            {baselineNsclc ? `Wk ${baselineNsclc.clause_diagnostics.biopsy.peak_week} Spike` : 'On-Treatment Peak'}
+                          </span>
+                        </div>
+                        <div className="bg-charcoal-900 border border-white/10 p-2.5 rounded-xl">
+                          <span className="text-[9px] font-mono text-slate-400 block">TRAVEL MILEAGE</span>
+                          <span className="font-serif text-lg font-bold text-white">
+                            {overview ? `${overview.cohort_averages.distance_miles} Mi` : '—'}
+                          </span>
+                          <span className="text-[9px] text-slate-300 block">Cohort Avg Distance</span>
+                        </div>
+                      </div>
+
+                      {/* Schedule of Assessments Table preview */}
+                      <div className="bg-charcoal-900 p-2.5 rounded-xl border border-white/10 font-mono text-[10px] space-y-1.5 overflow-x-auto">
+                        <div className="grid grid-cols-5 text-slate-400 border-b border-white/10 pb-1 font-bold">
+                          <span>Procedure</span>
+                          <span>Screening</span>
+                          <span>Cycle 1</span>
+                          <span className="text-red-400">Week 12 (Biopsy)</span>
+                          <span>Week 52</span>
+                        </div>
+                        <div className="grid grid-cols-5 text-slate-200">
+                          <span>Serial PK Bloods</span>
+                          <span className="text-emerald-400">✓ Done</span>
+                          <span className="text-emerald-400">✓ Done</span>
+                          <span className="text-amber-400 font-bold">⚠️ Dense PK</span>
+                          <span className="text-emerald-400">✓ Done</span>
+                        </div>
+                        <div className="grid grid-cols-5 text-slate-200">
+                          <span>Tumor Core Biopsy</span>
+                          <span className="text-slate-500">—</span>
+                          <span className="text-slate-500">—</span>
+                          <span className="text-red-400 font-bold">⚠️ Invasive Peak</span>
+                          <span className="text-slate-500">—</span>
+                        </div>
+                      </div>
+
+                      <div className="bg-red-500/10 border border-red-500/20 p-2 rounded-lg text-xs font-mono text-red-300 flex items-center justify-between">
+                        <span>Composite PBI Score (NSCLC):</span>
+                        <span className="font-bold text-red-400">
+                          {baselineNsclc ? `${baselineNsclc.composite_pbi_score} / 100 (${baselineNsclc.attrition_risk_tier})` : 'Evaluated Live in Studio'}
+                        </span>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Step 3: What-If Sensitivity Console & Retention Curve */}
+                  {tourStep === 3 && (
+                    <div className="space-y-3.5 animate-in fade-in duration-200">
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        {/* Sliders Panel */}
+                        <div className="bg-charcoal-900 p-3 rounded-xl border border-white/10 space-y-2.5 font-mono text-xs">
+                          <span className="text-terracotta-300 font-bold block text-[11px]">INTERACTIVE PROTOCOL AMENDMENTS:</span>
+                          
+                          <div>
+                            <div className="flex justify-between text-[11px]">
+                              <span>Min eGFR Renal Cutoff:</span>
+                              <span className="text-emerald-400 font-bold">50 mL/min (Was 60)</span>
+                            </div>
+                            <div className="h-1.5 w-full bg-white/10 rounded-full mt-1 overflow-hidden">
+                              <div className="h-full bg-emerald-500 w-3/4 rounded-full" />
+                            </div>
+                            <span className="text-[10px] text-emerald-400 block mt-0.5">
+                              {scenarios ? `+${scenarios.scenarioA.patientsGained} Qualified Candidates (DuckDB)` : 'Live DuckDB Candidate Gain'}
+                            </span>
+                          </div>
+
+                          <div>
+                            <div className="flex justify-between text-[11px]">
+                              <span>Decentralized + Optional Biopsy:</span>
+                              <span className="text-emerald-400 font-bold">Hybrid Schedule</span>
+                            </div>
+                            <div className="h-1.5 w-full bg-white/10 rounded-full mt-1 overflow-hidden">
+                              <div className="h-full bg-emerald-500 w-1/3 rounded-full" />
+                            </div>
+                            <span className="text-[10px] text-emerald-400 block mt-0.5">
+                              {scenarios?.scenarioB?.hoursReduced != null
+                                ? `-${scenarios.scenarioB.hoursReduced} Hours Patient Dwell`
+                                : 'Live Dwell Reduction'}
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* Dual Retention Curve Preview */}
+                        <div className="bg-charcoal-900 p-3 rounded-xl border border-white/10 font-mono text-xs space-y-2">
+                          <span className="text-slate-400 font-bold block text-[11px]">52-WEEK RETENTION PROJECTION:</span>
+                          <div className="space-y-1.5 text-[11px]">
+                            <div className="flex justify-between items-center">
+                              <span className="text-red-400">Baseline Protocol:</span>
+                              <span className="text-red-400 font-bold">
+                                {scenarios ? `${scenarios.baseline.retentionAt52}% Retention` : '—'}
+                              </span>
+                            </div>
+                            <div className="flex justify-between items-center">
+                              <span className="text-emerald-400">Optimized Protocol:</span>
+                              <span className="text-emerald-400 font-bold">
+                                {scenarios ? `${scenarios.scenarioB.retentionAt52}% Retention` : '—'}
+                              </span>
+                            </div>
+                            <div className="flex justify-between items-center pt-1 border-t border-white/10">
+                              <span className="text-white">Modeled PBI Reduction:</span>
+                              <span className="text-emerald-300 font-bold">
+                                {scenarios?.scenarioB?.pbiDelta != null ? `-${scenarios.scenarioB.pbiDelta} PBI Pts` : '—'}
+                              </span>
+                            </div>
+                          </div>
+                          <div className="h-8 bg-charcoal-950 rounded flex items-center justify-center text-[10px] text-emerald-400 border border-emerald-500/20">
+                            <span>Dual Kaplan-Meier Retention Model Active</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="bg-emerald-950/40 border border-emerald-500/30 p-2.5 rounded-xl font-mono text-[11px] text-emerald-300 flex items-center justify-between">
+                        <span>Tamper-Evident SHA-256 Audit Ledger:</span>
+                        <span className="font-bold text-emerald-400">
+                          {overview ? `${overview.audit_events_count} Audited Events Recorded` : 'Verified Live via /audit/verify'}
+                        </span>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Step 4: Patient Portal Eligibility Screening & Audit */}
+                  {tourStep === 4 && (
+                    <div className="space-y-3 animate-in fade-in duration-200">
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        {/* Clinical Profile Input Form Mockup */}
+                        <div className="bg-charcoal-900 p-3 rounded-xl border border-white/10 space-y-2 font-mono text-xs">
+                          <div className="flex justify-between items-center pb-1 border-b border-white/10">
+                            <span className="text-slate-300 font-bold text-[11px]">PATIENT CLINICAL PROFILE</span>
+                            <span className="text-[9px] bg-emerald-500/20 text-emerald-300 px-1.5 py-0.5 rounded border border-emerald-500/30">DEMO ACTIVE</span>
+                          </div>
+                          <div className="grid grid-cols-2 gap-1.5 text-[11px] text-slate-300">
+                            <div>Age: <span className="text-white font-bold">62 yrs</span></div>
+                            <div>ECOG: <span className="text-white font-bold">1 (Ambulatory)</span></div>
+                            <div>Cancer Stage: <span className="text-white font-bold">Stage IV</span></div>
+                            <div>eGFR: <span className="text-white font-bold">52 mL/min</span></div>
+                          </div>
+                          <p className="text-[10px] text-slate-400 pt-1">
+                            Omitted labs remain unknown and evaluate safely without false positives.
+                          </p>
+                        </div>
+
+                        {/* Screening Match Result Card */}
+                        <div className="bg-charcoal-900 p-3 rounded-xl border border-emerald-500/40 space-y-1.5 font-mono text-xs">
+                          <div className="flex justify-between items-center">
+                            <span className="text-white font-bold text-[11px]">PS-ONC-2026-001</span>
+                            <span className="text-[10px] bg-emerald-500/20 text-emerald-300 px-2 py-0.5 rounded-full font-bold">
+                              ✓ Potentially Eligible
+                            </span>
+                          </div>
+                          <p className="text-[10px] text-slate-300">Phase III Non-Small Cell Lung Cancer</p>
+                          <div className="space-y-0.5 text-[10px] text-slate-300 pt-1 border-t border-white/10">
+                            <p className="text-emerald-400">✓ Age ≥ 18 & Stage IV Matches</p>
+                            <p className="text-emerald-400">✓ eGFR ≥ 50 Passes Amended Protocol</p>
+                            <p className="text-emerald-400">✓ No Active Brain Metastases</p>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="bg-amber-500/10 border border-amber-500/20 p-2.5 rounded-xl font-mono text-[10px] text-amber-200 flex items-center justify-between">
+                        <span>Clinical Safety Invariant:</span>
+                        <span className="text-amber-300">Requires Principal Investigator verification on-site</span>
+                      </div>
+                    </div>
+                  )}
+
+                </div>
+
+              </div>
+
+              {/* Right Column: Step-by-Step "How to Test Visually" Instructions (4 Cols) */}
+              <div className="lg:col-span-4 bg-charcoal-950/80 border border-white/15 rounded-2xl p-4 sm:p-5 flex flex-col justify-between space-y-3 shadow-md">
+                
+                <div className="space-y-3">
+                  <div className="flex items-center space-x-2 text-xs font-mono text-terracotta-400 border-b border-white/10 pb-2">
+                    <CheckCircle2 className="h-4 w-4" />
+                    <span className="font-bold uppercase tracking-wider">
+                      {tourStep === 1 ? 'Testing PDF Ingestion' :
+                       tourStep === 2 ? 'Testing Burden Heatmap' :
+                       tourStep === 3 ? 'Testing What-If Sliders' :
+                       'Testing Patient Screening'}
+                    </span>
+                  </div>
+
+                  <h4 className="font-serif font-bold text-sm text-white leading-snug">
+                    {tourStep === 1 ? 'Step 1: Ingesting Clinical Protocols' :
+                     tourStep === 2 ? 'Step 2: Inspecting Patient Burden Heatmap' :
+                     tourStep === 3 ? 'Step 3: Running What-If Sensitivity' :
+                     'Step 4: Screening Patient Eligibility & Audit'}
+                  </h4>
+
+                  {/* Step Instructions */}
+                  <div className="space-y-2 text-xs text-slate-300 leading-relaxed">
+                    {tourStep === 1 && (
+                      <>
+                        <p><strong className="text-white">1. Open Upload:</strong> Click <em>"Launch Feasibility Studio"</em> or <em>"Upload Protocol"</em> in the header.</p>
+                        <p><strong className="text-white">2. Quick Test:</strong> Click the <strong>Phase III · NSCLC</strong> card to test immediately without needing a local PDF file.</p>
+                        <p><strong className="text-white">3. Or Drop a File:</strong> Drag and drop any clinical PDF protocol to test the local PyMuPDF extraction engine.</p>
+                        <p className="text-[11px] text-slate-400 font-mono pt-1">Result: Schedule of Assessments and restrictive criteria appear in ~3 seconds.</p>
+                      </>
+                    )}
+
+                    {tourStep === 2 && (
+                      <>
+                        <p><strong className="text-white">1. Assessments Matrix:</strong> Open the Studio and review the visit-by-procedure matrix extracted from the PDF.</p>
+                        <p><strong className="text-white">2. Burden Heatmap:</strong> Click the <strong>"Burden Heatmap"</strong> tab to see Tufts CSDD scoring broken down into dwell, invasiveness, and cognitive friction.</p>
+                        <p><strong className="text-white">3. Spot Friction Spikes:</strong> Notice the red flag at Week 12 (mandatory repeat biopsy), indicating a high patient dropout risk.</p>
+                      </>
+                    )}
+
+                    {tourStep === 3 && (
+                      <>
+                        <p><strong className="text-white">1. What-If Console:</strong> In Studio, click the <strong>"What-If Console"</strong> tab.</p>
+                        <p><strong className="text-white">2. Relax eGFR Cutoff:</strong> Drag the renal slider to 50 mL/min to see candidate eligibility expand ({scenarios ? `+${scenarios.scenarioA.patientsGained} patients` : 'live count in DuckDB'}).</p>
+                        <p><strong className="text-white">3. Add Telehealth:</strong> Increase the Telehealth slider to 30% to decentralize routine clinical visits.</p>
+                        <p><strong className="text-white">4. Compare Curves:</strong> Watch 52-week retention move from {scenarios ? `${scenarios.baseline.retentionAt52}% to ${scenarios.scenarioB.retentionAt52}%` : 'baseline to optimized'} in real time.</p>
+                      </>
+                    )}
+
+                    {tourStep === 4 && (
+                      <>
+                        <p><strong className="text-white">1. Patient Portal:</strong> Switch persona to "Patient" or click <strong>"Patient Portal"</strong> in the header.</p>
+                        <p><strong className="text-white">2. Instant Demo:</strong> Click <strong>"Demo Mode"</strong> to populate oncology biomarkers with one click, or type your own values.</p>
+                        <p><strong className="text-white">3. Screen Protocol:</strong> Click <strong>"Screen My Eligibility"</strong> to see matching trials and pass/fail reasons.</p>
+                        <p><strong className="text-white">4. Verify Audit:</strong> Check the <strong>"Audit Trail"</strong> tab to confirm the SHA-256 cryptographic proof.</p>
+                      </>
+                    )}
+                  </div>
+                </div>
+
+                {/* Direct Action Button to Test Live */}
+                <div className="pt-2 border-t border-white/10 space-y-2">
                   <button
                     onClick={() => {
                       setIsTourOpen(false);
                       onLaunchStudio();
                     }}
-                    className="px-4 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-semibold transition-colors flex items-center space-x-1 cursor-pointer"
+                    className="w-full py-2.5 px-4 rounded-xl bg-terracotta-600 hover:bg-terracotta-500 text-white font-semibold text-xs flex items-center justify-center space-x-1.5 transition-colors cursor-pointer shadow-md"
                   >
-                    <span>Launch Studio Now</span>
-                    <ArrowRight className="h-3 w-3" />
+                    <span>{tourStep === 4 ? 'Launch Studio & Audit Trail' : 'Open Studio to Test Live'}</span>
+                    <ExternalLink className="h-3.5 w-3.5" />
                   </button>
-                )}
+                  <p className="text-[10px] text-slate-400 text-center font-mono">
+                    All features run 100% locally with zero cloud API latency
+                  </p>
+                </div>
+
               </div>
 
+            </div>
+
+            {/* Modal Bottom Controls */}
+            <div className="flex flex-wrap items-center justify-between border-t border-white/10 pt-3 text-xs gap-2">
+              <div className="flex items-center space-x-2">
+                <button
+                  disabled={tourStep === 1}
+                  onClick={() => {
+                    setTourStep(p => Math.max(1, p - 1));
+                    setTourProgress(0);
+                  }}
+                  className="px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 disabled:opacity-30 disabled:cursor-not-allowed text-slate-300 hover:text-white transition-colors cursor-pointer"
+                >
+                  Previous Step
+                </button>
+
+                <button
+                  disabled={tourStep === 4}
+                  onClick={() => {
+                    setTourStep(p => Math.min(4, p + 1));
+                    setTourProgress(0);
+                  }}
+                  className="px-3.5 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 disabled:opacity-30 disabled:cursor-not-allowed text-slate-300 hover:text-white transition-colors cursor-pointer"
+                >
+                  Next Step
+                </button>
+              </div>
+
+              <div className="flex items-center space-x-1.5 font-mono text-[11px] text-slate-400">
+                <span>Step {tourStep} of 4</span>
+                <span>•</span>
+                <span>{tourStep === 1 ? 'PDF Ingestion' : tourStep === 2 ? 'Burden Matrix' : tourStep === 3 ? 'What-If Sliders' : 'Patient Screening'}</span>
+              </div>
+
+              <div className="flex items-center space-x-2">
+                <button
+                  onClick={() => setIsTourOpen(false)}
+                  className="px-3 py-1.5 rounded-lg text-slate-400 hover:text-white transition-colors cursor-pointer"
+                >
+                  Close
+                </button>
+
+                <button
+                  onClick={() => {
+                    setIsTourOpen(false);
+                    onLaunchStudio();
+                  }}
+                  className="px-4 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-semibold transition-colors flex items-center space-x-1.5 cursor-pointer shadow-md"
+                >
+                  <span>Launch Studio Now</span>
+                  <ArrowRight className="h-3 w-3" />
+                </button>
+              </div>
             </div>
 
           </div>

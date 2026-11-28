@@ -56,7 +56,7 @@ export interface ClinicalProtocol {
   burden: BurdenBreakdown;
   source_filename?: string;
   extracted_page_count?: number;
-  extraction_status?: 'extracted' | 'heuristic_fallback';
+  extraction_status?: 'extracted' | 'gemini_structured' | 'heuristic_fallback';
   extraction_notes?: string;
 }
 
@@ -97,11 +97,12 @@ export interface BenchmarkTrial {
   title: string;
   phase: string;
   actual_status: 'COMPLETED' | 'TERMINATED';
-  termination_reason?: string;
+  termination_reason?: string | null;
   enrolled_patients: number;
-  target_enrollment?: number;
-  burden_tier: string;
-  predicted_pbi: number;
+  enrollment_type?: string | null;
+  target_enrollment?: number | null;
+  burden_tier?: string | null;
+  predicted_pbi?: number | null;
   termination_risk_predicted: string;
   protocol_complexity_flags: string[];
 }

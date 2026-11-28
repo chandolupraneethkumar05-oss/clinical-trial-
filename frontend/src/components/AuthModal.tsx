@@ -1,6 +1,6 @@
 import { useState, useMemo } from 'react';
 import type { FC, FormEvent } from 'react';
-import type { AuthUser, AuthModalView } from '../types/auth';
+import type { AuthUser, AuthModalView, PortalLoginRole } from '../types/auth';
 import { apiUrl, extractApiErrorMessage, parseJsonSafe } from '../lib/api';
 import {
   X,
@@ -17,10 +17,14 @@ import {
   Sparkles,
   KeyRound,
   RefreshCw,
+  Stethoscope,
+  HeartPulse,
+  Settings2,
 } from 'lucide-react';
 
 interface AuthModalProps {
   initialView?: AuthModalView;
+  initialPortalRole?: PortalLoginRole;
   initialResetToken?: string;
   onClose: () => void;
   onLoginSuccess: (user: AuthUser) => void;
@@ -30,29 +34,81 @@ interface SampleIdentity {
   id: string;
   name: string;
   email: string;
-  role: 'doctor' | 'patient';
+  role: PortalLoginRole;
   roleLabel: string;
   organization: string;
 }
+
+interface PortalLoginConfig {
+  role: PortalLoginRole;
+  shortTitle: string;
+  title: string;
+  subtitle: string;
+  emailLabel: string;
+  placeholder: string;
+  accentBadge: string;
+  activeTabClass: string;
+}
+
+const PORTAL_LOGIN_CONFIGS: Record<PortalLoginRole, PortalLoginConfig> = {
+  patient: {
+    role: 'patient',
+    shortTitle: 'Patient Login',
+    title: 'Patient Portal Login',
+    subtitle: 'Private clinical trial self-screening & trial interest tracking',
+    emailLabel: 'Patient Email Address',
+    placeholder: 'patient@example.org',
+    accentBadge: 'bg-sky-50 text-sky-800 border-sky-200',
+    activeTabClass: 'bg-white text-sky-900 border border-sky-300 shadow-xs',
+  },
+  doctor: {
+    role: 'doctor',
+    shortTitle: 'Doctor Login',
+    title: 'Doctor / Investigator Login',
+    subtitle: 'Protocol PDF parsing, What-If sensitivity & Patient Burden Studio',
+    emailLabel: 'Investigator Work Email',
+    placeholder: 'investigator@hospital.org',
+    accentBadge: 'bg-sage-50 text-sage-800 border-sage-200',
+    activeTabClass: 'bg-white text-sage-900 border border-sage-300 shadow-xs',
+  },
+  admin: {
+    role: 'admin',
+    shortTitle: 'Admin Login',
+    title: 'Administrator Login',
+    subtitle: 'Dedicated Governance Console, role promotion, cohort ops & audit verification',
+    emailLabel: 'Administrator Email',
+    placeholder: 'admin@organization.com',
+    accentBadge: 'bg-amber-50 text-amber-800 border-amber-200',
+    activeTabClass: 'bg-white text-amber-900 border border-amber-300 shadow-xs',
+  },
+};
 
 // Development-only sample identities for manual testing (strictly emails, zero passwords)
 const DEV_SAMPLE_IDENTITIES: SampleIdentity[] = import.meta.env.DEV
   ? [
       {
-        id: 'usr-dev-001',
-        name: 'Dr. Elena Vance',
-        email: 'elena.vance@novartis.com',
-        role: 'doctor',
-        roleLabel: 'Doctor / Clinical Investigator',
-        organization: 'Novartis Oncology',
-      },
-      {
         id: 'usr-dev-002',
         name: 'John Miller',
         email: 'john.miller@patient.org',
         role: 'patient',
-        roleLabel: 'Patient / Trial Volunteer',
+        roleLabel: 'Patient Portal Login',
         organization: 'Oncology Patient Cohort',
+      },
+      {
+        id: 'usr-dev-001',
+        name: 'Dr. Elena Vance',
+        email: 'elena.vance@novartis.com',
+        role: 'doctor',
+        roleLabel: 'Doctor / Investigator Login',
+        organization: 'Novartis Oncology',
+      },
+      {
+        id: 'usr-dev-003',
+        name: 'Sarah Jenkins, RAC',
+        email: 'sarah.jenkins@iqvia.com',
+        role: 'admin',
+        roleLabel: 'Administrator Login',
+        organization: 'IQVIA Regulatory Governance',
       },
     ]
   : [];
@@ -71,11 +127,13 @@ const KNOWN_ENTERPRISE_DOMAINS: Record<string, string> = {
 
 export const AuthModal: FC<AuthModalProps> = ({
   initialView = 'signin',
+  initialPortalRole = 'patient',
   initialResetToken = '',
   onClose,
   onLoginSuccess,
 }) => {
   const [view, setView] = useState<AuthModalView>(initialResetToken ? 'forgot_password' : initialView);
+  const [selectedPortalRole, setSelectedPortalRole] = useState<PortalLoginRole>(initialPortalRole);
 
   // Form Fields
   const [email, setEmail] = useState('');
@@ -148,7 +206,11 @@ export const AuthModal: FC<AuthModalProps> = ({
       const res = await fetch(apiUrl('/api/v1/auth/signin'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: email.trim().toLowerCase(), password }),
+        body: JSON.stringify({
+          email: email.trim().toLowerCase(),
+          password,
+          expected_role: selectedPortalRole,
+        }),
       });
 
       const data = await parseJsonSafe(res);
@@ -266,7 +328,10 @@ export const AuthModal: FC<AuthModalProps> = ({
             const res = await fetch(apiUrl('/api/v1/auth/google'), {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ id_token: response.credential }),
+              body: JSON.stringify({
+                id_token: response.credential,
+                expected_role: selectedPortalRole,
+              }),
             });
 
             const data = await parseJsonSafe(res);
@@ -306,6 +371,8 @@ export const AuthModal: FC<AuthModalProps> = ({
 
   // ── Development Sample Identity Selection ─────────────────────────────────
   const handleSelectDevIdentity = (identity: SampleIdentity) => {
+    setView('signin');
+    setSelectedPortalRole(identity.role);
     setEmail(identity.email);
     setPassword('');
     setErrorMessage('');
@@ -423,10 +490,16 @@ export const AuthModal: FC<AuthModalProps> = ({
             </div>
             <div>
               <span className="font-serif font-bold text-sm tracking-tight text-white block">
-                ProtocolShield Access
+                {view === 'signin'
+                  ? PORTAL_LOGIN_CONFIGS[selectedPortalRole].title
+                  : view === 'signup'
+                    ? 'Patient Account Registration'
+                    : 'Password Recovery'}
               </span>
               <span className="text-[10px] font-mono text-charcoal-400">
-                Institutional Clinical Feasibility Portal
+                {view === 'signin'
+                  ? PORTAL_LOGIN_CONFIGS[selectedPortalRole].subtitle
+                  : 'ProtocolShield Role-Separated Authentication'}
               </span>
             </div>
           </div>
@@ -446,6 +519,7 @@ export const AuthModal: FC<AuthModalProps> = ({
         <div className="px-6 pt-4 pb-2 bg-linen-50 border-b border-linen-200 flex items-center justify-between text-xs">
           <div className="flex space-x-1 p-1 bg-linen-200/80 rounded-xl">
             <button
+              type="button"
               onClick={() => {
                 setView('signin');
                 setErrorMessage('');
@@ -460,6 +534,7 @@ export const AuthModal: FC<AuthModalProps> = ({
               Sign In
             </button>
             <button
+              type="button"
               onClick={() => {
                 setView('signup');
                 setErrorMessage('');
@@ -477,6 +552,7 @@ export const AuthModal: FC<AuthModalProps> = ({
 
           {view !== 'forgot_password' && (
             <button
+              type="button"
               onClick={() => {
                 setView('forgot_password');
                 setForgotStep(1);
@@ -494,9 +570,30 @@ export const AuthModal: FC<AuthModalProps> = ({
         <div className="p-6 space-y-4">
           {/* Alerts */}
           {errorMessage && (
-            <div className="p-3 bg-red-50 border border-red-200 rounded-xl flex items-start space-x-2.5 text-xs text-red-700 animate-in fade-in duration-200">
-              <AlertCircle className="h-4 w-4 mt-0.5 flex-shrink-0 text-red-500" />
-              <span>{errorMessage}</span>
+            <div className="p-3 bg-red-50 border border-red-200 rounded-xl space-y-2 text-xs text-red-700 animate-in fade-in duration-200">
+              <div className="flex items-start space-x-2.5">
+                <AlertCircle className="h-4 w-4 mt-0.5 flex-shrink-0 text-red-500" />
+                <span>{errorMessage}</span>
+              </div>
+              {errorMessage.includes('Role mismatch:') && (
+                <div className="flex flex-wrap gap-1.5 pl-6">
+                  {(['patient', 'doctor', 'admin'] as PortalLoginRole[])
+                    .filter((r) => errorMessage.includes(`'${r}'`) && r !== selectedPortalRole)
+                    .map((r) => (
+                      <button
+                        key={r}
+                        type="button"
+                        onClick={() => {
+                          setSelectedPortalRole(r);
+                          setErrorMessage('');
+                        }}
+                        className="px-2.5 py-1 rounded-lg bg-white border border-red-300 text-red-800 hover:bg-red-100 text-[11px] font-semibold cursor-pointer"
+                      >
+                        Switch to {PORTAL_LOGIN_CONFIGS[r].title}
+                      </button>
+                    ))}
+                </div>
+              )}
             </div>
           )}
 
@@ -508,10 +605,53 @@ export const AuthModal: FC<AuthModalProps> = ({
           )}
 
           {/* ══════════════════════════════════════════════════════════════════
-              VIEW: SIGN IN
+              VIEW: SIGN IN (3 ROLE-SEPARATED LOGIN PORTALS)
              ══════════════════════════════════════════════════════════════════ */}
           {view === 'signin' && (
             <form onSubmit={handleSignIn} className="space-y-4">
+              {/* Separated Login Portals: Patient / Doctor / Admin */}
+              <div className="space-y-1.5">
+                <span className="text-[10px] font-mono uppercase tracking-wider text-charcoal-500 block">
+                  Select Access Portal
+                </span>
+                <div className="grid grid-cols-3 gap-1.5 p-1 bg-linen-100 rounded-xl border border-linen-200" role="tablist" aria-label="Role login portal selector">
+                  {(['patient', 'doctor', 'admin'] as PortalLoginRole[]).map((portalRole) => {
+                    const cfg = PORTAL_LOGIN_CONFIGS[portalRole];
+                    const isActive = selectedPortalRole === portalRole;
+                    const Icon =
+                      portalRole === 'patient'
+                        ? HeartPulse
+                        : portalRole === 'doctor'
+                          ? Stethoscope
+                          : Settings2;
+                    return (
+                      <button
+                        key={portalRole}
+                        type="button"
+                        role="tab"
+                        aria-selected={isActive}
+                        onClick={() => {
+                          setSelectedPortalRole(portalRole);
+                          setErrorMessage('');
+                        }}
+                        className={`px-2 py-2 rounded-lg text-[11px] font-semibold flex flex-col items-center justify-center gap-1 transition-all cursor-pointer ${
+                          isActive
+                            ? cfg.activeTabClass
+                            : 'text-charcoal-600 hover:text-charcoal-900 hover:bg-white/60 border border-transparent'
+                        }`}
+                      >
+                        <Icon className="h-3.5 w-3.5 shrink-0" />
+                        <span className="truncate">{cfg.shortTitle}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+                <div className={`px-3 py-2 rounded-xl border text-[11px] flex items-center justify-between gap-2 ${PORTAL_LOGIN_CONFIGS[selectedPortalRole].accentBadge}`}>
+                  <span className="font-semibold">{PORTAL_LOGIN_CONFIGS[selectedPortalRole].title}</span>
+                  <span className="text-[10px] font-mono opacity-80 hidden sm:inline">Server-enforced</span>
+                </div>
+              </div>
+
               {/* Google OAuth Button */}
               <button
                 type="button"
@@ -551,7 +691,7 @@ export const AuthModal: FC<AuthModalProps> = ({
               {/* Email */}
               <div className="space-y-1">
                 <label className="text-[11px] font-medium text-charcoal-700 block">
-                  Work Email Address
+                  {PORTAL_LOGIN_CONFIGS[selectedPortalRole].emailLabel}
                 </label>
                 <div className="relative">
                   <Mail className="absolute left-3 top-2.5 h-4 w-4 text-charcoal-400" />
@@ -559,7 +699,7 @@ export const AuthModal: FC<AuthModalProps> = ({
                     type="email"
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
-                    placeholder="name@organization.com"
+                    placeholder={PORTAL_LOGIN_CONFIGS[selectedPortalRole].placeholder}
                     className="w-full pl-9 pr-3 py-2 text-xs bg-white border border-linen-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-terracotta-500/20 focus:border-terracotta-500 transition-all font-mono"
                     required
                   />
@@ -981,24 +1121,28 @@ export const AuthModal: FC<AuthModalProps> = ({
                 <span>Local Dev Quick-Fill (Emails Only - Enter Password to Sign In)</span>
               </div>
 
-              <div className="grid grid-cols-2 gap-2">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                 {DEV_SAMPLE_IDENTITIES.map((identity) => (
                   <button
                     key={identity.id}
                     type="button"
                     onClick={() => handleSelectDevIdentity(identity)}
-                    className="p-2 bg-linen-50 hover:bg-linen-100 border border-linen-200 rounded-xl text-left transition-all hover:border-terracotta-300 group cursor-pointer"
+                    className="p-2.5 bg-linen-50 hover:bg-linen-100 border border-linen-200 rounded-xl text-left transition-all hover:border-terracotta-300 group cursor-pointer"
                   >
                     <span className="text-xs font-semibold text-charcoal-900 block truncate group-hover:text-terracotta-600">
                       {identity.name}
                     </span>
-                    <span className="text-[10px] text-charcoal-500 block truncate font-mono">
-                      {identity.roleLabel}
+                    <span className="text-[10px] text-charcoal-500 block truncate font-mono mt-0.5">
+                      {identity.email}
                     </span>
-                    <span className={`text-[9px] px-1.5 py-0.2 rounded font-mono inline-block mt-1 font-semibold ${
-                      identity.role === 'patient' ? 'bg-blue-100 text-blue-800' : 'bg-sage-100 text-sage-800'
+                    <span className={`text-[9px] px-1.5 py-0.5 rounded font-mono inline-block mt-1.5 font-semibold ${
+                      identity.role === 'patient'
+                        ? 'bg-sky-100 text-sky-800'
+                        : identity.role === 'admin'
+                          ? 'bg-amber-100 text-amber-800'
+                          : 'bg-sage-100 text-sage-800'
                     }`}>
-                      {identity.role === 'patient' ? 'Patient' : 'Doctor'}
+                      {identity.role === 'patient' ? 'Patient Portal' : identity.role === 'admin' ? 'Administrator' : 'Doctor Studio'}
                     </span>
                   </button>
                 ))}

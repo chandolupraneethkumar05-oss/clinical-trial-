@@ -7,9 +7,11 @@ Falls back gracefully to canonical NSCLC defaults when extraction yields sparse 
 from __future__ import annotations
 import hashlib
 import io
+import json
+import logging
 import re
 import uuid
-from typing import Optional
+from typing import Any, Optional
 from datetime import datetime
 
 try:
@@ -31,6 +33,8 @@ except ImportError:
 from app.models.protocol import ClinicalTrialProtocol, ProtocolEligibilityCriteria, StructuredCriterion
 from app.models.burden import ProtocolVisit, AssessmentProcedure, InvasivenessTier
 from app.engine.burden_scorer import burden_engine, STANDARD_PROCEDURE_CATALOG
+
+logger = logging.getLogger(__name__)
 
 
 # ── Keyword → Catalog Procedure Mapping ─────────────────────────────────────
@@ -470,15 +474,47 @@ class ProtocolPDFParser:
             ),
         ]
 
-        # ── 4. Schedule of Assessments extraction ────────────────────────────
+        # ── 4. Schedule of Assessments extraction & optional Gemini semantic assist ─
         extraction_status = "extracted"
         extraction_notes = None
+        ai_notes: Optional[str] = None
         if table_visits and len(table_visits) >= 3:
             visits = table_visits
             extraction_notes = f"Extracted {len(visits)} visits from structured SoA tables."
         else:
             soa_lines = sections.get("soa", [])
             visits = self._extract_visits(soa_lines, full_text)
+            if len(visits) < 3 and len(full_text.strip()) >= 120:
+                ai_data = self._try_gemini_semantic_extract(full_text, filename)
+                if ai_data and len(ai_data.get("visits") or []) >= 3:
+                    visits = ai_data["visits"]
+                    if ai_data.get("title"):
+                        title = str(ai_data["title"])[:240]
+                    if ai_data.get("phase"):
+                        phase = str(ai_data["phase"])[:40]
+                    if ai_data.get("indication"):
+                        indication = str(ai_data["indication"])[:160]
+                    if ai_data.get("inclusion_criteria"):
+                        inclusion = ai_data["inclusion_criteria"]
+                    if ai_data.get("exclusion_criteria"):
+                        exclusion = ai_data["exclusion_criteria"]
+                    if ai_data.get("min_egfr") is not None:
+                        structured_filters["min_egfr"] = ai_data["min_egfr"]
+                    if ai_data.get("max_ecog") is not None:
+                        structured_filters["max_ecog"] = ai_data["max_ecog"]
+                    if ai_data.get("min_age") is not None:
+                        structured_filters["min_age"] = ai_data["min_age"]
+                    if ai_data.get("max_age") is not None:
+                        structured_filters["max_age"] = ai_data["max_age"]
+                    if ai_data.get("allow_stable_brain_mets") is not None:
+                        structured_filters["allow_stable_brain_mets"] = ai_data["allow_stable_brain_mets"]
+                    extraction_status = "gemini_structured"
+                    ai_notes = (
+                        f"Semantic extraction via Gemini ({ai_data.get('_used_model', 'gemini')}) parsed "
+                        f"{len(visits)} visits and eligibility criteria from non-tabular protocol text."
+                    )
+                    extraction_notes = ai_notes
+
             if len(visits) < 3:
                 visits = self._get_fallback_visits()
                 extraction_status = "heuristic_fallback"
@@ -805,3 +841,139 @@ class ProtocolPDFParser:
             extraction_status="heuristic_fallback",
             extraction_notes=f"Document yielded sparse text or non-tabular structures ({reason or 'standard parsing'}). Calibrated oncology defaults loaded.",
         )
+
+    # ── Optional Semantic Extraction via Gemini API ──────────────────────────
+
+    def _try_gemini_semantic_extract(self, full_text: str, filename: str) -> Optional[dict[str, Any]]:
+        """
+        Uses configured Gemini API to recover structured Schedule of Assessments & eligibility fields
+        from unstructured PDF prose when deterministic table parsing finds < 3 visits.
+        Returns None cleanly when Gemini is disabled or returns invalid structure.
+        """
+        try:
+            from app.engine.assistant_engine import (
+                _build_genai_client,
+                _generate_with_model_fallback,
+                is_gemini_configured,
+            )
+            if not is_gemini_configured():
+                return None
+
+            from google import genai
+            from google.genai import types
+            from app.core.config import settings
+        except Exception:
+            return None
+
+        excerpt = (full_text or "").strip()
+        if len(excerpt) > 14000:
+            excerpt = excerpt[:7500] + "\n...\n" + excerpt[-6500:]
+
+        allowed_keys = list(STANDARD_PROCEDURE_CATALOG.keys())
+        prompt = (
+            "Extract ONLY explicitly stated protocol facts from this clinical trial excerpt. "
+            "Do NOT invent or assume visits or criteria that are not stated.\n"
+            f"Filename: {filename}\n"
+            f"Allowed procedure_keys ONLY from: {json.dumps(allowed_keys)}\n\n"
+            "Return a single strict JSON object with keys:\n"
+            '  "title": string or null,\n'
+            '  "phase": string or null,\n'
+            '  "indication": string or null,\n'
+            '  "inclusion_criteria": array of short strings (up to 8),\n'
+            '  "exclusion_criteria": array of short strings (up to 8),\n'
+            '  "min_age": integer (18-95) or null,\n'
+            '  "max_age": integer (18-120) or null,\n'
+            '  "min_egfr": number (10-150) or null,\n'
+            '  "max_ecog": integer (0-4) or null,\n'
+            '  "allow_stable_brain_mets": boolean or null,\n'
+            '  "visits": array of up to 16 objects {"visit_name": string, "week_number": integer (-4 to 104), "procedure_keys": array of strings from allowed procedure_keys}\n\n'
+            f"PROTOCOL EXCERPT:\n{excerpt}"
+        )
+
+        try:
+            client = _build_genai_client(genai, types)
+            primary_model = (settings.GEMINI_MODEL or "gemini-3.8-flash").strip()
+            response, used_model = _generate_with_model_fallback(
+                client,
+                primary_model=primary_model,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    temperature=0.1,
+                    max_output_tokens=2048,
+                    response_mime_type="application/json",
+                ),
+            )
+            raw_text = (getattr(response, "text", None) or "").strip()
+            if not raw_text:
+                return None
+            payload = json.loads(raw_text)
+            if not isinstance(payload, dict):
+                return None
+
+            raw_visits = payload.get("visits") or []
+            parsed_visits: list[ProtocolVisit] = []
+            for idx, v_obj in enumerate(raw_visits[:20], start=1):
+                if not isinstance(v_obj, dict):
+                    continue
+                v_name = str(v_obj.get("visit_name") or "").strip()[:80]
+                if not v_name:
+                    continue
+                try:
+                    wk = max(-4, min(104, int(v_obj.get("week_number", (idx - 1) * 3))))
+                except (TypeError, ValueError):
+                    wk = max(-4, min(104, (idx - 1) * 3))
+                raw_keys = v_obj.get("procedure_keys") or []
+                procs: list[AssessmentProcedure] = []
+                for pk in raw_keys:
+                    k = str(pk).strip()
+                    if k in STANDARD_PROCEDURE_CATALOG and not any(p.name == STANDARD_PROCEDURE_CATALOG[k]["name"] for p in procs):
+                        procs.append(AssessmentProcedure(**STANDARD_PROCEDURE_CATALOG[k]))
+                if not procs:
+                    procs = [AssessmentProcedure(**STANDARD_PROCEDURE_CATALOG["vitals"])]
+                parsed_visits.append(
+                    ProtocolVisit(
+                        visit_id=f"V-{idx:02d}",
+                        week_number=wk,
+                        visit_name=v_name,
+                        procedures=procs,
+                    )
+                )
+
+            if len(parsed_visits) < 3:
+                return None
+
+            def _bound_float(val: Any, lo: float, hi: float) -> Optional[float]:
+                try:
+                    if val is None:
+                        return None
+                    f = float(val)
+                    return f if lo <= f <= hi else None
+                except (TypeError, ValueError):
+                    return None
+
+            def _bound_int(val: Any, lo: int, hi: int) -> Optional[int]:
+                try:
+                    if val is None:
+                        return None
+                    n = int(val)
+                    return n if lo <= n <= hi else None
+                except (TypeError, ValueError):
+                    return None
+
+            return {
+                "_used_model": used_model,
+                "title": str(payload.get("title")).strip() if payload.get("title") else None,
+                "phase": str(payload.get("phase")).strip() if payload.get("phase") else None,
+                "indication": str(payload.get("indication")).strip() if payload.get("indication") else None,
+                "inclusion_criteria": [str(x).strip() for x in (payload.get("inclusion_criteria") or []) if str(x).strip()][:8],
+                "exclusion_criteria": [str(x).strip() for x in (payload.get("exclusion_criteria") or []) if str(x).strip()][:8],
+                "min_age": _bound_int(payload.get("min_age"), 18, 95),
+                "max_age": _bound_int(payload.get("max_age"), 18, 120),
+                "min_egfr": _bound_float(payload.get("min_egfr"), 10.0, 150.0),
+                "max_ecog": _bound_int(payload.get("max_ecog"), 0, 4),
+                "allow_stable_brain_mets": payload.get("allow_stable_brain_mets") if isinstance(payload.get("allow_stable_brain_mets"), bool) else None,
+                "visits": parsed_visits,
+            }
+        except Exception as exc:
+            logger.info("Gemini semantic PDF extraction unavailable (%s); using deterministic fallback.", type(exc).__name__)
+            return None

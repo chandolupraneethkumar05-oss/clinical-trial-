@@ -625,50 +625,45 @@ export const PatientPortal: FC<PatientPortalProps> = ({
 
   return (
     <div className="min-h-screen bg-linen-100 flex flex-col font-sans text-charcoal-900">
-      {/* ── Top Header ──────────────────────────────────────────────────────── */}
-      <header className="sticky top-0 z-40 bg-white/90 backdrop-blur-md border-b border-linen-300">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
-          <div className="flex items-center space-x-3">
-            <div className="h-9 w-9 rounded-xl bg-blue-600/10 border border-blue-500/20 flex items-center justify-center">
-              <HeartHandshake className="h-5 w-5 text-blue-600" />
-            </div>
-            <div>
-              <div className="flex items-center space-x-2">
-                <span className="font-serif font-bold text-sm tracking-tight text-charcoal-900">
-                  ProtocolShield Patient Portal
-                </span>
-                <span
-                  className={`px-2 py-0.5 rounded-full text-[10px] font-mono font-bold ${
-                    provenanceInfo
-                      ? provenanceInfo.badgeClass
-                      : 'bg-blue-100 text-blue-800 border border-blue-200'
-                  }`}
-                >
-                  {provenanceInfo ? provenanceInfo.label : 'Patient-Reported (Unverified)'}
-                </span>
-                {isDemoMode && (
-                  <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-amber-100 text-amber-800 border border-amber-300">
-                    Synthetic Demo Patient
-                  </span>
-                )}
-              </div>
-              <span className="text-[11px] text-charcoal-500 font-mono">
-                Clinical Trial Eligibility & Visit Burden Evaluator
-              </span>
-            </div>
-          </div>
-
-          <div className="flex items-center space-x-3">
+      {/* ── Slim Top Header ─────────────────────────────────────────────────── */}
+      <header className="sticky top-0 z-40 bg-linen-50/95 backdrop-blur-md border-b border-linen-300">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-14 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-3 min-w-0">
             {onBackToLanding && (
               <button
                 type="button"
                 onClick={onBackToLanding}
-                className="hidden sm:inline-flex items-center space-x-1.5 px-3 py-1.5 rounded-xl text-xs font-mono font-medium text-charcoal-700 bg-linen-200 hover:bg-linen-300 border border-linen-300 transition-colors cursor-pointer"
+                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium text-charcoal-700 bg-white hover:bg-linen-200 border border-linen-300 transition-colors cursor-pointer whitespace-nowrap shrink-0"
               >
                 <ArrowLeft className="w-3.5 h-3.5 text-charcoal-500" />
-                <span>Overview</span>
+                <span className="hidden sm:inline">Overview</span>
               </button>
             )}
+            <div className="h-8 w-8 rounded-lg bg-sky-50 border border-sky-200 flex items-center justify-center shrink-0">
+              <HeartHandshake className="h-4 w-4 text-sky-700" />
+            </div>
+            <div className="flex items-center gap-2 min-w-0">
+              <span className="font-serif font-bold text-sm tracking-tight text-charcoal-900 truncate">
+                ProtocolShield Patient Portal
+              </span>
+              <span
+                className={`hidden md:inline-flex px-2 py-0.5 rounded-full text-[10px] font-mono font-semibold whitespace-nowrap shrink-0 ${
+                  provenanceInfo
+                    ? provenanceInfo.badgeClass
+                    : 'bg-sky-50 text-sky-800 border border-sky-200'
+                }`}
+              >
+                {provenanceInfo ? provenanceInfo.label : 'Patient-Reported (Unverified)'}
+              </span>
+              {isDemoMode && (
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-amber-100 text-amber-800 border border-amber-300 whitespace-nowrap shrink-0">
+                  Demo Profile
+                </span>
+              )}
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2.5 shrink-0">
             <UserMenu
               user={user}
               onOpenAuth={onOpenAuth}
@@ -680,27 +675,27 @@ export const PatientPortal: FC<PatientPortalProps> = ({
       </header>
 
       {/* ── Main Portal Body ────────────────────────────────────────────────── */}
-      <div className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-6">
+      <div className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-5">
         
-        {/* Welcome Banner */}
-        <div className="bg-white rounded-3xl border border-linen-300 p-6 sm:p-8 shadow-xs flex flex-col md:flex-row items-start md:items-center justify-between gap-6">
-          <div className="space-y-2">
-            <span className="text-[10px] font-mono uppercase tracking-widest text-blue-600 font-bold block">
-              PATIENT RECRUITMENT & ELIGIBILITY SUPPORT SUITE
-            </span>
-            <h1 className="font-serif text-2xl sm:text-3xl text-charcoal-900 font-bold">
-              Welcome, {user.name}
-            </h1>
-            <p className="text-xs sm:text-sm text-charcoal-600 max-w-2xl leading-relaxed">
-              Enter your clinical details below to evaluate preliminary matches against active study protocols. Any unprovided fields remain unknown and are flagged for investigator verification rather than assumed negative.
-            </p>
-          </div>
+        {/* Calm Welcome & Privacy Summary Card */}
+        <div className="bg-white rounded-2xl border border-linen-300 p-5 shadow-2xs space-y-3">
+          <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+            <div className="space-y-1">
+              <span className="text-[10px] font-mono uppercase tracking-widest text-sky-700 font-bold block">
+                Patient Trial Self-Screening & Burden Evaluator
+              </span>
+              <h1 className="font-serif text-xl sm:text-2xl text-charcoal-900 font-bold">
+                Welcome, {user.name}
+              </h1>
+              <p className="text-xs text-charcoal-600 max-w-2xl leading-relaxed">
+                Enter your clinical details below to check preliminary protocol matches. Unprovided optional labs stay marked unknown for clinician review rather than assumed negative.
+              </p>
+            </div>
 
-          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
             <button
               type="button"
               onClick={handleToggleDemoMode}
-              className={`px-4 py-2 rounded-2xl text-xs font-semibold font-mono border transition-all cursor-pointer ${
+              className={`px-3.5 py-2 rounded-xl text-xs font-semibold font-mono border transition-all cursor-pointer whitespace-nowrap shrink-0 ${
                 isDemoMode
                   ? 'bg-amber-100 text-amber-900 border-amber-300 hover:bg-amber-200'
                   : 'bg-linen-100 text-charcoal-800 border-linen-300 hover:bg-linen-200'
@@ -709,33 +704,28 @@ export const PatientPortal: FC<PatientPortalProps> = ({
               {isDemoMode ? 'Clear Demo Patient' : 'Load Demo Patient Profile'}
             </button>
           </div>
-        </div>
 
-        {/* Demo Mode Notice */}
-        {isDemoMode && (
-          <div className="p-4 rounded-2xl bg-amber-50/90 border border-amber-300 text-xs text-amber-900 flex items-start space-x-3 shadow-2xs">
-            <AlertCircle className="h-5 w-5 text-amber-600 shrink-0 mt-0.5" />
-            <div className="space-y-1">
-              <span className="font-serif font-bold text-xs text-amber-950 block">
-                Synthetic Demo Patient Profile Active — Not Real Clinical Data
+          {/* Demo & Safety Notices (Compact Bar) */}
+          <div className="pt-2.5 border-t border-linen-200 flex flex-col sm:flex-row gap-2.5 text-[11px]">
+            <div className="flex-1 px-3 py-2 rounded-xl bg-sky-50/70 border border-sky-200 text-sky-900 flex items-start gap-2">
+              <HelpCircle className="h-3.5 w-3.5 text-sky-700 shrink-0 mt-0.5" />
+              <span>
+                Self-submitted entries remain patient-reported until verified by a licensed investigator — preliminary simulator only, not medical advice.
               </span>
-              <p className="text-[11px] leading-relaxed text-amber-800">
-                You are viewing a demonstration profile populated with synthetic observations (Age 62, Stage IV, eGFR 52). This profile is provided for demonstration and planning purposes only and does not represent a real patient or verified medical record.
-              </p>
             </div>
-          </div>
-        )}
-
-        {/* Clinical Safety Notice */}
-        <div className="p-4 rounded-2xl bg-blue-50/70 border border-blue-200 text-xs text-blue-900 flex items-start space-x-3 shadow-2xs">
-          <HelpCircle className="h-5 w-5 text-blue-600 shrink-0 mt-0.5" />
-          <div className="space-y-1">
-            <span className="font-serif font-bold text-xs text-blue-950 block">
-              Clinical Safety & Data Provenance Notice
-            </span>
-            <p className="text-[11px] leading-relaxed text-blue-800">
-              Self-submitted entries are recorded as unverified patient-reported data until reviewed by a licensed clinical investigator. This preliminary screening simulator does not constitute medical advice, diagnosis, or a binding enrollment decision.
-            </p>
+            {isDemoMode && (
+              <div className="flex-1 px-3 py-2 rounded-xl bg-amber-50 border border-amber-300 text-amber-900 flex items-start gap-2">
+                <AlertCircle className="h-3.5 w-3.5 text-amber-700 shrink-0 mt-0.5" />
+                <div>
+                  <span className="font-semibold text-amber-950 block">
+                    Synthetic Demo Patient Profile Active — Not Real Clinical Data
+                  </span>
+                  <span>
+                    Age 62, Stage IV, eGFR 52 — demonstration profile only, not real clinical data.
+                  </span>
+                </div>
+              </div>
+            )}
           </div>
         </div>
 

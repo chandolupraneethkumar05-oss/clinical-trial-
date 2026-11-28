@@ -1,9 +1,15 @@
 """
 ProtocolShield Protocol Management & Burden Analysis API Routes
 """
-import logging
 import json
+import logging
+import re
+import textwrap
+from datetime import datetime, timezone
+from typing import Any, Optional
 from fastapi import APIRouter, HTTPException, UploadFile, File, Depends, Query
+from fastapi.responses import Response
+from pydantic import BaseModel, Field
 from app.models.protocol import ClinicalTrialProtocol, ProtocolEligibilityCriteria
 from app.models.burden import ProtocolVisit, AssessmentProcedure, PatientBurdenBreakdown
 from app.engine.burden_scorer import burden_engine, STANDARD_PROCEDURE_CATALOG
@@ -496,3 +502,131 @@ async def score_protocol_burden(
 async def get_procedures_catalog():
     """Returns canonical catalog of standard clinical trial procedures with weights."""
     return list(STANDARD_PROCEDURE_CATALOG.values())
+
+
+class ProtocolDossierExportRequest(BaseModel):
+    protocol: ClinicalTrialProtocol
+    funnel_data: Optional[dict[str, Any]] = None
+    total_cohort_size: int = Field(default=10000, ge=0)
+    applied_amendment_ids: list[str] = Field(default_factory=list)
+
+
+@router.post("/export-dossier")
+async def export_protocol_dossier_pdf(
+    payload: ProtocolDossierExportRequest,
+    user: AuthenticatedUser = Depends(require_role(["doctor", "admin"])),
+):
+    """Generates and returns a binary PDF Feasibility & Attrition Dossier using PyMuPDF. Requires doctor or admin role."""
+    try:
+        import pymupdf as fitz
+    except ImportError:
+        try:
+            import fitz  # type: ignore
+        except ImportError:
+            raise HTTPException(status_code=503, detail="PDF generator (PyMuPDF) is unavailable on this server.")
+
+    proto = payload.protocol
+    burden = proto.burden or burden_engine.calculate_protocol_burden(
+        proto.visits, study_duration_weeks=proto.study_duration_weeks
+    )
+    funnel = payload.funnel_data or {}
+
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    y = 48.0
+
+    def _next_page_if_needed(needed: float = 28.0) -> None:
+        nonlocal page, y
+        if y + needed > 790.0:
+            page = doc.new_page(width=595, height=842)
+            y = 48.0
+
+    def _draw_heading(title: str) -> None:
+        nonlocal y
+        _next_page_if_needed(34.0)
+        y += 8.0
+        page.insert_text((44, y), title, fontsize=12, fontname="helv", color=(0.12, 0.14, 0.17))
+        y += 6.0
+        page.draw_line((44, y), (551, y), color=(0.82, 0.8, 0.76), width=0.8)
+        y += 14.0
+
+    def _draw_lines(text: str, fontsize: float = 9.5, indent: float = 48.0, color=(0.2, 0.22, 0.25)) -> None:
+        nonlocal y
+        for raw_line in str(text).splitlines() or [""]:
+            wrapped = textwrap.wrap(raw_line, width=88) or [""]
+            for seg in wrapped:
+                _next_page_if_needed(16.0)
+                page.insert_text((indent, y), seg, fontsize=fontsize, fontname="helv", color=color)
+                y += 13.5
+
+    # Executive Banner Header
+    page.draw_rect(fitz.Rect(0, 0, 595, 86), color=None, fill=(0.11, 0.12, 0.13))
+    page.insert_text((44, 34), "PROTOCOLSHIELD FEASIBILITY & ATTRITION DOSSIER", fontsize=13, fontname="helv", color=(1, 1, 1))
+    page.insert_text(
+        (44, 54),
+        f"Study ID: {proto.protocol_id}   |   Phase: {proto.phase}   |   Duration: {proto.study_duration_weeks} Weeks",
+        fontsize=9.5,
+        fontname="helv",
+        color=(0.85, 0.84, 0.82),
+    )
+    page.insert_text(
+        (44, 70),
+        f"Prepared for: {user.name} ({user.role.upper()})   |   Generated UTC: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}",
+        fontsize=8.5,
+        fontname="helv",
+        color=(0.72, 0.72, 0.72),
+    )
+    y = 108.0
+
+    _draw_heading("1. Protocol Overview")
+    _draw_lines(f"Title: {proto.title}", fontsize=10)
+    _draw_lines(f"Indication: {proto.indication}   |   NCT ID: {proto.nct_id or 'Not Assigned'}")
+    _draw_lines(f"Target Enrollment: {proto.target_enrollment}   |   Extraction Status: {proto.extraction_status or 'extracted'}")
+
+    _draw_heading("2. Tufts CSDD Patient Burden Index (PBI)")
+    _draw_lines(
+        f"Composite PBI Score: {burden.composite_pbi_score} / 100 ({burden.attrition_risk_tier} Friction)\n"
+        f"Subscores -> Temporal: {burden.temporal_burden_score} | Invasive: {burden.invasive_burden_score} | Cognitive: {burden.cognitive_burden_score}\n"
+        f"Scheduled Visits: {burden.total_study_visits} | Clinic Dwell: {burden.total_clinic_hours} hrs | "
+        f"Blood Draws: {burden.total_blood_draws} | Scans: {burden.total_imaging_scans} | Biopsies: {burden.total_biopsies}\n"
+        f"Peak Burden Weeks: {', '.join(f'Wk {w}' for w in (burden.peak_burden_weeks or [])) or 'None identified'}"
+    )
+    _draw_lines(f"Clinical Rationale: {burden.clinical_risk_rationale}", color=(0.35, 0.35, 0.38))
+
+    _draw_heading("3. Synthetic Cohort Eligibility Funnel")
+    if funnel:
+        _draw_lines(
+            f"Loaded Synthetic Cohort Size: {payload.total_cohort_size:,} patients\n"
+            f"Eligible Candidate Count: {int(funnel.get('final_eligible_count', 0)):,} ({funnel.get('overall_yield_percentage', 0)}% yield)\n"
+            f"Screen Failure Rate: {funnel.get('screen_failure_rate', 0)}%"
+        )
+        for st in (funnel.get("funnel_stages") or [])[:6]:
+            _draw_lines(f"- {st.get('stage')}: {st.get('count', 0):,} ({st.get('pass_rate', 0)}%)", indent=54.0, fontsize=9.0)
+    else:
+        _draw_lines("Cohort funnel simulation was not attached to this export snapshot.")
+
+    _draw_heading(f"4. Schedule of Assessments Summary ({len(proto.visits)} Visits)")
+    for v in proto.visits[:20]:
+        proc_names = ", ".join(p.name for p in v.procedures[:4])
+        extra = f" (+{len(v.procedures) - 4} more)" if len(v.procedures) > 4 else ""
+        _draw_lines(f"- Wk {v.week_number:>3} | {v.visit_name} ({v.total_clinic_minutes} min): {proc_names}{extra}", indent=52.0, fontsize=8.8)
+
+    _draw_heading("5. Applied Protocol Amendments & Provenance Caveat")
+    _draw_lines(
+        f"Applied Amendments in Session: {', '.join(payload.applied_amendment_ids) if payload.applied_amendment_ids else 'None applied (baseline protocol)'}"
+    )
+    _draw_lines(
+        "Provenance Notice: Cohort yields reflect ProtocolShield synthetic DuckDB data and deterministic burden formulas for protocol feasibility planning only.",
+        fontsize=8.5,
+        color=(0.4, 0.4, 0.42),
+    )
+
+    pdf_bytes = doc.tobytes()
+    doc.close()
+
+    safe_id = re.sub(r"[^A-Za-z0-9._-]+", "_", proto.protocol_id or "protocol").strip("_") or "protocol"
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{safe_id}_feasibility_dossier.pdf"'},
+    )

@@ -363,8 +363,9 @@ def test_jwt_unsupported_algorithm_rejected():
     assert exc.value.status_code == 401
 
 
-def test_password_reset_invalidates_active_jwt_sessions():
+def test_password_reset_invalidates_active_jwt_sessions(monkeypatch):
     import uuid
+    monkeypatch.setattr("app.api.routes_auth.is_email_configured", lambda: False)
     # 1. Sign up and sign in user
     rand_email = f"session.inval.{uuid.uuid4().hex[:6]}@clinic.org"
     reg = client.post("/api/v1/auth/signup", json={

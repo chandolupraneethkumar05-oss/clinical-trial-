@@ -102,3 +102,122 @@ def test_pdf_parser_extracts_structured_soa_table_and_tnbc_biomarkers():
     assert parsed.eligibility.structured_filters["target_biomarker_hormone_receptor_negative"] is True
     assert len(parsed.eligibility.criteria) >= 3
     assert any(c.validation_status == "VALIDATED" and c.extraction_confidence >= 0.9 for c in parsed.eligibility.criteria)
+
+
+def test_pdf_parser_uses_gemini_semantic_extraction_when_non_tabular(monkeypatch):
+    import json
+    import sys
+    import types
+    import pymupdf
+    from app.core.config import settings
+
+    # Build a prose-only PDF without structured table borders or explicit week markers
+    doc = pymupdf.open()
+    page = doc.new_page()
+    page.insert_text((50, 60), "A Phase 3 Multicenter Study evaluating TargetX in Refractory Metastatic NSCLC.")
+    page.insert_text((50, 80), "Patients must be adults at least 18 years old with ECOG 0 or 1 and eGFR >= 50.")
+    page.insert_text((50, 100), "Participants visit at screening before Cycle 1 baseline, then return for cycle 2")
+    page.insert_text((50, 120), "infusions and repeat radiographic imaging with safety monitoring over 52 weeks.")
+    pdf_bytes = doc.tobytes()
+    doc.close()
+
+    monkeypatch.setattr(settings, "GEMINI_API_KEY", "test-fake-gemini-key")
+
+    class _FakeModels:
+        def generate_content(self, *, model, contents, config):
+            return types.SimpleNamespace(
+                text=json.dumps({
+                    "title": "Phase 3 Study evaluating TargetX in Refractory Metastatic NSCLC",
+                    "phase": "Phase III",
+                    "indication": "Non-Small Cell Lung Cancer (NSCLC)",
+                    "inclusion_criteria": ["Age >= 18", "ECOG 0-1", "eGFR >= 50 mL/min"],
+                    "exclusion_criteria": ["Untreated active CNS metastases"],
+                    "min_age": 18,
+                    "max_age": None,
+                    "min_egfr": 50.0,
+                    "max_ecog": 1,
+                    "allow_stable_brain_mets": True,
+                    "visits": [
+                        {"visit_name": "Screening", "week_number": -2, "procedure_keys": ["vitals", "safety_labs", "ct_scan"]},
+                        {"visit_name": "Cycle 1 Day 1", "week_number": 0, "procedure_keys": ["vitals", "iv_infusion"]},
+                        {"visit_name": "Cycle 2 Day 1", "week_number": 6, "procedure_keys": ["vitals", "safety_labs", "ct_scan"]},
+                    ],
+                })
+            )
+
+    class _FakeClient:
+        def __init__(self, api_key: str, **kwargs):
+            self.models = _FakeModels()
+
+    class _FakeConfig:
+        def __init__(self, **kwargs):
+            pass
+
+    class _FakeHttpOptions:
+        def __init__(self, **kwargs):
+            pass
+
+    fake_google = types.ModuleType("google")
+    fake_genai = types.ModuleType("google.genai")
+    fake_types = types.ModuleType("google.genai.types")
+    fake_genai.Client = _FakeClient
+    fake_types.GenerateContentConfig = _FakeConfig
+    fake_types.HttpOptions = _FakeHttpOptions
+    fake_google.genai = fake_genai
+    fake_genai.types = fake_types
+    monkeypatch.setitem(sys.modules, "google", fake_google)
+    monkeypatch.setitem(sys.modules, "google.genai", fake_genai)
+    monkeypatch.setitem(sys.modules, "google.genai.types", fake_types)
+
+    parsed = ProtocolPDFParser().parse(pdf_bytes, "prose_only_protocol.pdf")
+    assert parsed.extraction_status == "gemini_structured"
+    assert len(parsed.visits) == 3
+    assert parsed.eligibility.structured_filters["min_egfr"] == 50.0
+    assert "Semantic extraction via Gemini" in (parsed.extraction_notes or "")
+
+
+def test_export_dossier_pdf_endpoint():
+    sample_proto = client.get("/api/v1/protocol/sample").json()
+    payload = {
+        "protocol": sample_proto,
+        "funnel_data": {
+            "total_population": 10000,
+            "final_eligible_count": 531,
+            "overall_yield_percentage": 5.31,
+            "screen_failure_rate": 94.7,
+            "funnel_stages": [{"stage": "Total", "count": 10000, "pass_rate": 100.0}],
+        },
+        "total_cohort_size": 10000,
+        "applied_amendment_ids": ["AMD-01"],
+    }
+
+    # Unauthenticated -> 401
+    unauth = client.post("/api/v1/protocol/export-dossier", json=payload)
+    assert unauth.status_code == 401
+
+    # Patient -> 403
+    pat_tok = client.post(
+        "/api/v1/auth/signin",
+        json={"email": "john.miller@patient.org", "password": "Patient2026!"},
+    ).json()["token"]
+    pat_resp = client.post(
+        "/api/v1/protocol/export-dossier",
+        json=payload,
+        headers={"Authorization": f"Bearer {pat_tok}"},
+    )
+    assert pat_resp.status_code == 403
+
+    # Doctor -> 200 valid PDF binary
+    doc_tok = client.post(
+        "/api/v1/auth/signin",
+        json={"email": "elena.vance@novartis.com", "password": "Novartis2026!"},
+    ).json()["token"]
+    doc_resp = client.post(
+        "/api/v1/protocol/export-dossier",
+        json=payload,
+        headers={"Authorization": f"Bearer {doc_tok}"},
+    )
+    assert doc_resp.status_code == 200
+    assert doc_resp.headers["content-type"].startswith("application/pdf")
+    assert doc_resp.content.startswith(b"%PDF")
+    assert len(doc_resp.content) > 1000

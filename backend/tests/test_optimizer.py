@@ -40,7 +40,7 @@ def test_propose_amendments():
     assert "AMD-02" in ids  # ctDNA Liquid Biopsy
     assert "AMD-03" in ids  # Brain Mets
 
-    # Verify model structure
+    # Verify model structure & non-fabricated dynamic metrics
     first = proposals[0]
     assert "target_section" in first
     assert "clinical_evidence_rationale" in first
@@ -48,6 +48,12 @@ def test_propose_amendments():
     assert "health_equity_diversity_impact" in first
     assert isinstance(first["safety_guardrail_conditions"], list)
     assert len(first["safety_guardrail_conditions"]) > 0
+
+    by_id = {p["amendment_id"]: p for p in proposals}
+    assert all(p["projected_sponsor_cost_savings_usd"] == 0.0 for p in proposals)
+    assert by_id["AMD-01"]["pbi_reduction_points"] == 0.0
+    assert by_id["AMD-02"]["pbi_reduction_points"] > 0.0
+    assert "DuckDB cohort measurement" in by_id["AMD-01"]["health_equity_diversity_impact"]
 
 
 def test_apply_amendment_renal():

@@ -50,11 +50,42 @@ _demo_seed_lock = threading.Lock()
 _EMAIL_REGEX = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
+PORTAL_LABELS = {
+    ROLE_PATIENT: "Patient Portal Login",
+    ROLE_DOCTOR: "Doctor / Investigator Login",
+    ROLE_ADMIN: "Administrator Login",
+}
+
+
 def _validate_email_value(value: str) -> str:
     cleaned = value.strip().lower()
     if not _EMAIL_REGEX.match(cleaned):
         raise ValueError("Please provide a valid email address.")
     return cleaned
+
+
+def _validate_expected_role(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    cleaned = value.strip().lower()
+    if not cleaned:
+        return None
+    if cleaned not in VALID_ROLES:
+        raise ValueError("Invalid portal role selection. Choose patient, doctor, or admin.")
+    return cleaned
+
+
+def _assert_expected_role(actual_role: str, expected_role: Optional[str]) -> None:
+    if expected_role and actual_role != expected_role:
+        actual_portal = PORTAL_LABELS.get(actual_role, actual_role)
+        expected_portal = PORTAL_LABELS.get(expected_role, expected_role)
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                f"Role mismatch: this account is registered as '{actual_role}', not '{expected_role}'. "
+                f"You attempted '{expected_portal}' — please switch to '{actual_portal}'."
+            ),
+        )
 
 
 def seed_default_users_if_empty():
@@ -178,11 +209,20 @@ class PromoteUserRequest(BaseModel):
 class SignInRequest(BaseModel):
     email: str = Field(..., min_length=5, max_length=150)
     password: str = Field(..., min_length=1, max_length=72)
+    expected_role: Optional[str] = Field(
+        default=None,
+        description="Optional portal role assertion ('patient', 'doctor', 'admin')"
+    )
 
     @field_validator("email")
     @classmethod
     def check_email(cls, v: str) -> str:
         return _validate_email_value(v)
+
+    @field_validator("expected_role")
+    @classmethod
+    def check_expected_role(cls, v: Optional[str]) -> Optional[str]:
+        return _validate_expected_role(v)
 
 
 class ForgotPasswordInitRequest(BaseModel):
@@ -209,6 +249,15 @@ class ForgotPasswordResetRequest(BaseModel):
 
 class GoogleSignInRequest(BaseModel):
     id_token: str = Field(..., min_length=10)
+    expected_role: Optional[str] = Field(
+        default=None,
+        description="Optional portal role assertion ('patient', 'doctor', 'admin')"
+    )
+
+    @field_validator("expected_role")
+    @classmethod
+    def check_expected_role(cls, v: Optional[str]) -> Optional[str]:
+        return _validate_expected_role(v)
 
 
 class AuthResponse(BaseModel):
@@ -317,6 +366,7 @@ async def signin(payload: SignInRequest):
             conn.execute("UPDATE users SET password_hash = ? WHERE id = ?", (new_hash, user_id))
 
         user_role = (role or ROLE_PATIENT).lower().strip()
+        _assert_expected_role(user_role, payload.expected_role)
         user_obj = AuthUserResponse(
             id=user_id,
             name=name,
@@ -555,6 +605,7 @@ async def google_auth(payload: GoogleSignInRequest):
             logger.info("New patient account via Google OIDC: user_id=%s", user_id)
 
         user_role = (role or ROLE_PATIENT).lower().strip()
+        _assert_expected_role(user_role, payload.expected_role)
         user_obj = AuthUserResponse(
             id=user_id,
             name=name,

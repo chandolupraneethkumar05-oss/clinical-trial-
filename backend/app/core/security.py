@@ -419,7 +419,7 @@ async def get_current_user_optional(
                 id=row[0],
                 name=row[1],
                 email=row[2],
-                role=row[3] or "doctor",
+                role=(row[3] or "patient").lower().strip() or "patient",
                 organization=row[4],
                 provider=row[5] or "email",
                 token_version=user_token_version
@@ -485,7 +485,7 @@ async def get_current_user(
             id=row[0],
             name=row[1],
             email=row[2],
-            role=row[3] or "doctor",
+            role=(row[3] or "patient").lower().strip() or "patient",
             organization=row[4],
             provider=row[5] or "email",
             token_version=user_token_version

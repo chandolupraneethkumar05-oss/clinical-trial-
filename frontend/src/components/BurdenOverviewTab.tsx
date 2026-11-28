@@ -17,23 +17,17 @@ interface BurdenOverviewTabProps {
   screenFailureRate: number;
   finalEligibleCount: number;
   totalCohortSize?: number;
+  endOfStudyRetention?: number | null;
 }
 
 export const BurdenOverviewTab: FC<BurdenOverviewTabProps> = ({
   protocol,
   screenFailureRate,
   finalEligibleCount,
-  totalCohortSize = 10000
+  totalCohortSize = 10000,
+  endOfStudyRetention = null,
 }) => {
   const { burden } = protocol;
-  const modeledDelayCost =
-    burden.attrition_risk_tier === 'Severe'
-      ? '$2.4M+'
-      : burden.attrition_risk_tier === 'High'
-      ? '$1.8M'
-      : burden.attrition_risk_tier === 'Moderate'
-      ? '$1.2M'
-      : '$0.6M';
 
   const topFrictionVisits = [...protocol.visits]
     .map((v) => {
@@ -90,11 +84,18 @@ export const BurdenOverviewTab: FC<BurdenOverviewTabProps> = ({
         />
 
         <StatCard
-          label="Modeled Delay Cost Risk"
-          value={modeledDelayCost}
-          subtext="Estimated at $600k/mo delay model (Tufts CSDD)"
+          label={`Modeled Wk ${protocol.study_duration_weeks} Retention`}
+          value={endOfStudyRetention !== null && endOfStudyRetention !== undefined ? endOfStudyRetention : '—'}
+          unit={endOfStudyRetention !== null && endOfStudyRetention !== undefined ? '%' : undefined}
+          subtext={`Computed from PBI ${burden.composite_pbi_score} & ${burden.peak_burden_weeks.length} peak weeks`}
           icon={DollarSign}
-          variant={burden.attrition_risk_tier === 'Low' ? 'safe' : 'warning'}
+          variant={
+            endOfStudyRetention === null || endOfStudyRetention === undefined
+              ? 'default'
+              : endOfStudyRetention >= 75
+              ? 'safe'
+              : 'warning'
+          }
         />
       </div>
 

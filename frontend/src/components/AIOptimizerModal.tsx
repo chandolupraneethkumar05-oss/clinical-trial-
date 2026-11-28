@@ -52,6 +52,7 @@ export const AIOptimizerModal: FC<AIOptimizerModalProps> = ({
   const [applyingId, setApplyingId] = useState<string | null>(null);
   const [applyingAll, setApplyingAll] = useState<boolean>(false);
   const [showFormalNoticeModal, setShowFormalNoticeModal] = useState<boolean>(false);
+  const [monthlyBurnRateUsd, setMonthlyBurnRateUsd] = useState<string>('');
 
   // Fetch proposals from API with proper AbortController cancellation
   useEffect(() => {
@@ -113,11 +114,15 @@ export const AIOptimizerModal: FC<AIOptimizerModalProps> = ({
 
   if (!isOpen) return null;
 
-  // Aggregate executive metrics
+  // Aggregate live computed metrics
   const totalCandidateLift = proposals.reduce((acc, p) => acc + p.candidate_yield_lift, 0);
   const totalPbiReduction = proposals.reduce((acc, p) => acc + p.pbi_reduction_points, 0);
   const totalAccrualMonths = proposals.reduce((acc, p) => acc + p.estimated_accrual_acceleration_months, 0);
-  const totalSavingsUsd = proposals.reduce((acc, p) => acc + p.projected_sponsor_cost_savings_usd, 0);
+  const parsedBurnRate = Number(monthlyBurnRateUsd);
+  const hasCustomBurnRate = Number.isFinite(parsedBurnRate) && parsedBurnRate > 0;
+  const computedSavingsUsd = hasCustomBurnRate
+    ? totalAccrualMonths * parsedBurnRate
+    : proposals.reduce((acc, p) => acc + p.projected_sponsor_cost_savings_usd, 0);
 
   // Filtered proposals
   const filteredProposals = proposals.filter((p) => {
@@ -206,50 +211,57 @@ export const AIOptimizerModal: FC<AIOptimizerModalProps> = ({
                 +{totalCandidateLift} <span className="text-xs font-mono font-normal text-terracotta-600">pts</span>
               </div>
               <p className="text-[11px] text-charcoal-600 font-sans mt-0.5">
-                From 10k patient real-world cohort
+                Measured in synthetic DuckDB cohort
               </p>
             </div>
 
             {/* Metric 2: PBI Reduction */}
             <div className="bg-white p-3.5 rounded-2xl border border-linen-300 shadow-2xs">
               <div className="flex items-center justify-between text-charcoal-500 text-[10px] font-mono uppercase tracking-wider mb-1">
-                <span>Tufts PBI Reduction</span>
+                <span>Computed PBI Drop</span>
                 <TrendingUp className="h-3.5 w-3.5 text-sage-600" />
               </div>
               <div className="font-serif font-bold text-2xl text-charcoal-950">
                 -{totalPbiReduction.toFixed(1)} <span className="text-xs font-mono font-normal text-sage-600">pts</span>
               </div>
               <p className="text-[11px] text-charcoal-600 font-sans mt-0.5">
-                Composite friction burden relief
+                Re-scored via BurdenScoringEngine
               </p>
             </div>
 
-            {/* Metric 3: Enrollment Time Saved */}
+            {/* Metric 3: Modeled Accrual / Retention Impact */}
             <div className="bg-white p-3.5 rounded-2xl border border-linen-300 shadow-2xs">
               <div className="flex items-center justify-between text-charcoal-500 text-[10px] font-mono uppercase tracking-wider mb-1">
-                <span>Accrual Accelerated</span>
+                <span>Modeled Timeline Gain</span>
                 <Clock className="h-3.5 w-3.5 text-indigo-500" />
               </div>
               <div className="font-serif font-bold text-2xl text-charcoal-950">
                 +{totalAccrualMonths.toFixed(1)} <span className="text-xs font-mono font-normal text-indigo-600">mo</span>
               </div>
               <p className="text-[11px] text-charcoal-600 font-sans mt-0.5">
-                Faster time to primary endpoint
+                Derived from yield &amp; retention delta
               </p>
             </div>
 
-            {/* Metric 4: Sponsor Delay Capital Saved */}
+            {/* Metric 4: Optional Sponsor Burn Calculator (No Hardcoded $/Mo) */}
             <div className="bg-white p-3.5 rounded-2xl border border-linen-300 shadow-2xs">
               <div className="flex items-center justify-between text-charcoal-500 text-[10px] font-mono uppercase tracking-wider mb-1">
-                <span>Sponsor Capital Saved</span>
+                <span>Delay Cost Impact</span>
                 <DollarSign className="h-3.5 w-3.5 text-amber-500" />
               </div>
               <div className="font-serif font-bold text-2xl text-charcoal-950">
-                ${(totalSavingsUsd / 1000000).toFixed(2)}M
+                {computedSavingsUsd > 0 ? `$${(computedSavingsUsd / 1000000).toFixed(2)}M` : 'Enter $/mo'}
               </div>
-              <p className="text-[11px] text-charcoal-600 font-sans mt-0.5">
-                $600k/mo average Phase 3 delay burn
-              </p>
+              <input
+                type="number"
+                min="0"
+                step="50000"
+                value={monthlyBurnRateUsd}
+                onChange={(e) => setMonthlyBurnRateUsd(e.target.value)}
+                placeholder="Monthly burn $ (optional)"
+                aria-label="Sponsor monthly trial burn rate in USD"
+                className="mt-1 w-full px-2 py-0.5 text-[10px] font-mono bg-linen-50 border border-linen-300 rounded-md focus:outline-none focus:border-amber-500"
+              />
             </div>
           </div>
         </div>
@@ -463,8 +475,14 @@ export const AIOptimizerModal: FC<AIOptimizerModalProps> = ({
 
                     <div className="flex items-center space-x-1.5 text-charcoal-700">
                       <DollarSign className="h-3.5 w-3.5 text-amber-600" />
-                      <span>Capital Saved:</span>
-                      <strong className="text-charcoal-950">${(proposal.projected_sponsor_cost_savings_usd / 1000000).toFixed(2)}M</strong>
+                      <span>Est. Value:</span>
+                      <strong className="text-charcoal-950">
+                        {hasCustomBurnRate
+                          ? `$${((proposal.estimated_accrual_acceleration_months * parsedBurnRate) / 1000000).toFixed(2)}M`
+                          : proposal.projected_sponsor_cost_savings_usd > 0
+                          ? `$${(proposal.projected_sponsor_cost_savings_usd / 1000000).toFixed(2)}M`
+                          : 'Set $/mo'}
+                      </strong>
                     </div>
                   </div>
 

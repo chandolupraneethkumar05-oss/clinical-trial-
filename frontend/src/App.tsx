@@ -33,7 +33,8 @@ function extractBenchmarksPayload(payload: HistoricalBenchmarksPayload): {
   }
   return { trials: [], disclaimer: null };
 }
-import type { AuthUser, AuthModalView } from './types/auth';
+import type { AuthUser, AuthModalView, PortalLoginRole } from './types/auth';
+import type { ReadinessResponse, CohortStatsResponse } from './components/AdminPortal';
 import {
   apiFetchJson,
   apiUrl,
@@ -49,22 +50,28 @@ const StudioWorkspace = lazy(() =>
 const PatientPortal = lazy(() =>
   import('./components/PatientPortal').then((m) => ({ default: m.PatientPortal }))
 );
+const AdminPortal = lazy(() =>
+  import('./components/AdminPortal').then((m) => ({ default: m.AdminPortal }))
+);
 const ProtocolUploadModal = lazy(() =>
   import('./components/ProtocolUploadModal').then((m) => ({ default: m.ProtocolUploadModal }))
 );
 const AuthModal = lazy(() =>
   import('./components/AuthModal').then((m) => ({ default: m.AuthModal }))
 );
+const FloatingAIAgent = lazy(() =>
+  import('./components/FloatingAIAgent').then((m) => ({ default: m.FloatingAIAgent }))
+);
 
 interface ParsedRoute {
-  view: 'landing' | 'studio';
+  view: 'landing' | 'patient' | 'studio' | 'admin';
   tab: StudioTab;
   resetToken: string;
 }
 
 /**
  * Parses browser URL hash into structured application route state.
- * Supports: #/, #/studio, #/studio?tab=<...>, #/patient, and #/reset-password?token=...
+ * Supports: #/, #/studio, #/studio?tab=<...>, #/patient, #/admin, and #/reset-password?token=...
  */
 function parseHashRoute(): ParsedRoute {
   try {
@@ -80,7 +87,15 @@ function parseHashRoute(): ParsedRoute {
       return { view: 'landing', tab: 'sandbox', resetToken: token };
     }
 
-    if (pathPart.startsWith('studio') || pathPart.startsWith('patient')) {
+    if (pathPart.startsWith('admin')) {
+      return { view: 'admin', tab: 'sandbox', resetToken: '' };
+    }
+
+    if (pathPart.startsWith('patient')) {
+      return { view: 'patient', tab: 'sandbox', resetToken: '' };
+    }
+
+    if (pathPart.startsWith('studio')) {
       return { view: 'studio', tab, resetToken: '' };
     }
   } catch {
@@ -89,13 +104,26 @@ function parseHashRoute(): ParsedRoute {
   return { view: 'landing', tab: 'sandbox', resetToken: '' };
 }
 
+function normalizeUser(raw: AuthUser | null): AuthUser | null {
+  if (!raw) return null;
+  const role = String(raw.role || 'patient').toLowerCase().trim() || 'patient';
+  return { ...raw, role };
+}
+
 function readStoredUser(): AuthUser | null {
   try {
     const stored = localStorage.getItem('protocolshield_user');
-    return stored ? JSON.parse(stored) : null;
+    return stored ? normalizeUser(JSON.parse(stored) as AuthUser) : null;
   } catch {
     return null;
   }
+}
+
+function resolveRoleHomeView(role: string): 'patient' | 'studio' | 'admin' {
+  const r = String(role || 'patient').toLowerCase().trim();
+  if (r === 'patient') return 'patient';
+  if (r === 'admin') return 'admin';
+  return 'studio';
 }
 
 export default function App() {
@@ -105,19 +133,30 @@ export default function App() {
   // ── 2. Route & Tab State with URL Hash Synchronization ─────────────────────
   const initialRoute = parseHashRoute();
 
-  // If user is unauthenticated and tries to open studio directly on boot, gate to landing
-  const [viewMode, setViewMode] = useState<'landing' | 'studio'>(() => {
-    if (initialRoute.view === 'studio') {
-      return readStoredUser() ? 'studio' : 'landing';
+  // Enforce strict role isolation on initial boot
+  const [viewMode, setViewMode] = useState<'landing' | 'patient' | 'studio' | 'admin'>(() => {
+    const stored = readStoredUser();
+    if (!stored || initialRoute.view === 'landing') {
+      return 'landing';
     }
-    return 'landing';
+    if (stored.role === 'patient') return 'patient';
+    if (initialRoute.view === 'admin') {
+      return stored.role === 'admin' ? 'admin' : 'studio';
+    }
+    if (initialRoute.view === 'studio') {
+      return 'studio';
+    }
+    return resolveRoleHomeView(stored.role);
   });
 
   const [activeStudioTab, setActiveStudioTab] = useState<StudioTab>(initialRoute.tab);
 
-  const [pendingRoute, setPendingRoute] = useState<{ view: 'landing' | 'studio'; tab: StudioTab } | null>(() => {
-    if (initialRoute.view === 'studio') {
-      return readStoredUser() ? null : { view: 'studio', tab: initialRoute.tab };
+  const [pendingRoute, setPendingRoute] = useState<{
+    view: 'landing' | 'patient' | 'studio' | 'admin';
+    tab: StudioTab;
+  } | null>(() => {
+    if (initialRoute.view !== 'landing') {
+      return readStoredUser() ? null : { view: initialRoute.view, tab: initialRoute.tab };
     }
     return null;
   });
@@ -152,13 +191,17 @@ export default function App() {
   const [adminUsers, setAdminUsers] = useState<ManagedUserAccount[]>([]);
   const [promotingUserId, setPromotingUserId] = useState<string | null>(null);
   const [userPromoteError, setUserPromoteError] = useState<string | null>(null);
+  const [adminReadiness, setAdminReadiness] = useState<ReadinessResponse | null>(null);
+  const [cohortStats, setCohortStats] = useState<CohortStatsResponse | null>(null);
+  const [adminOpsLoading, setAdminOpsLoading] = useState<boolean>(false);
+  const [adminOpsError, setAdminOpsError] = useState<string | null>(null);
 
   // ── 4. Modal Overlays ─────────────────────────────────────────────────────
   const [initialResetToken, setInitialResetToken] = useState<string>(() => initialRoute.resetToken);
   const [showUploadModal, setShowUploadModal] = useState<boolean>(false);
   const [showAuthModal, setShowAuthModal] = useState<boolean>(() => {
     if (initialRoute.resetToken) return true;
-    if (initialRoute.view === 'studio') {
+    if (initialRoute.view !== 'landing') {
       return !readStoredUser();
     }
     return false;
@@ -166,6 +209,11 @@ export default function App() {
   const [authModalView, setAuthModalView] = useState<AuthModalView>(() =>
     initialRoute.resetToken ? 'forgot_password' : 'signin'
   );
+  const [authPortalRole, setAuthPortalRole] = useState<PortalLoginRole>(() => {
+    if (initialRoute.view === 'admin') return 'admin';
+    if (initialRoute.view === 'studio') return 'doctor';
+    return 'patient';
+  });
 
   // Scrub raw reset token from address bar once captured in state
   useEffect(() => {
@@ -181,21 +229,37 @@ export default function App() {
 
   // ── 5. Route Synchronization Helper ───────────────────────────────────────
   const navigateTo = useCallback(
-    (view: 'landing' | 'studio', tab: StudioTab = 'sandbox') => {
-      if (view === 'studio') {
-        if (!user) {
-          setPendingRoute({ view: 'studio', tab });
-          setAuthModalView('signin');
-          setShowAuthModal(true);
-          return;
-        }
-        setViewMode('studio');
-        setActiveStudioTab(tab);
-        window.location.hash = user.role === 'patient' ? '#/patient' : `#/studio?tab=${tab}`;
-      } else {
+    (view: 'landing' | 'patient' | 'studio' | 'admin', tab: StudioTab = 'sandbox') => {
+      if (view === 'landing') {
         setViewMode('landing');
         window.location.hash = '#/';
+        return;
       }
+
+      if (!user) {
+        setPendingRoute({ view, tab });
+        setAuthModalView('signin');
+        setAuthPortalRole(view === 'admin' ? 'admin' : view === 'studio' ? 'doctor' : 'patient');
+        setShowAuthModal(true);
+        return;
+      }
+
+      const role = String(user.role || 'patient').toLowerCase().trim();
+      if (role === 'patient') {
+        setViewMode('patient');
+        window.location.hash = '#/patient';
+        return;
+      }
+
+      if (view === 'admin' && role === 'admin') {
+        setViewMode('admin');
+        window.location.hash = '#/admin';
+        return;
+      }
+
+      setViewMode('studio');
+      setActiveStudioTab(tab);
+      window.location.hash = `#/studio?tab=${tab}`;
     },
     [user]
   );
@@ -228,14 +292,33 @@ export default function App() {
         return;
       }
 
-      if (route.view === 'studio') {
+      if (route.view !== 'landing') {
         const stored = readStoredUser();
         if (!stored) {
-          setPendingRoute({ view: 'studio', tab: route.tab });
+          setPendingRoute({ view: route.view, tab: route.tab });
           setViewMode('landing');
           setAuthModalView('signin');
+          setAuthPortalRole(
+            route.view === 'admin' ? 'admin' : route.view === 'studio' ? 'doctor' : 'patient'
+          );
           setShowAuthModal(true);
           window.location.hash = '#/';
+          return;
+        }
+        if (stored.role === 'patient') {
+          setViewMode('patient');
+          if (!window.location.hash.startsWith('#/patient')) {
+            window.location.hash = '#/patient';
+          }
+          return;
+        }
+        if (route.view === 'admin' && stored.role === 'admin') {
+          setViewMode('admin');
+          return;
+        }
+        if (route.view === 'patient' && stored.role === 'admin') {
+          setViewMode('admin');
+          window.location.hash = '#/admin';
           return;
         }
         setViewMode('studio');
@@ -262,7 +345,7 @@ export default function App() {
     [user?.token]
   );
 
-  const handleSessionExpired = useCallback(() => {
+  const handleSessionExpired = useCallback((openAuthModal = true) => {
     try {
       localStorage.removeItem('protocolshield_user');
     } catch {
@@ -286,10 +369,15 @@ export default function App() {
     setAdminUsers([]);
     setPromotingUserId(null);
     setUserPromoteError(null);
+    setAdminReadiness(null);
+    setCohortStats(null);
+    setAdminOpsError(null);
     setViewMode('landing');
     window.location.hash = '#/';
-    setAuthModalView('signin');
-    setShowAuthModal(true);
+    if (openAuthModal) {
+      setAuthModalView('signin');
+      setShowAuthModal(true);
+    }
   }, []);
 
   // Fetch real audit log records, verification status, and submitted screenings from backend
@@ -382,13 +470,16 @@ export default function App() {
         });
         if (controller.signal.aborted) return;
         if (res.status === 401 || !res.ok) {
-          handleSessionExpired();
+          handleSessionExpired(parseHashRoute().view !== 'landing');
         } else {
           const freshData = (await parseJsonSafe(res)) as { user?: Partial<AuthUser> } | null;
           if (freshData?.user) {
             setUser((prev) => {
               if (!prev) return prev;
-              return { ...prev, ...freshData.user, token: prev.token };
+              const role = String(freshData.user?.role || prev.role || 'patient')
+                .toLowerCase()
+                .trim();
+              return { ...prev, ...freshData.user, role, token: prev.token };
             });
           }
         }
@@ -400,6 +491,67 @@ export default function App() {
     validateSession();
     return () => controller.abort();
   }, [user?.token, handleSessionExpired]);
+
+  const fetchAdminOpsData = useCallback(
+    async (signal?: AbortSignal) => {
+      if (!user?.token || user.role !== 'admin') return;
+      setAdminOpsLoading(true);
+      setAdminOpsError(null);
+      try {
+        const [readyRes, statsJson] = await Promise.all([
+          fetch(apiUrl('/api/v1/system/ready'), { signal }),
+          apiFetchJson<CohortStatsResponse>('/api/v1/cohort/stats', {
+            headers: getAuthHeaders(),
+            signal,
+            onUnauthorized: handleSessionExpired,
+          }),
+        ]);
+        if (signal?.aborted) return;
+        const readyParsed = (await parseJsonSafe(readyRes)) as ReadinessResponse | null;
+        setAdminReadiness(readyParsed);
+        setCohortStats(statsJson);
+      } catch (err) {
+        if ((err as Error)?.name === 'AbortError' || err instanceof SessionExpiredError) {
+          return;
+        }
+        setAdminOpsError(
+          err instanceof Error ? err.message : 'Unable to load admin readiness or cohort telemetry.'
+        );
+      } finally {
+        if (!signal?.aborted) {
+          setAdminOpsLoading(false);
+        }
+      }
+    },
+    [user?.token, user?.role, getAuthHeaders, handleSessionExpired]
+  );
+
+  const handleRefreshAdminAll = useCallback(async () => {
+    await Promise.all([fetchAdminOpsData(), fetchAuditData()]);
+  }, [fetchAdminOpsData, fetchAuditData]);
+
+  const handleSeedCohort = useCallback(
+    async (forceRegenerate = false, confirmationPhrase?: string): Promise<string | null> => {
+      const params = new URLSearchParams({
+        total: '10000',
+        force_regenerate: forceRegenerate ? 'true' : 'false',
+      });
+      if (forceRegenerate && confirmationPhrase) {
+        params.set('confirm_regenerate', confirmationPhrase);
+      }
+      const res = await apiFetchJson<{ message?: string; total_records?: number }>(
+        `/api/v1/cohort/seed?${params.toString()}`,
+        {
+          method: 'POST',
+          headers: getAuthHeaders(),
+          onUnauthorized: handleSessionExpired,
+        }
+      );
+      await fetchAdminOpsData();
+      return res.message || `Cohort verified (${res.total_records ?? 10000} records).`;
+    },
+    [getAuthHeaders, handleSessionExpired, fetchAdminOpsData]
+  );
 
   // ── 6. Initial Data Fetching Scoped by Role & Authentication ──────────────
   useEffect(() => {
@@ -492,6 +644,11 @@ export default function App() {
 
         // 5. Fetch Audit Ledger & SHA-256 Verification
         await fetchAuditData(controller.signal);
+
+        // 6. Fetch Admin Operations Telemetry when logged in as Administrator
+        if (role === 'admin') {
+          await fetchAdminOpsData(controller.signal);
+        }
       } catch (err) {
         if ((err as Error)?.name === 'AbortError' || err instanceof SessionExpiredError) {
           return;
@@ -510,7 +667,7 @@ export default function App() {
 
     loadInitialData();
     return () => controller.abort();
-  }, [user?.token, user?.role, getAuthHeaders, handleSessionExpired, fetchAuditData, studioReloadNonce]);
+  }, [user?.token, user?.role, getAuthHeaders, handleSessionExpired, fetchAuditData, fetchAdminOpsData, studioReloadNonce]);
 
   // Retry benchmarks independently
   useEffect(() => {
@@ -776,21 +933,27 @@ export default function App() {
 
   // ── 8. Strict Authentication Lifecycle Handlers ───────────────────────────
   const handleLoginSuccess = (authUser: AuthUser) => {
-    setUser(authUser);
+    const normalizedRole = String(authUser.role || 'patient').toLowerCase().trim() || 'patient';
+    const normalizedAuthUser: AuthUser = { ...authUser, role: normalizedRole };
+    setUser(normalizedAuthUser);
     setInitialResetToken('');
     setShowAuthModal(false);
     setStudioError(null);
     setSimulationError(null);
     try {
-      localStorage.setItem('protocolshield_user', JSON.stringify(authUser));
+      localStorage.setItem('protocolshield_user', JSON.stringify(normalizedAuthUser));
     } catch {
       // ignore
     }
 
-    if (authUser.role === 'patient') {
+    if (normalizedRole === 'patient') {
       setPendingRoute(null);
-      setViewMode('studio');
+      setViewMode('patient');
       window.location.hash = '#/patient';
+    } else if (normalizedRole === 'admin') {
+      setPendingRoute(null);
+      setViewMode('admin');
+      window.location.hash = '#/admin';
     } else if (pendingRoute && pendingRoute.view === 'studio') {
       const targetTab = pendingRoute.tab;
       setPendingRoute(null);
@@ -798,6 +961,7 @@ export default function App() {
       setActiveStudioTab(targetTab);
       window.location.hash = `#/studio?tab=${targetTab}`;
     } else {
+      setPendingRoute(null);
       setViewMode('studio');
       setActiveStudioTab('sandbox');
       window.location.hash = '#/studio?tab=sandbox';
@@ -834,6 +998,9 @@ export default function App() {
     setAdminUsers([]);
     setPromotingUserId(null);
     setUserPromoteError(null);
+    setAdminReadiness(null);
+    setCohortStats(null);
+    setAdminOpsError(null);
     try {
       localStorage.removeItem('protocolshield_user');
     } catch {
@@ -843,12 +1010,21 @@ export default function App() {
     window.location.hash = '#/';
     setPendingRoute(null);
     setAuthModalView('signin');
+    setAuthPortalRole('patient');
     setShowAuthModal(true);
   };
 
-  const handleOpenAuth = (defaultView: AuthModalView = 'signin') => {
+  const handleOpenAuth = (
+    defaultView: AuthModalView = 'signin',
+    preferredRole?: PortalLoginRole
+  ) => {
     setInitialResetToken('');
     setAuthModalView(defaultView);
+    if (preferredRole) {
+      setAuthPortalRole(preferredRole);
+    } else if (user?.role === 'admin' || user?.role === 'doctor' || user?.role === 'patient') {
+      setAuthPortalRole(user.role as PortalLoginRole);
+    }
     setShowAuthModal(true);
   };
 
@@ -867,7 +1043,12 @@ export default function App() {
         {viewMode === 'landing' || !user ? (
           <LandingPage
             totalCohortSize={totalCohortSize}
-            onLaunchStudio={() => navigateTo('studio', 'sandbox')}
+            onLaunchStudio={() =>
+              navigateTo(
+                user ? resolveRoleHomeView(user.role) : 'studio',
+                'sandbox'
+              )
+            }
             user={user}
             onOpenAuth={() => handleOpenAuth('signin')}
             onSignOut={handleSignOut}
@@ -877,10 +1058,38 @@ export default function App() {
           <PatientPortal
             user={user}
             onSignOut={handleSignOut}
-            onSwitchPersona={() => handleOpenAuth('signin')}
-            onOpenAuth={() => handleOpenAuth('signin')}
+            onSwitchPersona={() => handleOpenAuth('signin', 'patient')}
+            onOpenAuth={() => handleOpenAuth('signin', 'patient')}
             onSessionExpired={handleSessionExpired}
             onBackToLanding={() => navigateTo('landing')}
+          />
+        ) : user.role === 'admin' && viewMode === 'admin' ? (
+          <AdminPortal
+            user={user}
+            auditEvents={auditEvents}
+            auditLoading={auditLoading}
+            auditError={auditError}
+            auditVerification={auditVerification}
+            patientScreenings={patientScreenings}
+            verifyingScreeningId={verifyingScreeningId}
+            screeningVerifyError={screeningVerifyError}
+            onVerifyScreening={handleVerifyScreening}
+            patientInterests={patientInterests}
+            adminUsers={adminUsers}
+            promotingUserId={promotingUserId}
+            userPromoteError={userPromoteError}
+            onPromoteUser={handlePromoteUser}
+            readiness={adminReadiness}
+            cohortStats={cohortStats}
+            opsLoading={adminOpsLoading}
+            opsError={adminOpsError}
+            onRefreshAll={handleRefreshAdminAll}
+            onSeedCohort={handleSeedCohort}
+            onOpenStudioView={() => navigateTo('studio', activeStudioTab)}
+            onBackToLanding={() => navigateTo('landing')}
+            onOpenAuth={() => handleOpenAuth('signin', 'admin')}
+            onSignOut={handleSignOut}
+            onSwitchPersona={() => handleOpenAuth('signin', 'admin')}
           />
         ) : studioError ? (
           <div className="min-h-screen bg-linen-100 flex items-center justify-center p-4">
@@ -964,6 +1173,7 @@ export default function App() {
             promotingUserId={promotingUserId}
             userPromoteError={userPromoteError}
             onPromoteUser={handlePromoteUser}
+            onBackToAdmin={user.role === 'admin' ? () => navigateTo('admin') : undefined}
           />
         )}
 
@@ -980,12 +1190,22 @@ export default function App() {
         {showAuthModal && (
           <AuthModal
             initialView={authModalView}
+            initialPortalRole={authPortalRole}
             initialResetToken={initialResetToken}
             onClose={() => {
               setShowAuthModal(false);
               setInitialResetToken('');
             }}
             onLoginSuccess={handleLoginSuccess}
+          />
+        )}
+        {/* Floating Bottom-Right AI Agent Avatar (Welcome Greeting + Voice Mode) */}
+        {user && (
+          <FloatingAIAgent
+            user={user}
+            activeView={viewMode}
+            activeProtocolTitle={protocol?.title ?? null}
+            onSessionExpired={handleSessionExpired}
           />
         )}
       </Suspense>

@@ -1,9 +1,11 @@
 """
 ProtocolShield Clinical Trial Benchmark API Routes
-Interfaces with ClinicalTrials.gov API v2 and curated empirical benchmarks.
+Interfaces live with ClinicalTrials.gov API v2 for empirical benchmarking and study lookups.
 """
+import asyncio
 import logging
 import re
+from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException, Query, Depends
 import httpx
 from app.core.config import settings
@@ -12,82 +14,151 @@ from app.core.security import require_role, AuthenticatedUser
 router = APIRouter(prefix="/benchmark", tags=["Clinical Benchmarking"])
 logger = logging.getLogger(__name__)
 
-# Pre-indexed historical trial portfolio for empirical validation
-CURATED_BENCHMARKS = [
-    {
-        "nct_id": "NCT02477839",
-        "title": "Study of Pembrolizumab (MK-3475) Versus Chemotherapy in Patients With Advanced Non-Small Cell Lung Cancer",
-        "phase": "Phase 3",
-        "actual_status": "COMPLETED",
-        "primary_completion_delay_months": 0,
-        "enrolled_patients": 305,
-        "burden_tier": "Moderate",
-        "predicted_pbi": 54.2,
-        "termination_risk_predicted": "Low (Accrual Target Met)",
-        "protocol_complexity_flags": ["Standard 3-week dosing", "Non-mandatory repeat biopsies"]
-    },
-    {
-        "nct_id": "NCT01804790",
-        "title": "Phase 3 Randomized Study of Targeted Kinase Inhibitor in Advanced Refractory Solid Tumors",
-        "phase": "Phase 3",
-        "actual_status": "TERMINATED",
-        "termination_reason": "Slow accrual; inability to recruit patients meeting strict organ function and biopsy criteria",
-        "enrolled_patients": 42,
-        "target_enrollment": 360,
-        "burden_tier": "Severe",
-        "predicted_pbi": 84.8,
-        "termination_risk_predicted": "Critical Risk of Termination (Accrual Failure)",
-        "protocol_complexity_flags": [
-            "Mandatory serial tumor core biopsies at Day 1, 14, and 28",
-            "Weekly 8-hour PK blood draws",
-            "Stringent eGFR cutoff >= 65 mL/min"
-        ]
-    },
-    {
-        "nct_id": "NCT02220894",
-        "title": "Evaluation of Multi-Agent Immunotherapy Regimen in Second-Line Squamous NSCLC",
-        "phase": "Phase 3",
-        "actual_status": "TERMINATED",
-        "termination_reason": "High patient drop-out rate (>45% at 24 weeks) due to clinic visit fatigue",
-        "enrolled_patients": 88,
-        "target_enrollment": 450,
-        "burden_tier": "Severe",
-        "predicted_pbi": 79.4,
-        "termination_risk_predicted": "High Risk of Patient Attrition",
-        "protocol_complexity_flags": [
-            "Bi-weekly multi-hour infusions",
-            "Fasting required on 75% of visits",
-            "Strict exclusion of stable brain metastases"
-        ]
-    },
-    {
-        "nct_id": "NCT03040921",
-        "title": "A Study of Nivolumab in Combination With Ipilimumab in Advanced Non-Small Cell Lung Cancer",
-        "phase": "Phase 3",
-        "actual_status": "COMPLETED",
-        "primary_completion_delay_months": 4,
-        "enrolled_patients": 583,
-        "burden_tier": "Moderate",
-        "predicted_pbi": 58.6,
-        "termination_risk_predicted": "Moderate Risk (Manageable Accrual)",
-        "protocol_complexity_flags": ["Routine restaging CT scans every 6 weeks", "Flexible lab windows"]
+
+def _extract_study_complexity_flags(protocol_section: Dict[str, Any]) -> List[str]:
+    """Derives factual complexity indicators solely from ClinicalTrials.gov API v2 fields."""
+    flags: List[str] = []
+    arms = protocol_section.get("armsInterventionsModule", {}).get("armGroups") or []
+    if isinstance(arms, list) and len(arms) > 0:
+        flags.append(f"{len(arms)} study arm{'s' if len(arms) != 1 else ''}")
+
+    outcomes = protocol_section.get("outcomesModule", {})
+    primary_cnt = len(outcomes.get("primaryOutcomes") or [])
+    secondary_cnt = len(outcomes.get("secondaryOutcomes") or [])
+    if primary_cnt + secondary_cnt > 0:
+        flags.append(f"{primary_cnt + secondary_cnt} outcome endpoints ({primary_cnt} primary)")
+
+    elig_text = (
+        protocol_section.get("eligibilityModule", {}).get("eligibilityCriteria") or ""
+    ).lower()
+    if "biopsy" in elig_text:
+        flags.append("Biopsy clause in eligibility text")
+    if "brain metastas" in elig_text or "cns metastas" in elig_text:
+        flags.append("Brain/CNS metastasis eligibility clause")
+    if "egfr" in elig_text or "creatinine" in elig_text or "renal" in elig_text:
+        flags.append("Renal / eGFR eligibility criterion")
+    if "fasting" in elig_text or "pharmacokinetic" in elig_text:
+        flags.append("Fasting / PK requirement noted")
+
+    return flags or ["No structured flags extracted from registry text"]
+
+
+def _parse_clinicaltrials_benchmark(study: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    ps = study.get("protocolSection", {})
+    ident = ps.get("identificationModule", {})
+    status_mod = ps.get("statusModule", {})
+    design_mod = ps.get("designModule", {})
+
+    nct_id = ident.get("nctId")
+    if not nct_id:
+        return None
+
+    overall_status = (status_mod.get("overallStatus") or "").upper()
+    actual_status = "TERMINATED" if overall_status == "TERMINATED" else "COMPLETED"
+    why_stopped = (status_mod.get("whyStopped") or "").strip() or None
+    enroll_info = design_mod.get("enrollmentInfo") or {}
+    enrolled = int(enroll_info.get("count") or 0)
+    enroll_type = enroll_info.get("type")
+    phases = design_mod.get("phases") or []
+    phase_label = ", ".join(p.replace("PHASE", "Phase ") for p in phases) if phases else "Phase 3"
+
+    if actual_status == "TERMINATED":
+        verdict = (
+            f"Terminated Early (Registry reason recorded)"
+            if why_stopped
+            else "Terminated Early per ClinicalTrials.gov"
+        )
+    else:
+        verdict = "Completed per ClinicalTrials.gov"
+
+    return {
+        "nct_id": nct_id,
+        "title": ident.get("briefTitle") or ident.get("officialTitle") or nct_id,
+        "phase": phase_label,
+        "actual_status": actual_status,
+        "termination_reason": why_stopped,
+        "enrolled_patients": enrolled,
+        "enrollment_type": enroll_type,
+        "target_enrollment": None,
+        "burden_tier": "Registry Only (No SoA)",
+        "predicted_pbi": None,
+        "termination_risk_predicted": verdict,
+        "protocol_complexity_flags": _extract_study_complexity_flags(ps),
     }
-]
 
 
 @router.get("/historical-trials")
 async def get_historical_benchmarks(
-    _user: AuthenticatedUser = Depends(require_role(["doctor", "admin"]))
+    condition: str = Query(
+        default="Non-Small Cell Lung Cancer",
+        min_length=2,
+        max_length=120,
+        description="Oncology disease condition used to query live Phase 3 COMPLETED/TERMINATED trials.",
+    ),
+    _user: AuthenticatedUser = Depends(require_role(["doctor", "admin"])),
 ):
-    """Returns curated benchmark trials (Completed vs Terminated) for empirical verification. Requires doctor or admin role."""
+    """Queries ClinicalTrials.gov API v2 live for Completed vs Terminated Phase 3 trials. Requires doctor or admin role."""
+    base_url = f"{settings.CLINICAL_TRIALS_API_BASE}/studies"
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        try:
+            completed_task = client.get(
+                base_url,
+                params={
+                    "query.cond": condition,
+                    "filter.overallStatus": "COMPLETED",
+                    "filter.advanced": "AREA[Phase]PHASE3",
+                    "pageSize": 3,
+                },
+            )
+            terminated_task = client.get(
+                base_url,
+                params={
+                    "query.cond": condition,
+                    "filter.overallStatus": "TERMINATED",
+                    "filter.advanced": "AREA[Phase]PHASE3",
+                    "pageSize": 3,
+                },
+            )
+            comp_resp, term_resp = await asyncio.gather(completed_task, terminated_task)
+        except httpx.RequestError:
+            logger.exception("Failed to connect to ClinicalTrials.gov for live historical benchmarks.")
+            raise HTTPException(
+                status_code=503,
+                detail="ClinicalTrials.gov API v2 is currently unreachable. Unable to load live Phase 3 benchmarks.",
+            )
+
+    if comp_resp.status_code != 200 or term_resp.status_code != 200:
+        status_code = comp_resp.status_code if comp_resp.status_code != 200 else term_resp.status_code
+        raise HTTPException(
+            status_code=502,
+            detail=f"ClinicalTrials.gov API v2 returned HTTP {status_code} while querying Phase 3 trials.",
+        )
+
+    try:
+        completed_studies = comp_resp.json().get("studies", [])
+        terminated_studies = term_resp.json().get("studies", [])
+    except ValueError:
+        raise HTTPException(status_code=502, detail="ClinicalTrials.gov returned an invalid JSON payload.")
+
+    seen_ids = set()
+    trials: List[Dict[str, Any]] = []
+    for raw_study in [*completed_studies, *terminated_studies]:
+        parsed = _parse_clinicaltrials_benchmark(raw_study)
+        if parsed and parsed["nct_id"] not in seen_ids:
+            seen_ids.add(parsed["nct_id"])
+            trials.append(parsed)
+
     return {
-        "data_source": "synthetic_benchmark",
+        "data_source": "ClinicalTrials.gov API v2",
+        "condition": condition,
         "data_disclaimer": (
-            "These benchmark records are curated from publicly available ClinicalTrials.gov data "
-            "and do not represent proprietary clinical trial information."
+            f"Live Phase 3 {condition} records fetched directly from ClinicalTrials.gov API v2. "
+            "Protocol Burden Index (PBI) requires a visit-by-visit Schedule of Events, which public "
+            "ClinicalTrials.gov entries do not expose, so registry benchmarks report 'Registry Only (No SoA)' "
+            "instead of a synthetic score."
         ),
-        "benchmark_count": len(CURATED_BENCHMARKS),
-        "trials": CURATED_BENCHMARKS
+        "benchmark_count": len(trials),
+        "trials": trials,
     }
 
 
