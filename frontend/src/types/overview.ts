@@ -33,12 +33,29 @@ export interface PublicOverviewCaseStudy {
   metrics: PublicOverviewCaseStudyMetric[];
 }
 
+export interface PublicOverviewTemplateSummary {
+  type: string;
+  protocol_id: string;
+  title: string;
+  phase: string;
+  indication: string;
+  label: string;
+  short_name: string;
+  visit_count: number;
+  study_duration_weeks: number;
+  extracted_page_count?: number | null;
+  composite_pbi_score?: number | null;
+  highlights: string[];
+}
+
 export interface PublicOverviewResponse {
   is_synthetic_cohort: boolean;
   cohort_patient_count: number;
   audit_events_count: number;
   uploaded_protocols_count: number;
   measured_query_ms: number;
+  max_pdf_upload_mb?: number;
+  template_summaries?: PublicOverviewTemplateSummary[];
   cohort_averages: {
     age: number;
     egfr: number;
@@ -73,6 +90,8 @@ export interface PublicOverviewResponse {
     clause_diagnostics: {
       egfr: {
         threshold: string;
+        min_egfr?: number;
+        relaxed_egfr?: number;
         recoverable_candidates: number;
         relaxed_eligible_count: number;
       };

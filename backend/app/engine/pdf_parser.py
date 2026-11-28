@@ -892,7 +892,7 @@ class ProtocolPDFParser:
 
         try:
             client = _build_genai_client(genai, types)
-            primary_model = (settings.GEMINI_MODEL or "gemini-3.8-flash").strip()
+            primary_model = (settings.GEMINI_MODEL or "gemini-3.5-flash").strip()
             response, used_model = _generate_with_model_fallback(
                 client,
                 primary_model=primary_model,

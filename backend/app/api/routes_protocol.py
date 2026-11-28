@@ -364,6 +364,65 @@ SAMPLE_PROTOCOL_MAP = {
     "myeloma": get_canonical_myeloma_sample_protocol,
 }
 
+_TEMPLATE_UI_METADATA = {
+    "nsclc": {
+        "label": "Phase III · NSCLC",
+        "short_name": "Anti-PD-1 + Chemotherapy",
+        "highlights": ["Serial PK", "RECIST"],
+    },
+    "tnbc": {
+        "label": "Phase II · TNBC",
+        "short_name": "ADC + IO Combination",
+        "highlights": ["Dense PK", "PRO"],
+    },
+    "myeloma": {
+        "label": "Phase III · Myeloma",
+        "short_name": "BCMA Bispecific Antibody",
+        "highlights": ["Step-Up Dosing", "BM Biopsy"],
+    },
+}
+
+MAX_PDF_UPLOAD_BYTES = 25 * 1024 * 1024  # 25 MB limit
+
+
+def get_protocol_template_summaries() -> list[dict[str, Any]]:
+    """Returns canonical summary metadata for every built-in protocol template."""
+    summaries: list[dict[str, Any]] = []
+    for template_type, factory in SAMPLE_PROTOCOL_MAP.items():
+        proto = factory()
+        ui_meta = _TEMPLATE_UI_METADATA.get(template_type, {})
+        visit_count = len(proto.visits)
+        summaries.append(
+            {
+                "type": template_type,
+                "protocol_id": proto.protocol_id,
+                "title": proto.title,
+                "phase": proto.phase,
+                "indication": proto.indication,
+                "label": ui_meta.get("label", f"{proto.phase} · {template_type.upper()}"),
+                "short_name": ui_meta.get("short_name", proto.title),
+                "visit_count": visit_count,
+                "study_duration_weeks": proto.study_duration_weeks,
+                "extracted_page_count": proto.extracted_page_count,
+                "composite_pbi_score": proto.burden.composite_pbi_score if proto.burden else None,
+                "highlights": [
+                    f"{visit_count} Visits",
+                    f"{proto.study_duration_weeks} Weeks",
+                    *ui_meta.get("highlights", []),
+                ],
+            }
+        )
+    return summaries
+
+
+@router.get("/templates")
+async def list_protocol_templates():
+    """Returns metadata and upload constraints for built-in protocol templates."""
+    return {
+        "max_pdf_upload_mb": MAX_PDF_UPLOAD_BYTES // (1024 * 1024),
+        "templates": get_protocol_template_summaries(),
+    }
+
 
 @router.get("/sample", response_model=ClinicalTrialProtocol)
 async def get_sample_protocol():
@@ -384,9 +443,6 @@ async def get_sample_protocol_by_type(protocol_type: str):
             detail=f"Protocol type '{protocol_type}' not found. Valid types: nsclc, tnbc, myeloma"
         )
     return factory()
-
-
-MAX_PDF_UPLOAD_BYTES = 25 * 1024 * 1024  # 25 MB limit
 
 
 @router.post("/upload", response_model=ClinicalTrialProtocol)
@@ -511,6 +567,33 @@ class ProtocolDossierExportRequest(BaseModel):
     applied_amendment_ids: list[str] = Field(default_factory=list)
 
 
+_PDF_TEXT_REPLACEMENTS = (
+    ("\u2014", "--"),   # em dash
+    ("\u2013", "-"),    # en dash
+    ("\u2265", ">="),   # >=
+    ("\u2264", "<="),   # <=
+    ("\u2192", "->"),   # right arrow
+    ("\u2022", "*"),    # bullet
+    ("\u00b5", "u"),    # micro sign
+    ("\u03bc", "u"),    # Greek lowercase mu
+    ("\u00b2", "2"),    # superscript 2
+    ("\u00b1", "+/-"),  # plus-minus
+    ("\u2018", "'"),
+    ("\u2019", "'"),
+    ("\u201c", '"'),
+    ("\u201d", '"'),
+    ("\u00a0", " "),
+)
+
+
+def _pdf_safe_text(value: Any) -> str:
+    """Normalize Unicode punctuation/symbols so Type1 Helvetica never renders middots."""
+    cleaned = str(value if value is not None else "")
+    for src, dst in _PDF_TEXT_REPLACEMENTS:
+        cleaned = cleaned.replace(src, dst)
+    return cleaned.encode("latin-1", errors="replace").decode("latin-1")
+
+
 @router.post("/export-dossier")
 async def export_protocol_dossier_pdf(
     payload: ProtocolDossierExportRequest,
@@ -545,14 +628,14 @@ async def export_protocol_dossier_pdf(
         nonlocal y
         _next_page_if_needed(34.0)
         y += 8.0
-        page.insert_text((44, y), title, fontsize=12, fontname="helv", color=(0.12, 0.14, 0.17))
+        page.insert_text((44, y), _pdf_safe_text(title), fontsize=12, fontname="helv", color=(0.12, 0.14, 0.17))
         y += 6.0
         page.draw_line((44, y), (551, y), color=(0.82, 0.8, 0.76), width=0.8)
         y += 14.0
 
     def _draw_lines(text: str, fontsize: float = 9.5, indent: float = 48.0, color=(0.2, 0.22, 0.25)) -> None:
         nonlocal y
-        for raw_line in str(text).splitlines() or [""]:
+        for raw_line in _pdf_safe_text(text).splitlines() or [""]:
             wrapped = textwrap.wrap(raw_line, width=88) or [""]
             for seg in wrapped:
                 _next_page_if_needed(16.0)
@@ -564,14 +647,18 @@ async def export_protocol_dossier_pdf(
     page.insert_text((44, 34), "PROTOCOLSHIELD FEASIBILITY & ATTRITION DOSSIER", fontsize=13, fontname="helv", color=(1, 1, 1))
     page.insert_text(
         (44, 54),
-        f"Study ID: {proto.protocol_id}   |   Phase: {proto.phase}   |   Duration: {proto.study_duration_weeks} Weeks",
+        _pdf_safe_text(
+            f"Study ID: {proto.protocol_id}   |   Phase: {proto.phase}   |   Duration: {proto.study_duration_weeks} Weeks"
+        ),
         fontsize=9.5,
         fontname="helv",
         color=(0.85, 0.84, 0.82),
     )
     page.insert_text(
         (44, 70),
-        f"Prepared for: {user.name} ({user.role.upper()})   |   Generated UTC: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}",
+        _pdf_safe_text(
+            f"Prepared for: {user.name} ({user.role.upper()})   |   Generated UTC: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}"
+        ),
         fontsize=8.5,
         fontname="helv",
         color=(0.72, 0.72, 0.72),

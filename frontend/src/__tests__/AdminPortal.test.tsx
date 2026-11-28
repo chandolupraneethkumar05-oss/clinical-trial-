@@ -127,4 +127,80 @@ describe('AdminPortal dedicated console & real backend state', () => {
     fireEvent.click(screen.getByRole('button', { name: /Promote to Doctor/i }));
     expect(onPromoteUser).toHaveBeenCalledWith('usr-p-1', 'doctor');
   });
+
+  it('counts backend uppercase match statuses and excludes synthetic demos from Verify actions', () => {
+    const onVerifyScreening = vi.fn().mockResolvedValue(undefined);
+
+    render(
+      <AdminPortal
+        user={ADMIN_USER}
+        auditEvents={[]}
+        auditVerification={{
+          valid: true,
+          total_records_verified: 5,
+          details: 'Chain intact',
+        }}
+        patientScreenings={[
+          {
+            screening_id: 'SCR-REAL-001',
+            patient_id: 'PT-REAL-1',
+            submitted_by_user_id: 'usr-pat-1',
+            submitted_by_role: 'patient',
+            data_provenance: 'patient_reported',
+            investigator_verified: false,
+            is_synthetic_data: false,
+            created_at: '2026-11-28T10:00:00Z',
+            clinical_summary: { cancer_stage: 'Stage IIIB', ecog_score: 1, egfr_ml_min: 55 },
+            matches: [
+              { protocol_id: 'PS-ONC-2026-001', match_status: 'INVESTIGATOR_VERIFIED_ELIGIBLE' },
+              { protocol_id: 'PS-ONC-2026-002', match_status: 'PRELIMINARY_MATCH' },
+              { protocol_id: 'PS-ONC-2026-003', match_status: 'INELIGIBLE' },
+            ],
+          },
+          {
+            screening_id: 'SCR-SYN-002',
+            patient_id: 'PT-SYN-2',
+            submitted_by_user_id: 'usr-pat-1',
+            submitted_by_role: 'patient',
+            data_provenance: 'synthetic_demo',
+            investigator_verified: false,
+            is_synthetic_data: true,
+            created_at: '2026-11-28T09:00:00Z',
+            clinical_summary: { cancer_stage: 'Stage IV', ecog_score: 1, egfr_ml_min: 70 },
+            matches: [
+              { protocol_id: 'PS-ONC-2026-001', match_status: 'PRELIMINARY_MATCH' },
+              { protocol_id: 'PS-ONC-2026-002', match_status: 'INELIGIBLE' },
+            ],
+          },
+        ]}
+        onVerifyScreening={onVerifyScreening}
+        patientInterests={[]}
+        adminUsers={[]}
+        onPromoteUser={vi.fn()}
+        readiness={null}
+        cohortStats={null}
+        onRefreshAll={vi.fn()}
+        onSeedCohort={vi.fn().mockResolvedValue('ok')}
+        onOpenStudioView={vi.fn()}
+        onBackToLanding={vi.fn()}
+        onOpenAuth={vi.fn()}
+        onSignOut={vi.fn()}
+        onSwitchPersona={vi.fn()}
+      />
+    );
+
+    const queueTab = screen.getByRole('button', { name: /Clinical Queue/i });
+    expect(queueTab.textContent).toContain('1');
+    fireEvent.click(queueTab);
+
+    expect(screen.getByText(/2\/3 protocol matches/i)).toBeTruthy();
+    expect(screen.getByText(/1\/2 protocol matches/i)).toBeTruthy();
+    expect(screen.getByText('Pending Clinical Review')).toBeTruthy();
+    expect(screen.getByText('Synthetic Demo')).toBeTruthy();
+
+    const verifyButtons = screen.getAllByRole('button', { name: /^Verify$/i });
+    expect(verifyButtons).toHaveLength(1);
+    fireEvent.click(verifyButtons[0]);
+    expect(onVerifyScreening).toHaveBeenCalledWith('SCR-REAL-001');
+  });
 });

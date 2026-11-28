@@ -7,7 +7,11 @@ import copy
 import time
 from typing import Any, Dict, List
 
-from app.api.routes_protocol import SAMPLE_PROTOCOL_MAP
+from app.api.routes_protocol import (
+    MAX_PDF_UPLOAD_BYTES,
+    SAMPLE_PROTOCOL_MAP,
+    get_protocol_template_summaries,
+)
 from app.db.duckdb_client import db_client
 from app.engine.burden_scorer import burden_engine
 from app.engine.cohort_simulator import cohort_engine
@@ -255,6 +259,8 @@ def compute_public_overview() -> Dict[str, Any]:
         "audit_events_count": audit_events_count,
         "uploaded_protocols_count": uploaded_protocols_count,
         "measured_query_ms": measured_query_ms,
+        "max_pdf_upload_mb": MAX_PDF_UPLOAD_BYTES // (1024 * 1024),
+        "template_summaries": get_protocol_template_summaries(),
         "cohort_averages": {
             "age": avg_age,
             "egfr": avg_egfr,
@@ -285,6 +291,8 @@ def compute_public_overview() -> Dict[str, Any]:
             "clause_diagnostics": {
                 "egfr": {
                     "threshold": f"eGFR < {int(base_criteria.min_egfr)} mL/min",
+                    "min_egfr": round(float(base_criteria.min_egfr), 1),
+                    "relaxed_egfr": round(float(relaxed_egfr_val), 1),
                     "recoverable_candidates": egfr_gain,
                     "relaxed_eligible_count": int(egfr_funnel["final_eligible_count"]),
                 },

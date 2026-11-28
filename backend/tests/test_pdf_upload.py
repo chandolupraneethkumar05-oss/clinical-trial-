@@ -221,3 +221,47 @@ def test_export_dossier_pdf_endpoint():
     assert doc_resp.headers["content-type"].startswith("application/pdf")
     assert doc_resp.content.startswith(b"%PDF")
     assert len(doc_resp.content) > 1000
+
+
+def test_tnbc_dossier_pdf_sanitizes_unicode_for_helvetica():
+    import pymupdf as fitz
+
+    tnbc_proto = client.get("/api/v1/protocol/sample/tnbc").json()
+    doc_tok = client.post(
+        "/api/v1/auth/signin",
+        json={"email": "elena.vance@novartis.com", "password": "Novartis2026!"},
+    ).json()["token"]
+
+    resp = client.post(
+        "/api/v1/protocol/export-dossier",
+        json={
+            "protocol": tnbc_proto,
+            "funnel_data": None,
+            "total_cohort_size": 10000,
+            "applied_amendment_ids": [],
+        },
+        headers={"Authorization": f"Bearer {doc_tok}"},
+    )
+    assert resp.status_code == 200
+
+    pdf_doc = fitz.open(stream=resp.content, filetype="pdf")
+    extracted = "\n".join(page.get_text() for page in pdf_doc)
+    pdf_doc.close()
+
+    assert "\u00b7" not in extracted
+    assert "Screening -- Baseline" in extracted
+    assert "Subscores -> Temporal:" in extracted
+
+
+def test_protocol_templates_endpoint():
+    resp = client.get("/api/v1/protocol/templates")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["max_pdf_upload_mb"] == 25
+    templates = body["templates"]
+    assert [t["type"] for t in templates] == ["nsclc", "tnbc", "myeloma"]
+    by_type = {t["type"]: t for t in templates}
+    assert by_type["nsclc"]["extracted_page_count"] == 148
+    assert by_type["tnbc"]["extracted_page_count"] == 112
+    assert by_type["myeloma"]["extracted_page_count"] == 187
+    assert by_type["myeloma"]["visit_count"] == 12

@@ -1147,11 +1147,11 @@ def _build_gemini_system_instruction(
 
 
 _FALLBACK_GEMINI_MODELS = (
-    "gemini-3.8-flash",
-    "gemini-3.7-flash",
-    "gemini-3.6-flash",
     "gemini-3.5-flash",
     "gemini-3.1-flash-lite",
+    "gemini-3.6-flash",
+    "gemini-3.7-flash",
+    "gemini-3.8-flash",
 )
 
 # Short cooldown cache so deprecated (404) or overloaded (503) models aren't retried on every single turn
@@ -1271,7 +1271,7 @@ def generate_chat_reply(
         turn_lines.append(f"User: {question.strip()}")
         prompt_text = "\n".join(turn_lines)
 
-        primary_model = (settings.GEMINI_MODEL or "gemini-3.8-flash").strip()
+        primary_model = (settings.GEMINI_MODEL or "gemini-3.5-flash").strip()
         response, used_model = _generate_with_model_fallback(
             client,
             primary_model=primary_model,
@@ -1348,7 +1348,7 @@ def generate_voice_reply(
     )
 
     client = _build_genai_client(genai, types)
-    primary_model = (settings.GEMINI_MODEL or "gemini-3.8-flash").strip()
+    primary_model = (settings.GEMINI_MODEL or "gemini-3.5-flash").strip()
     response, used_model = _generate_with_model_fallback(
         client,
         primary_model=primary_model,

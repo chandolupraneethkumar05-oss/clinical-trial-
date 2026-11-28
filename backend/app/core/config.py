@@ -84,7 +84,7 @@ class Settings(BaseSettings):
 
     # AI Assistant / Protocol Intelligence (optional — server-side only; falls back to verified local glossary if empty)
     GEMINI_API_KEY: str = ""
-    GEMINI_MODEL: str = "gemini-3.8-flash"
+    GEMINI_MODEL: str = "gemini-3.5-flash"
 
     # Email delivery (for production password-reset emails)
     # Supported providers: "resend", "sendgrid", "mailgun", "smtp"

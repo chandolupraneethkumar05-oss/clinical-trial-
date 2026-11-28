@@ -32,32 +32,27 @@ const LOADING_MESSAGES = [
   'Finalizing protocol intelligence…',
 ];
 
-const SAMPLE_PROTOCOLS = [
-  {
-    type: 'nsclc',
-    icon: Zap,
-    label: 'Phase III · NSCLC',
-    name: 'Anti-PD-1 + Chemotherapy',
-    tags: ['14 Visits', '52 Weeks', 'Serial PK', 'RECIST'],
-    color: 'terracotta',
-  },
-  {
-    type: 'tnbc',
-    icon: FlaskConical,
-    label: 'Phase II · TNBC',
-    name: 'ADC + IO Combination',
-    tags: ['10 Visits', '42 Weeks', 'Dense PK', 'PRO'],
-    color: 'sage',
-  },
-  {
-    type: 'myeloma',
-    icon: Dna,
-    label: 'Phase III · Myeloma',
-    name: 'BCMA Bispecific Antibody',
-    tags: ['12 Visits', '60 Weeks', 'Step-Up Dosing', 'BM Biopsy'],
-    color: 'indigo',
-  },
-] as const;
+interface ProtocolTemplateSummary {
+  type: string;
+  protocol_id?: string;
+  title?: string;
+  label: string;
+  short_name: string;
+  extracted_page_count?: number | null;
+  highlights: string[];
+}
+
+const FALLBACK_TEMPLATES: ProtocolTemplateSummary[] = [
+  { type: 'nsclc', label: 'Phase III · NSCLC', short_name: 'Anti-PD-1 + Chemotherapy', highlights: [] },
+  { type: 'tnbc', label: 'Phase II · TNBC', short_name: 'ADC + IO Combination', highlights: [] },
+  { type: 'myeloma', label: 'Phase III · Myeloma', short_name: 'BCMA Bispecific Antibody', highlights: [] },
+];
+
+const TEMPLATE_VISUAL_MAP: Record<string, { icon: typeof Zap; color: keyof typeof colorMap }> = {
+  nsclc: { icon: Zap, color: 'terracotta' },
+  tnbc: { icon: FlaskConical, color: 'sage' },
+  myeloma: { icon: Dna, color: 'indigo' },
+};
 
 const colorMap = {
   terracotta: {
@@ -93,6 +88,8 @@ export const ProtocolUploadModal: FC<ProtocolUploadModalProps> = ({
   const [isDragging, setIsDragging] = useState(false);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [selectedSample, setSelectedSample] = useState<string | null>(null);
+  const [templates, setTemplates] = useState<ProtocolTemplateSummary[]>(FALLBACK_TEMPLATES);
+  const [maxUploadMb, setMaxUploadMb] = useState<number>(25);
   const [savedProtocols, setSavedProtocols] = useState<ClinicalProtocol[]>([]);
   const [errorMessage, setErrorMessage] = useState('');
   const [loadingMsgIdx, setLoadingMsgIdx] = useState(0);
@@ -104,6 +101,24 @@ export const ProtocolUploadModal: FC<ProtocolUploadModalProps> = ({
   useEffect(() => {
     isMountedRef.current = true;
     const controller = new AbortController();
+
+    async function fetchTemplates() {
+      try {
+        const res = await fetch(apiUrl('/api/v1/protocol/templates'), { signal: controller.signal });
+        if (!res.ok) return;
+        const parsed = await parseJsonSafe(res);
+        if (!isMountedRef.current || !parsed || typeof parsed !== 'object') return;
+        const payload = parsed as { max_pdf_upload_mb?: number; templates?: ProtocolTemplateSummary[] };
+        if (typeof payload.max_pdf_upload_mb === 'number' && payload.max_pdf_upload_mb > 0) {
+          setMaxUploadMb(payload.max_pdf_upload_mb);
+        }
+        if (Array.isArray(payload.templates) && payload.templates.length > 0) {
+          setTemplates(payload.templates);
+        }
+      } catch {
+        // Non-fatal: keep clickable canonical template slugs without fabricated metrics
+      }
+    }
 
     async function fetchSavedProtocols() {
       const token = getStoredAuthToken();
@@ -128,6 +143,7 @@ export const ProtocolUploadModal: FC<ProtocolUploadModalProps> = ({
       }
     }
 
+    void fetchTemplates();
     void fetchSavedProtocols();
     return () => {
       isMountedRef.current = false;
@@ -381,9 +397,10 @@ export const ProtocolUploadModal: FC<ProtocolUploadModalProps> = ({
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-              {SAMPLE_PROTOCOLS.map((sp) => {
-                const Icon = sp.icon;
-                const c = colorMap[sp.color];
+              {templates.map((sp) => {
+                const visual = TEMPLATE_VISUAL_MAP[sp.type] ?? TEMPLATE_VISUAL_MAP.nsclc;
+                const Icon = visual.icon;
+                const c = colorMap[visual.color];
                 const isSelected = selectedSample === sp.type;
                 return (
                   <button
@@ -400,15 +417,21 @@ export const ProtocolUploadModal: FC<ProtocolUploadModalProps> = ({
                     <div className="space-y-0.5 mb-2">
                       <p className="text-[10px] font-mono text-charcoal-500">{sp.label}</p>
                       <p className="text-xs font-semibold text-charcoal-900 leading-tight">
-                        {sp.name}
+                        {sp.short_name}
                       </p>
                     </div>
                     <div className="flex flex-wrap gap-1">
-                      {sp.tags.map((tag) => (
-                        <span key={tag} className={`text-[9px] font-mono px-1.5 py-0.5 rounded-full ${c.tag}`}>
-                          {tag}
+                      {sp.highlights.length > 0 ? (
+                        sp.highlights.map((tag) => (
+                          <span key={tag} className={`text-[9px] font-mono px-1.5 py-0.5 rounded-full ${c.tag}`}>
+                            {tag}
+                          </span>
+                        ))
+                      ) : (
+                        <span className={`text-[9px] font-mono px-1.5 py-0.5 rounded-full ${c.tag}`}>
+                          Load Template
                         </span>
-                      ))}
+                      )}
                     </div>
                   </button>
                 );
@@ -478,7 +501,7 @@ export const ProtocolUploadModal: FC<ProtocolUploadModalProps> = ({
                       Drop protocol PDF here
                     </p>
                     <p className="text-[11px] text-charcoal-400 font-mono">
-                      or click to browse · .pdf only
+                      or click to browse · .pdf only (max {maxUploadMb}MB)
                     </p>
                   </div>
                 </div>

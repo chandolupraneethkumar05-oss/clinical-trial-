@@ -774,7 +774,10 @@ export default function App() {
   );
 
   const handleProtocolLoaded = useCallback(
-    async (newProtocol: ClinicalProtocol) => {
+    async (newProtocol: ClinicalProtocol, options?: { preserveAmendments?: boolean }) => {
+      if (!options?.preserveAmendments) {
+        setAppliedAmendmentIds([]);
+      }
       setProtocol(newProtocol);
       setShowUploadModal(false);
       setSimulationError(null);
@@ -876,7 +879,7 @@ export default function App() {
       });
 
       setAppliedAmendmentIds((prev) => (prev.includes(amendmentId) ? prev : [...prev, amendmentId]));
-      await handleProtocolLoaded(updatedProtocol);
+      await handleProtocolLoaded(updatedProtocol, { preserveAmendments: true });
       // Backend /optimizer/apply-amendment records the canonical SHA-256 audit log; refresh it here
       await fetchAuditData();
     },

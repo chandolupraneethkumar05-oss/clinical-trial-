@@ -130,7 +130,7 @@ export const AdminPortal: FC<AdminPortalProps> = ({
   }, [adminUsers]);
 
   const pendingScreeningsCount = useMemo(
-    () => patientScreenings.filter((s) => !s.investigator_verified).length,
+    () => patientScreenings.filter((s) => !s.investigator_verified && !s.is_synthetic_data).length,
     [patientScreenings]
   );
 
@@ -704,9 +704,26 @@ export const AdminPortal: FC<AdminPortalProps> = ({
                 <div className="space-y-2.5">
                   {patientScreenings.map((scr) => {
                     const isVerified = Boolean(scr.investigator_verified);
-                    const eligibleCount = scr.matches.filter(
-                      (m) => m.match_status === 'eligible' || m.match_status === 'potentially_eligible'
+                    const isSynthetic = Boolean(scr.is_synthetic_data);
+                    const eligibleStatuses = new Set([
+                      'INVESTIGATOR_VERIFIED_ELIGIBLE',
+                      'PRELIMINARY_MATCH',
+                      'ELIGIBLE',
+                      'POTENTIALLY_ELIGIBLE',
+                    ]);
+                    const eligibleCount = scr.matches.filter((m) =>
+                      eligibleStatuses.has(String(m.match_status || '').toUpperCase())
                     ).length;
+                    const badgeClasses = isVerified
+                      ? 'bg-sage-50 text-sage-800 border-sage-200'
+                      : isSynthetic
+                        ? 'bg-linen-100 text-charcoal-600 border-linen-300'
+                        : 'bg-amber-50 text-amber-800 border-amber-200';
+                    const badgeLabel = isVerified
+                      ? 'Verified'
+                      : isSynthetic
+                        ? 'Synthetic Demo'
+                        : 'Pending Clinical Review';
                     return (
                       <div
                         key={scr.screening_id}
@@ -718,13 +735,9 @@ export const AdminPortal: FC<AdminPortalProps> = ({
                               {scr.screening_id}
                             </span>
                             <span
-                              className={`text-[10px] font-mono px-2 py-0.5 rounded-full border ${
-                                isVerified
-                                  ? 'bg-sage-50 text-sage-800 border-sage-200'
-                                  : 'bg-amber-50 text-amber-800 border-amber-200'
-                              }`}
+                              className={`text-[10px] font-mono px-2 py-0.5 rounded-full border ${badgeClasses}`}
                             >
-                              {isVerified ? 'Verified' : 'Pending Clinical Review'}
+                              {badgeLabel}
                             </span>
                           </div>
                           <p className="text-xs text-charcoal-700 truncate">
@@ -736,7 +749,7 @@ export const AdminPortal: FC<AdminPortalProps> = ({
                           </p>
                         </div>
 
-                        {!isVerified && (
+                        {!isVerified && !isSynthetic && (
                           <button
                             type="button"
                             disabled={verifyingScreeningId === scr.screening_id}

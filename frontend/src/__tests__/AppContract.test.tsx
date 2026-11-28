@@ -314,4 +314,160 @@ describe('App API contract fixes (benchmarks payload & retention params)', () =>
       { timeout: 5000 }
     );
   });
+
+  it('resets appliedAmendmentIds when loading a different protocol via Upload Modal', async () => {
+    window.location.hash = '#/studio?tab=sandbox';
+    const amendedProtocol = {
+      ...SAMPLE_TNBC_PROTOCOL,
+      protocol_id: 'PS-ONC-2026-002',
+      title: 'Amended TNBC Study',
+    };
+    const nextProtocol = {
+      ...SAMPLE_TNBC_PROTOCOL,
+      protocol_id: 'PS-ONC-2026-003',
+      title: 'Fresh Myeloma Study',
+      phase: 'Phase III',
+      indication: 'Relapsed Multiple Myeloma',
+      study_duration_weeks: 60,
+    };
+
+    const fetchMock = vi.fn().mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/api/v1/auth/me')) {
+        return Promise.resolve(new Response(JSON.stringify({ success: true, user: MOCK_DOCTOR }), { status: 200 }));
+      }
+      if (url.includes('/api/v1/protocol/templates')) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              max_pdf_upload_mb: 25,
+              templates: [
+                {
+                  type: 'myeloma',
+                  protocol_id: 'PS-ONC-2026-003',
+                  title: 'Fresh Myeloma Study',
+                  phase: 'Phase III',
+                  indication: 'Relapsed Multiple Myeloma',
+                  label: 'Phase III · Myeloma',
+                  short_name: 'BCMA Bispecific Antibody',
+                  visit_count: 12,
+                  study_duration_weeks: 60,
+                  extracted_page_count: 187,
+                  composite_pbi_score: 71.0,
+                  highlights: ['12 Visits', '60 Weeks'],
+                },
+              ],
+            }),
+            { status: 200 }
+          )
+        );
+      }
+      if (url.includes('/api/v1/protocol/sample/myeloma')) {
+        return Promise.resolve(new Response(JSON.stringify(nextProtocol), { status: 200 }));
+      }
+      if (url.includes('/api/v1/protocol/sample')) {
+        return Promise.resolve(new Response(JSON.stringify(SAMPLE_TNBC_PROTOCOL), { status: 200 }));
+      }
+      if (url.includes('/api/v1/protocol/uploaded')) {
+        return Promise.resolve(new Response(JSON.stringify([]), { status: 200 }));
+      }
+      if (url.includes('/api/v1/optimizer/propose-amendments')) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify([
+              {
+                amendment_id: 'AMD-TEST-01',
+                category: 'RENAL_FUNCTION',
+                title: 'Relax eGFR Threshold',
+                target_section: 'Exclusion 4.2',
+                current_clause: 'eGFR >= 60',
+                proposed_clause: 'eGFR >= 50',
+                clinical_evidence_rationale: 'Expand renal window safely.',
+                regulatory_precedent: 'FDA Guidance 2020',
+                candidate_yield_lift: 45,
+                yield_lift_percentage: 4.5,
+                pbi_reduction_points: 2.0,
+                estimated_accrual_acceleration_months: 1.5,
+                projected_sponsor_cost_savings_usd: 150000,
+                health_equity_diversity_impact: 'Improves access.',
+                safety_guardrail_conditions: ['Monitor creatinine weekly'],
+                filter_mutations: { min_egfr: 50 },
+                is_recommended: true,
+              },
+            ]),
+            { status: 200 }
+          )
+        );
+      }
+      if (url.includes('/api/v1/optimizer/apply-amendment')) {
+        return Promise.resolve(new Response(JSON.stringify(amendedProtocol), { status: 200 }));
+      }
+      if (url.includes('/api/v1/cohort/simulate-funnel')) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              total_population: 10000,
+              final_eligible_count: 120,
+              overall_yield_percentage: 1.2,
+              screen_failure_rate: 98.8,
+              funnel_stages: [],
+              sensitivity_opportunities: [],
+            }),
+            { status: 200 }
+          )
+        );
+      }
+      if (url.includes('/api/v1/cohort/retention-curve')) {
+        return Promise.resolve(new Response(JSON.stringify({ retention_curve: [] }), { status: 200 }));
+      }
+      if (url.includes('/api/v1/benchmark/historical-trials')) {
+        return Promise.resolve(new Response(JSON.stringify({ trials: [] }), { status: 200 }));
+      }
+      if (url.includes('/api/v1/audit/logs')) {
+        return Promise.resolve(new Response(JSON.stringify([]), { status: 200 }));
+      }
+      if (url.includes('/api/v1/audit/verify')) {
+        return Promise.resolve(new Response(JSON.stringify({ valid: true, total_records_verified: 0, details: 'OK' }), { status: 200 }));
+      }
+      if (url.includes('/api/v1/assistant/status')) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ status: 'operational', mode: 'local_knowledge_base', llm_configured: false }), { status: 200 })
+        );
+      }
+      return Promise.reject(new Error(`Unexpected call: ${url}`));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /AI Optimizer/i })).toBeTruthy();
+    });
+
+    // Apply one amendment and confirm count badge appears
+    fireEvent.click(screen.getByRole('button', { name: /AI Optimizer/i }));
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /Apply Amendment/i })).toBeTruthy();
+    });
+    fireEvent.click(screen.getByRole('button', { name: /Apply Amendment/i }));
+    await waitFor(() => {
+      expect(screen.getByText(/AI Optimizer \(1\)/i)).toBeTruthy();
+    });
+
+    // Close Optimizer Modal, open Upload Modal, load a different protocol
+    fireEvent.click(screen.getByRole('button', { name: /Done & Return to Studio/i }));
+    fireEvent.click(screen.getByText(/Drop \/ Upload Protocol PDF/i));
+    await waitFor(() => {
+      expect(screen.getByText('BCMA Bispecific Antibody')).toBeTruthy();
+    });
+    fireEvent.click(screen.getByText('BCMA Bispecific Antibody'));
+
+    await waitFor(
+      () => {
+        expect(screen.getByText('PS-ONC-2026-003')).toBeTruthy();
+        expect(screen.queryByText(/AI Optimizer \(1\)/i)).toBeNull();
+      },
+      { timeout: 3000 }
+    );
+  });
 });
